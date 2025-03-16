@@ -23,8 +23,7 @@ from isceobj.Orbit.OrbitExtender import OrbitExtender
 from osgeo import gdal
 import warnings
 from scipy.interpolate import UnivariateSpline
-from scipy.signal import savgol_filter
-import pdb
+
 
 lookMap = { 'RIGHT' : -1,
             'LEFT' : 1}
@@ -67,6 +66,7 @@ class Lutan1(Sensor):
         self.frame.configure()
         self._xml_root = None
         self.doppler_coeff = None
+        self.filterMethod = 'weighted'
 
     def parse(self):
         xmlFileName = self.tiff[:-4] + "meta.xml"
@@ -262,94 +262,137 @@ class Lutan1(Sensor):
         else:
             raise Exception("Unsupported orbit file extension: %s" % file_ext)
         return orb
-
-    def orbit_filter_iterative(self, time_seconds, pos_data, vel_data, n_key_points=5):
-        '''
-        轨道数据迭代滤波函数
-        参数:
-        time_seconds: 时间序列（相对于第一个点的秒数）
-        pos_data: 位置数据 shape=(n,3)
-        vel_data: 速度数据 shape=(n,3)
-        n_key_points: 关键点数量，默认5个
-        '''
-        time_array = np.array(time_seconds)
-        pos_array = np.array(pos_data)
-        vel_array = np.array(vel_data)
-        filtered_pos = pos_array.copy()
-        filtered_vel = vel_array.copy()
         
-        for iteration in range(5):  # 进行5次迭代
-            # 选择均匀分布的关键点
-            n_points = len(time_array)
-            key_indices = np.linspace(0, n_points-1, n_key_points, dtype=int)
-            key_times = time_array[key_indices]
-            key_pos = filtered_pos[key_indices]
+    def filter_orbit(self, times, positions, velocities):
+        """使用标准多项式拟合滤波轨道数据"""
+        t0 = times[0]
+        seconds = np.array([(t - t0).total_seconds() for t in times])
+        
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
+        
+        for i in range(3):  # X, Y, Z
+            pos_coef = np.polyfit(seconds, positions[:,i], 4)
+            filtered_pos[:,i] = np.polyval(pos_coef, seconds)
             
-            # 对关键点进行多项式拟合
-            smoothed_pos = np.zeros_like(filtered_pos)
-            for i in range(3):  # x,y,z三个方向
-                # 位置使用3次多项式
-                poly_deg = 3
+            vel_coef = np.polyfit(seconds, velocities[:,i], 5)
+            filtered_vel[:,i] = np.polyval(vel_coef, seconds)
+            
+        return filtered_pos, filtered_vel
+
+    def filter_orbit_sliding(self, times, positions, velocities, window_size=20):
+        """使用滑动窗口的多项式拟合"""
+        t0 = times[0]
+        seconds = np.array([(t - t0).total_seconds() for t in times])
+        
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
+        
+        for i in range(len(times)):
+            start_idx = max(0, i - window_size//2)
+            end_idx = min(len(times), i + window_size//2)
+            
+            window_seconds = seconds[start_idx:end_idx]
+            window_pos = positions[start_idx:end_idx]
+            window_vel = velocities[start_idx:end_idx]
+            
+            for j in range(3):
+                pos_coef = np.polyfit(window_seconds - seconds[i], window_pos[:,j], 4)
+                filtered_pos[i,j] = np.polyval(pos_coef, 0)
                 
-                # 先用关键点拟合一个初始多项式
-                coeffs = np.polyfit(key_times, key_pos[:,i], deg=poly_deg)
-                # 用初始多项式拟合所有点
-                smoothed_pos[:,i] = np.polyval(coeffs, time_array)
-                # 再次对所有点进行拟合
-                coeffs = np.polyfit(time_array, smoothed_pos[:,i], deg=poly_deg)
-                smoothed_pos[:,i] = np.polyval(coeffs, time_array)
-            
-            smoothed_vel = np.zeros_like(filtered_vel)
-            key_vel = filtered_vel[key_indices]
-            for i in range(3):
-                # 速度使用2次多项式
-                vel_poly_deg = 2
-                coeffs = np.polyfit(key_times, key_vel[:,i], deg=vel_poly_deg)
-                smoothed_vel[:,i] = np.polyval(coeffs, time_array)
-                coeffs = np.polyfit(time_array, smoothed_vel[:,i], deg=vel_poly_deg)
-                smoothed_vel[:,i] = np.polyval(coeffs, time_array)
-            
-            filtered_pos = smoothed_pos
-            filtered_vel = smoothed_vel
+                vel_coef = np.polyfit(window_seconds - seconds[i], window_vel[:,j], 5)
+                filtered_vel[i,j] = np.polyval(vel_coef, 0)
+                
+        return filtered_pos, filtered_vel
+
+    def filter_orbit_spline(self, times, positions, velocities, k=4):
+        """使用样条拟合轨道数据"""
+        t0 = times[0]
+        seconds = np.array([(t - t0).total_seconds() for t in times])
         
-        # 将numpy数组转换为Python列表
-        return filtered_pos.tolist(), filtered_vel.tolist()
-    
-    # def extractOrbitFromAnnotation(self):
-
-    #     '''
-    #     Extract orbit information from xml annotation
-    #     WARNING! Only use this method if orbit file is not available
-    #     '''
-
-    #     try:
-    #         fp = open(self.xml, 'r')
-    #     except IOError as strerr:
-    #         print("IOError: %s" % strerr)
-
-    #     _xml_root = ET.ElementTree(file=fp).getroot()
-    #     node = _xml_root.find('platform/orbit')
-    #     countNode = len(list(_xml_root.find('platform/orbit')))
-
-    #     frameOrbit = Orbit()
-    #     frameOrbit.setOrbitSource('Header')
-    #     margin = datetime.timedelta(minutes=30.0)
-    #     tstart = self.frame.getSensingStart() - margin
-    #     tend = self.frame.getSensingStop() + margin
-    #     for k in range(1,countNode):
-    #         timestamp = self.convertToDateTime(node.find('stateVec[{}]/timeUTC'.format(k)).text)
-    #         if (timestamp >= tstart) and (timestamp <= tend):
-    #             pos = [float(node.find('stateVec[{}]/posX'.format(k)).text), float(node.find('stateVec[{}]/posY'.format(k)).text), float(node.find('stateVec[{}]/posZ'.format(k)).text)]
-    #             vel = [float(node.find('stateVec[{}]/velX'.format(k)).text), float(node.find('stateVec[{}]/velY'.format(k)).text), float(node.find('stateVec[{}]/velZ'.format(k)).text)]
-
-    #             vec = StateVector()
-    #             vec.setTime(timestamp)
-    #             vec.setPosition(pos)
-    #             vec.setVelocity(vel)
-    #             frameOrbit.addStateVector(vec)
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
         
-    #     fp.close()
-    #     return frameOrbit
+        for i in range(3):
+            spline_pos = UnivariateSpline(seconds, positions[:,i], k=k, s=len(seconds))
+            filtered_pos[:,i] = spline_pos(seconds)
+            
+            spline_vel = UnivariateSpline(seconds, velocities[:,i], k=k, s=len(seconds))
+            filtered_vel[:,i] = spline_vel(seconds)
+        
+        return filtered_pos, filtered_vel
+
+    def filter_orbit_combined(self, times, positions, velocities, window_size=10):
+        """先滑动窗口，再多项式拟合的组合方法"""
+        sliding_pos, sliding_vel = self.filter_orbit_sliding(times, positions, velocities, window_size)
+        
+        t0 = times[0]
+        seconds = np.array([(t - t0).total_seconds() for t in times])
+        
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
+        
+        for i in range(3):
+            pos_coef = np.polyfit(seconds, sliding_pos[:,i], 4)
+            filtered_pos[:,i] = np.polyval(pos_coef, seconds)
+            
+            vel_coef = np.polyfit(seconds, sliding_vel[:,i], 5)
+            filtered_vel[:,i] = np.polyval(vel_coef, seconds)
+        
+        return filtered_pos, filtered_vel
+
+    def filter_orbit_combined_spline(self, times, positions, velocities, window_size=10, k=4):
+        """先滑动窗口，再样条拟合的组合方法"""
+        # 1. 首先进行滑动窗口滤波
+        sliding_pos, sliding_vel = self.filter_orbit_sliding(times, positions, velocities, window_size)
+        
+        # 2. 对滑动窗口结果进行样条拟合
+        t0 = times[0]
+        seconds = np.array([(t - t0).total_seconds() for t in times])
+        
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
+        
+        # 对每个坐标分量进行拟合
+        for i in range(3):
+            # 位置样条拟合
+            spline_pos = UnivariateSpline(seconds, sliding_pos[:,i], k=k, s=len(seconds))
+            filtered_pos[:,i] = spline_pos(seconds)
+            
+            # 速度样条拟合
+            spline_vel = UnivariateSpline(seconds, sliding_vel[:,i], k=k, s=len(seconds))
+            filtered_vel[:,i] = spline_vel(seconds)
+        
+        return filtered_pos, filtered_vel
+        
+    def filter_orbit_weighted(self, times, positions, velocities):
+        """对成像时间段赋予更高权重"""
+        t0 = times[0]
+        seconds = np.array([(t - t0).total_seconds() for t in times])
+        
+        # 获取成像时间段
+        data_start_time = self.frame.getSensingStart()
+        data_stop_time = self.frame.getSensingStop()
+        
+        weights = np.ones(len(times))
+        scene_indices = [i for i, t in enumerate(times) 
+                        if data_start_time <= t <= data_stop_time]
+        weights[scene_indices] = 2.0  # 成像段更高权重
+        
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
+        
+        for i in range(3):
+            # 位置加权拟合
+            pos_coef = np.polyfit(seconds, positions[:,i], 4, w=weights)
+            filtered_pos[:,i] = np.polyval(pos_coef, seconds)
+            
+            # 速度加权拟合
+            vel_coef = np.polyfit(seconds, velocities[:,i], 5, w=weights)
+            filtered_vel[:,i] = np.polyval(vel_coef, seconds)
+        
+        return filtered_pos, filtered_vel
+
     def extractOrbitFromAnnotation(self):
         '''
         从xml注释中提取轨道信息并进行滤波
@@ -366,7 +409,7 @@ class Lutan1(Sensor):
     
         frameOrbit = Orbit()
         frameOrbit.setOrbitSource('Header')
-        margin = datetime.timedelta(minutes=30.0)
+        margin = datetime.timedelta(minutes=10.0)
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
         
@@ -393,17 +436,30 @@ class Lutan1(Sensor):
         
         # 计算相对时间（秒）
         time_seconds = [(t - timestamps[0]).total_seconds() for t in timestamps]
-        
-        # 进行轨道滤波
-        filtered_pos, filtered_vel = self.orbit_filter_iterative(time_seconds, positions, velocities)
+        self.filterMethod = 'weighted'
+        # 根据选择的方法进行滤波
+        if self.filterMethod == 'standard':
+            filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
+        elif self.filterMethod == 'sliding':
+            filtered_pos, filtered_vel = self.filter_orbit_sliding(timestamps, np.array(positions), np.array(velocities))
+        elif self.filterMethod == 'spline':
+            filtered_pos, filtered_vel = self.filter_orbit_spline(timestamps, np.array(positions), np.array(velocities))
+        elif self.filterMethod == 'combined':
+            filtered_pos, filtered_vel = self.filter_orbit_combined(timestamps, np.array(positions), np.array(velocities))
+        elif self.filterMethod == 'combined_spline':
+            filtered_pos, filtered_vel = self.filter_orbit_combined_spline(timestamps, np.array(positions), np.array(velocities))
+        elif self.filterMethod == 'weighted':
+            filtered_pos, filtered_vel = self.filter_orbit_weighted(timestamps, np.array(positions), np.array(velocities))
+        else:
+            print(f"Warning: Unknown filter method {self.filterMethod}, using standard method")
+            filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
         
         # 将滤波后的结果转换为轨道状态向量
         for i, timestamp in enumerate(timestamps):
             vec = StateVector()
             vec.setTime(timestamp)
-            # 确保使用Python列表
-            vec.setPosition(filtered_pos[i])
-            vec.setVelocity(filtered_vel[i])
+            vec.setPosition(filtered_pos[i].tolist())
+            vec.setVelocity(filtered_vel[i].tolist())
             frameOrbit.addStateVector(vec)
         
         return frameOrbit
