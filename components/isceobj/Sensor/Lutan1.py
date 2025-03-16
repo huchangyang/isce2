@@ -23,6 +23,7 @@ from isceobj.Orbit.OrbitExtender import OrbitExtender
 from osgeo import gdal
 import warnings
 from scipy.interpolate import UnivariateSpline
+from isceobj.Sensor import tkfunc
 
 
 lookMap = { 'RIGHT' : -1,
@@ -31,24 +32,27 @@ lookMap = { 'RIGHT' : -1,
 # Antenna dimensions 9.8 x 3.4 m
 antennaLength = 9.8
 
-XML = Component.Parameter('xml',
-        public_name = 'xml',
-        default = None,
-        type = str,
-        doc = 'Input XML file')
+XML = Component.Parameter('_xmlList',
+        public_name = 'XML',
+        default = '',
+        container=list,
+        type=str,
+        doc = 'List of names of Lutan-1 XML metadata files')
 
 
-TIFF = Component.Parameter('tiff',
-                            public_name ='tiff',
-                            default = None,
+TIFF = Component.Parameter('_tiffList',
+                            public_name ='TIFF',
+                            default = '',
+                            container=list,
                             type=str,
-                            doc = 'Input image file')
+                            doc = 'List of names of Lutan-1 TIFF image files')
 
-ORBIT_FILE = Component.Parameter('orbitFile',
-                            public_name ='orbitFile',
-                            default = None,
+ORBIT_FILE = Component.Parameter('_orbitFileList',
+                            public_name ='ORBITFILE',
+                            default = '',
+                            container=list,
                             type=str,
-                            doc = 'Orbit file')
+                            doc = 'List of names of orbit files')
 
 
 class Lutan1(Sensor):
@@ -67,29 +71,33 @@ class Lutan1(Sensor):
         self._xml_root = None
         self.doppler_coeff = None
         self.filterMethod = 'weighted'
+        self.frameList = []
+        self._tiff = None
+        self._orbitFile = None
+        self._xml = None
 
     def parse(self):
-        xmlFileName = self.tiff[:-4] + "meta.xml"
-        self.xml = xmlFileName
+        xmlFileName = self._tiff[:-4] + "meta.xml"
+        self._xml = xmlFileName
 
-        with open(self.xml, 'r') as fid:
+        with open(self._xml, 'r') as fid:
             xmlstr = fid.read()
         
         self._xml_root = ET.fromstring(xmlstr)
         self.populateMetadata()
         fid.close()
 
-        if self.orbitFile:
+        if self._orbitFile:
             # Check if orbit file exists or not
-            if os.path.isfile(self.orbitFile) == True:
+            if os.path.isfile(self._orbitFile) == True:
                 orb = self.extractOrbit()
-                self.frame.orbit.setOrbitSource(os.path.basename(self.orbitFile))
+                self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
                 pass
         else:
             warnings.warn("WARNING! No orbit file found. Orbit information from the annotation file is used for processing.")
             orb = self.extractOrbitFromAnnotation()
-            self.frame.orbit.setOrbitSource(os.path.basename(self.xml))
+            self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
             self.frame.orbit.setOrbitSource('Annotation')
 
         for sv in orb:
@@ -200,11 +208,11 @@ class Lutan1(Sensor):
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
 
-        file_ext = os.path.splitext(self.orbitFile)[1].lower()
+        file_ext = os.path.splitext(self._orbitFile)[1].lower()
 
         if file_ext == '.xml':
             try:
-                fp = open(self.orbitFile, 'r')
+                fp = open(self._orbitFile, 'r')
             except IOError as strerr:
                 print("IOError: %s" % strerr)
             
@@ -231,7 +239,7 @@ class Lutan1(Sensor):
             fp.close()
 
         elif file_ext == '.txt':
-            with open(self.orbitFile, 'r') as fid:
+            with open(self._orbitFile, 'r') as fid:
                 for line in fid:
                     if not line.startswith('#'):
                         break
@@ -399,7 +407,7 @@ class Lutan1(Sensor):
         如果没有精轨数据，使用此方法
         '''
         try:
-            fp = open(self.xml, 'r')
+            fp = open(self._xml, 'r')
         except IOError as strerr:
             print("IOError: %s" % strerr)
     
@@ -465,44 +473,86 @@ class Lutan1(Sensor):
         return frameOrbit
     
     def extractImage(self):
-        self.parse()
-        width = self.frame.getNumberOfSamples()
-        lgth = self.frame.getNumberOfLines()
-        src = gdal.Open(self.tiff.strip(), gdal.GA_ReadOnly)
+        if(len(self._tiffList) != len(self._orbitFileList) and len(self._orbitFileList) > 0):
+            self.logger.error(
+                "Number of orbit files different from number of image files.")
+            raise RuntimeError
+        
+        self.frameList = []
+        for i in range(len(self._tiffList)):
+            appendStr = "_" + str(i)
+            # 如果只有一个文件，不改变输出文件名
+            if(len(self._tiffList) == 1):
+                appendStr = ''
 
-        # Band 1 as real and band 2 as imaginary numbers
-        # Confirmed by Zhang Yunjun
-        band1 = src.GetRasterBand(1)
-        band2 = src.GetRasterBand(2)
-        cJ = np.complex64(1.0j)
+            self.frame = Frame()
+            self.frame.configure()
 
-        fid = open(self.output, 'wb')
-        for ii in range(lgth):
-            # Combine the real and imaginary to make
-            # them in to complex numbers
-            real = band1.ReadAsArray(0,ii,width,1)
-            imag = band2.ReadAsArray(0,ii,width,1)
-            # Data becomes np.complex128 after combining them
-            data = real + (cJ * imag)
-            data.tofile(fid)
+            self._tiff = self._tiffList[i]
+            # 检查是否提供了轨道文件
+            if len(self._orbitFileList) > 0:
+                self._orbitFile = self._orbitFileList[i]
+            else:
+                self._orbitFile = None
+            
+            # 解析元数据并提取图像
+            try:
+                self.parse()
+                outputNow = self.output + appendStr
+                
+                # 提取图像数据
+                width = self.frame.getNumberOfSamples()
+                lgth = self.frame.getNumberOfLines()
+                src = gdal.Open(self._tiff.strip(), gdal.GA_ReadOnly)
 
-        fid.close()
-        real = None
-        imag = None
-        src = None
-        band1 = None
-        band2 = None
+                # Band 1 as real and band 2 as imaginary numbers
+                band1 = src.GetRasterBand(1)
+                band2 = src.GetRasterBand(2)
+                cJ = np.complex64(1.0j)
 
-        ####
-        slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')
-        slcImage.setFilename(self.output)
-        slcImage.setAccessMode('read')
-        slcImage.setWidth(self.frame.getNumberOfSamples())
-        slcImage.setLength(self.frame.getNumberOfLines())
-        slcImage.setXmin(0)
-        slcImage.setXmax(self.frame.getNumberOfSamples())
-        self.frame.setImage(slcImage)
+                fid = open(outputNow, 'wb')
+                for ii in range(lgth):
+                    # Combine the real and imaginary to make
+                    # them in to complex numbers
+                    real = band1.ReadAsArray(0,ii,width,1)
+                    imag = band2.ReadAsArray(0,ii,width,1)
+                    # Data becomes np.complex128 after combining them
+                    data = real + (cJ * imag)
+                    data.tofile(fid)
+
+                fid.close()
+                real = None
+                imag = None
+                src = None
+                band1 = None
+                band2 = None
+
+                # 设置图像属性
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(outputNow)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(self.frame.getNumberOfSamples())
+                slcImage.setLength(self.frame.getNumberOfLines())
+                slcImage.setXmin(0)
+                slcImage.setXmax(self.frame.getNumberOfSamples())
+                self.frame.setImage(slcImage)
+                
+                # 生成辅助文件
+                self.makeFakeAux(outputNow)
+                
+                # 将当前帧添加到帧列表
+                self.frameList.append(self.frame)
+            except IOError as e:
+                self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
+                continue
+        
+        # 如果处理了多个文件，返回帧列表
+        if len(self.frameList) > 1:
+            return tkfunc(self)
+        
+        # 如果只处理了一个文件，返回单个帧
+        return self.frame
 
     def extractDoppler(self):
         '''
@@ -521,3 +571,34 @@ class Lutan1(Sensor):
         self.frame._dopplerVsPixel = dop
 
         return quadratic
+
+    def makeFakeAux(self, outputNow):
+        '''
+        Generate an aux file based on sensing start and prf.
+        '''
+        import math, array
+
+        prf = self.frame.getInstrument().getPulseRepetitionFrequency()
+        senStart = self.frame.getSensingStart()
+        numPulses = self.frame.numberOfLines
+        # the aux files has two entries per line. day of the year and microseconds in the day
+        musec0 = (senStart.hour*3600 + senStart.minute*60 + senStart.second)*10**6 + senStart.microsecond
+        maxMusec = (24*3600)*10**6  # use it to check if we went across a day. very rare
+        day0 = (datetime.datetime(senStart.year,senStart.month,senStart.day) - datetime.datetime(senStart.year,1,1)).days + 1
+        outputArray = array.array('d',[0]*2*numPulses)
+        self.frame.auxFile = outputNow + '.aux'
+        fp = open(self.frame.auxFile,'wb')
+        j = -1
+        for i1 in range(numPulses):
+            j += 1
+            musec = round((j/prf)*10**6) + musec0
+            if musec >= maxMusec:
+                day0 += 1
+                musec0 = musec%maxMusec
+                musec = musec0
+                j = 0
+            outputArray[2*i1] = day0
+            outputArray[2*i1+1] = musec
+
+        outputArray.tofile(fp)
+        fp.close()
