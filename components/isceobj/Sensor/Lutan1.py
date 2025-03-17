@@ -876,31 +876,54 @@ class Lutan1(Sensor):
                 base_dir = os.path.dirname(self.output)
                 base_name = os.path.basename(self.output)
 
-                for i in range(len(self._tiffList)):
+                # 获取当前目录下所有可能的中间文件
+                if base_dir:
+                    existing_files = os.listdir(base_dir)
+                else:
+                    existing_files = os.listdir('.')
+
+                # 构建基本文件名模式用于匹配
+                base_patterns = [
+                    f"{base_name}_slc_",  # reference.slc_
+                    f"{base_name}.slc_",  # reference.slc.
+                    f"{base_name}_",      # reference_
+                    f"{base_name}."       # reference.
+                ]
+
+                # 遍历所有文件，查找匹配的中间文件
+                for existing_file in existing_files:
                     try:
-                        # 尝试所有可能的文件名模式
-                        patterns = [
-                            f"{base_name}_slc_{i}",  # reference.slc_0
-                            f"{base_name}.slc_{i}",   # reference.slc.0
-                            f"{base_name}_{i}",       # reference_0
-                            f"{base_name}.{i}"        # reference.0
-                        ]
-                        
-                        for pattern in patterns:
-                            full_path = os.path.join(base_dir, pattern) if base_dir else pattern
-                            if os.path.exists(full_path):
-                                os.remove(full_path)
-                                self.logger.info(f"Removed temporary file: {full_path}")
-                            
-                            # 清理相关的辅助文件
-                            for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
-                                aux_file = full_path + ext
-                                if os.path.exists(aux_file):
-                                    os.remove(aux_file)
-                                    self.logger.info(f"Removed auxiliary file: {aux_file}")
+                        # 检查文件是否匹配任何模式
+                        for pattern in base_patterns:
+                            if existing_file.startswith(pattern):
+                                # 提取文件名中的数字部分
+                                remaining = existing_file[len(pattern):]
+                                # 检查剩余部分是否以数字开头
+                                if remaining and remaining[0].isdigit():
+                                    # 获取数字部分（可能包含多位数字）
+                                    num = ''
+                                    for c in remaining:
+                                        if c.isdigit():
+                                            num += c
+                                        else:
+                                            break
                                     
+                                    if num:  # 如果找到了数字
+                                        full_path = os.path.join(base_dir, existing_file) if base_dir else existing_file
+                                        if os.path.exists(full_path):
+                                            os.remove(full_path)
+                                            self.logger.info(f"Removed temporary file: {full_path}")
+                                        
+                                        # 清理相关的辅助文件
+                                        base_aux = os.path.splitext(full_path)[0]  # 移除任何扩展名
+                                        for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
+                                            aux_file = base_aux + ext
+                                            if os.path.exists(aux_file):
+                                                os.remove(aux_file)
+                                                self.logger.info(f"Removed auxiliary file: {aux_file}")
+                                                
                     except OSError as e:
-                        self.logger.warning(f"Error removing temporary files for {i}: {str(e)}")
+                        self.logger.warning(f"Error removing file {existing_file}: {str(e)}")
                 
                 # 清理完成后，确保最终文件的辅助文件存在
                 try:
