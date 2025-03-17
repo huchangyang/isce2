@@ -223,18 +223,29 @@ class Lutan1(Sensor):
         self.populateMetadata()
         fid.close()
 
+        # 初始化 orb 变量，确保在所有情况下都有值
+        orb = None
+
         if self._orbitFile:
             # Check if orbit file exists or not
             if os.path.isfile(self._orbitFile) == True:
                 orb = self.extractOrbit()
                 self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
-                pass
+                self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
+                orb = self.extractOrbitFromAnnotation()
+                self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
+                self.frame.orbit.setOrbitSource('Annotation')
         else:
-            warnings.warn("WARNING! No orbit file found. Orbit information from the annotation file is used for processing.")
+            self.logger.warning("No orbit file provided. Using orbit from annotation file.")
             orb = self.extractOrbitFromAnnotation()
             self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
             self.frame.orbit.setOrbitSource('Annotation')
+
+        # 确保 orb 不为 None
+        if orb is None:
+            self.logger.error("Failed to extract orbit information.")
+            raise RuntimeError("Failed to extract orbit information.")
 
         for sv in orb:
             self.frame.orbit.addStateVector(sv)
@@ -855,10 +866,19 @@ class Lutan1(Sensor):
                     self.logger.warning(f"No orbit XML files found in {orbit_dir}")
                     self._orbitFileList = []
             else:
-                # 格式2: <orbitFile>./orbits/file.xml</orbitFile>
-                orbit_element = root.find(".//orbitFile")
+                # 格式2: <orbitFile>./orbits/file.xml</orbitFile> 或 <ORBITFILE>./orbits/file.xml</ORBITFILE>
+                # 尝试不同大小写的轨道文件标签
+                orbit_element = root.find(".//orbitFile") or root.find(".//ORBITFILE")
+                
+                # 也尝试 property 格式的轨道文件
+                if orbit_element is None:
+                    orbit_property = root.find(".//property[@name='orbitFile']/value") or root.find(".//property[@name='ORBITFILE']/value")
+                    if orbit_property is not None:
+                        orbit_element = orbit_property
+                
                 if orbit_element is not None and orbit_element.text:
                     self._orbitFileList = [orbit_element.text]
+                    self.logger.info(f"Using orbit file: {orbit_element.text}")
                 else:
                     self.logger.warning("No ORBIT_DIR or orbitFile element found in XML configuration, proceeding without orbit files")
                     self._orbitFileList = []
