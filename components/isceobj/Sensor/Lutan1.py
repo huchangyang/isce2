@@ -890,14 +890,31 @@ class Lutan1(Sensor):
                     f"{base_name}."       # reference.
                 ]
 
+                # 用于匹配所有可能的扩展名
+                extensions = ["", ".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]
+
                 # 遍历所有文件，查找匹配的中间文件
                 for existing_file in existing_files:
                     try:
-                        # 检查文件是否匹配任何模式
+                        # 首先检查是否是我们要处理的文件类型
+                        is_target_file = False
+                        base_file = existing_file
+                        
+                        # 移除所有已知的扩展名
+                        for ext in extensions:
+                            if base_file.endswith(ext):
+                                base_file = base_file[:-len(ext)]
+                                is_target_file = True
+                                break
+                        
+                        if not is_target_file:
+                            continue
+                            
+                        # 检查剩余的文件名是否匹配任何基本模式
                         for pattern in base_patterns:
-                            if existing_file.startswith(pattern):
+                            if base_file.startswith(pattern):
                                 # 提取文件名中的数字部分
-                                remaining = existing_file[len(pattern):]
+                                remaining = base_file[len(pattern):]
                                 # 检查剩余部分是否以数字开头
                                 if remaining and remaining[0].isdigit():
                                     # 获取数字部分（可能包含多位数字）
@@ -912,15 +929,8 @@ class Lutan1(Sensor):
                                         full_path = os.path.join(base_dir, existing_file) if base_dir else existing_file
                                         if os.path.exists(full_path):
                                             os.remove(full_path)
-                                            self.logger.info(f"Removed temporary file: {full_path}")
-                                        
-                                        # 清理相关的辅助文件
-                                        base_aux = os.path.splitext(full_path)[0]  # 移除任何扩展名
-                                        for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
-                                            aux_file = base_aux + ext
-                                            if os.path.exists(aux_file):
-                                                os.remove(aux_file)
-                                                self.logger.info(f"Removed auxiliary file: {aux_file}")
+                                            self.logger.info(f"Removed file: {full_path}")
+                                        break  # 找到匹配后就不需要继续检查其他模式
                                                 
                     except OSError as e:
                         self.logger.warning(f"Error removing file {existing_file}: {str(e)}")
