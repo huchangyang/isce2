@@ -705,7 +705,45 @@ class Lutan1(Sensor):
         if len(self.frameList) > 1:
             # 为了兼容 tkfunc 函数，临时设置 _imageFileList 属性
             self._imageFileList = self._tiffList
-            result = tkfunc(self)
+            
+            # 特殊处理：如果是 Lutan1 数据，使用自定义的合并方法而不是 Track.py 中的 findOverlapLine
+            # 这是为了避免 EOFError: read() didn't return enough bytes 错误
+            from isceobj.Scene.Track import Track
+            tk = Track()
+            
+            # 添加所有帧到 Track 对象
+            for frame in self.frameList:
+                tk.addFrame(frame)
+                
+            # 创建合并后的帧
+            tk.createInstrument()
+            
+            # 自定义合并方法：直接使用基于时间的合并，跳过 findOverlapLine
+            # 修改 Track.py 中的 reAdjustStartLine 方法
+            original_reAdjustStartLine = tk.reAdjustStartLine
+            
+            def custom_reAdjustStartLine(sortedList, width):
+                """自定义的 reAdjustStartLine 方法，跳过 findOverlapLine"""
+                startLine = [sortedList[0][0]]
+                outputs = [sortedList[0][1]]
+                for i in range(1, len(sortedList)):
+                    startLine.append(sortedList[i][0])
+                    outputs.append(sortedList[i][1])
+                return startLine, outputs
+            
+            # 替换方法
+            tk.reAdjustStartLine = custom_reAdjustStartLine
+            
+            # 继续合并过程
+            tk.createTrack(self.output)
+            tk.createOrbit()
+            
+            # 恢复原始方法
+            tk.reAdjustStartLine = original_reAdjustStartLine
+            
+            # 获取合并后的帧
+            result = tk._frame
+            
             # 使用完后删除临时属性
             delattr(self, '_imageFileList')
             return result
