@@ -638,116 +638,81 @@ class Lutan1(Sensor):
         return filtered_pos, filtered_vel
 
     def createOrbit(self):
-        '''
-        从xml注释中提取轨道信息并进行滤波
-        如果没有精轨数据，使用此方法
-        '''
-        try:
-            fp = open(self._xml, 'r')
-        except IOError as strerr:
-            print("IOError: %s" % strerr)
-    
-        _xml_root = ET.ElementTree(file=fp).getroot()
-        node = _xml_root.find('platform/orbit')
-        countNode = len(list(_xml_root.find('platform/orbit')))
-    
-        frameOrbit = Orbit()
-        frameOrbit.setOrbitSource('Header')
-        margin = datetime.timedelta(minutes=10.0)
-        tstart = self.frame.getSensingStart() - margin
-        tend = self.frame.getSensingStop() + margin
+        """
+        Create orbit from multiple frames.
+        """
+        from isceobj.Orbit.Orbit import Orbit, StateVector
         
-        # 收集所有轨道数据点
-        timestamps = []
-        positions = []
-        velocities = []
+        # 创建新的轨道对象
+        orbit = Orbit()
+        orbit.configure()
         
-        for k in range(1,countNode):
-            timestamp = self.convertToDateTime(node.find('stateVec[{}]/timeUTC'.format(k)).text)
-            if (timestamp >= tstart) and (timestamp <= tend):
-                pos = [float(node.find('stateVec[{}]/posX'.format(k)).text), 
-                      float(node.find('stateVec[{}]/posY'.format(k)).text), 
-                      float(node.find('stateVec[{}]/posZ'.format(k)).text)]
-                vel = [float(node.find('stateVec[{}]/velX'.format(k)).text), 
-                      float(node.find('stateVec[{}]/velY'.format(k)).text), 
-                      float(node.find('stateVec[{}]/velZ'.format(k)).text)]
-                
-                timestamps.append(timestamp)
-                positions.append(pos)
-                velocities.append(vel)
+        # 收集所有帧的轨道状态向量
+        all_vectors = []
+        for frame in self.frameList:
+            if frame.orbit and frame.orbit._stateVectors:
+                all_vectors.extend(frame.orbit._stateVectors)
         
-        fp.close()
-        
-        # 确保至少有4个轨道状态向量
-        if len(timestamps) < 4:
-            self.logger.warning("Less than 4 state vectors found in time range, extending time range")
-            # 扩大时间范围
-            margin = datetime.timedelta(minutes=30.0)
-            tstart = self.frame.getSensingStart() - margin
-            tend = self.frame.getSensingStop() + margin
+        if not all_vectors:
+            self.logger.error("No orbit state vectors found in any frames")
+            raise RuntimeError("No orbit state vectors found in any frames")
             
-            # 重新打开文件并读取更多轨道点
-            try:
-                fp = open(self._xml, 'r')
-                _xml_root = ET.ElementTree(file=fp).getroot()
-                node = _xml_root.find('platform/orbit')
-                
-                timestamps = []
-                positions = []
-                velocities = []
-                
-                for k in range(1,countNode):
-                    timestamp = self.convertToDateTime(node.find('stateVec[{}]/timeUTC'.format(k)).text)
-                    if (timestamp >= tstart) and (timestamp <= tend):
-                        pos = [float(node.find('stateVec[{}]/posX'.format(k)).text), 
-                              float(node.find('stateVec[{}]/posY'.format(k)).text), 
-                              float(node.find('stateVec[{}]/posZ'.format(k)).text)]
-                        vel = [float(node.find('stateVec[{}]/velX'.format(k)).text), 
-                              float(node.find('stateVec[{}]/velY'.format(k)).text), 
-                              float(node.find('stateVec[{}]/velZ'.format(k)).text)]
-                        
-                        timestamps.append(timestamp)
-                        positions.append(pos)
-                        velocities.append(vel)
-                
-                fp.close()
-            except Exception as e:
-                self.logger.error(f"Error reading orbit data with extended time range: {str(e)}")
-                raise RuntimeError("Failed to get enough orbit state vectors")
+        # 按时间排序
+        all_vectors.sort(key=lambda x: x.getTime())
         
-        if len(timestamps) < 4:
-            self.logger.error("Still less than 4 state vectors after extending time range")
-            raise RuntimeError("Failed to get enough orbit state vectors")
+        # 移除重复的状态向量
+        unique_vectors = []
+        prev_time = None
+        for sv in all_vectors:
+            curr_time = sv.getTime()
+            if prev_time is None or curr_time != prev_time:
+                unique_vectors.append(sv)
+                prev_time = curr_time
         
-        # 计算相对时间（秒）
-        time_seconds = [(t - timestamps[0]).total_seconds() for t in timestamps]
-        self.filterMethod = 'weighted'
-        # 根据选择的方法进行滤波
-        if self.filterMethod == 'standard':
-            filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'sliding':
-            filtered_pos, filtered_vel = self.filter_orbit_sliding(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'spline':
-            filtered_pos, filtered_vel = self.filter_orbit_spline(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'combined':
-            filtered_pos, filtered_vel = self.filter_orbit_combined(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'combined_spline':
-            filtered_pos, filtered_vel = self.filter_orbit_combined_spline(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'weighted':
-            filtered_pos, filtered_vel = self.filter_orbit_weighted(timestamps, np.array(positions), np.array(velocities))
-        else:
-            print(f"Warning: Unknown filter method {self.filterMethod}, using standard method")
-            filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
+        # 确保至少有4个状态向量
+        if len(unique_vectors) < 4:
+            self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
+            
+            # 获取第一个和最后一个向量的时间
+            t_start = unique_vectors[0].getTime()
+            t_end = unique_vectors[-1].getTime()
+            
+            # 扩展时间范围
+            margin = datetime.timedelta(minutes=30)
+            t_start_extended = t_start - margin
+            t_end_extended = t_end + margin
+            
+            # 重新收集扩展时间范围内的状态向量
+            extended_vectors = []
+            for frame in self.frameList:
+                if frame.orbit and frame.orbit._stateVectors:
+                    for sv in frame.orbit._stateVectors:
+                        t = sv.getTime()
+                        if t_start_extended <= t <= t_end_extended:
+                            extended_vectors.append(sv)
+            
+            # 重新排序和去重
+            extended_vectors.sort(key=lambda x: x.getTime())
+            unique_vectors = []
+            prev_time = None
+            for sv in extended_vectors:
+                curr_time = sv.getTime()
+                if prev_time is None or curr_time != prev_time:
+                    unique_vectors.append(sv)
+                    prev_time = curr_time
         
-        # 将滤波后的结果转换为轨道状态向量
-        for i, timestamp in enumerate(timestamps):
-            vec = StateVector()
-            vec.setTime(timestamp)
-            vec.setPosition(filtered_pos[i].tolist())
-            vec.setVelocity(filtered_vel[i].tolist())
-            frameOrbit.addStateVector(vec)
+        if len(unique_vectors) < 4:
+            self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
+            raise RuntimeError("Insufficient orbit state vectors for interpolation")
         
-        return frameOrbit
+        # 添加到轨道对象
+        for sv in unique_vectors:
+            orbit.addStateVector(sv)
+        
+        self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
+        self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
+        
+        return orbit
 
     def extractImage(self):
         # 验证用户输入并自动查找文件
@@ -841,8 +806,6 @@ class Lutan1(Sensor):
             # 为了兼容 tkfunc 函数，临时设置 _imageFileList 属性
             self._imageFileList = self._tiffList
             
-            # 特殊处理：如果是 Lutan1 数据，使用自定义的合并方法而不是 Track.py 中的 findOverlapLine
-            # 这是为了避免 EOFError: read() didn't return enough bytes 错误
             from isceobj.Scene.Track import Track
             tk = Track()
             
@@ -875,58 +838,25 @@ class Lutan1(Sensor):
             self.logger.info("Creating track from multiple frames")
             tk.createTrack(self.output)
             
+            # 创建新的轨道对象
             self.logger.info("Creating orbit from multiple frames")
-            tk.createOrbit()
+            try:
+                orbit = self.createOrbit()
+                if orbit and len(orbit._stateVectors) >= 4:
+                    tk._frame.orbit = orbit
+                    self.logger.info(f"Successfully created orbit with {len(orbit._stateVectors)} state vectors")
+                else:
+                    self.logger.error("Failed to create valid orbit")
+                    raise RuntimeError("Failed to create valid orbit")
+            except Exception as e:
+                self.logger.error(f"Error creating orbit: {str(e)}")
+                raise RuntimeError(f"Error creating orbit: {str(e)}")
             
             # 恢复原始方法
             tk.reAdjustStartLine = original_reAdjustStartLine
             
             # 获取合并后的帧
             result = tk._frame
-            
-            # 确保合并后的帧有正确的轨道信息
-            if result.orbit is None or len(result.orbit._stateVectors) == 0:
-                self.logger.warning("Combined frame has no orbit information, copying from first frame")
-                # 创建新的轨道对象
-                orb = Orbit()
-                orb.configure()
-                
-                # 获取所有帧的轨道状态向量
-                all_state_vectors = []
-                for frame in self.frameList:
-                    if frame.orbit and frame.orbit._stateVectors:
-                        all_state_vectors.extend(frame.orbit._stateVectors)
-                
-                if not all_state_vectors:
-                    self.logger.error("No orbit state vectors found in any frame")
-                    raise RuntimeError("No orbit state vectors found in any frame")
-                
-                # 按时间排序
-                all_state_vectors.sort(key=lambda x: x.getTime())
-                
-                # 移除重复的状态向量
-                unique_state_vectors = []
-                prev_time = None
-                for sv in all_state_vectors:
-                    curr_time = sv.getTime()
-                    if prev_time is None or curr_time != prev_time:
-                        unique_state_vectors.append(sv)
-                        prev_time = curr_time
-                
-                # 确保至少有4个状态向量
-                if len(unique_state_vectors) < 4:
-                    self.logger.error("Less than 4 unique state vectors found after combining frames")
-                    raise RuntimeError("Less than 4 unique state vectors found after combining frames")
-                
-                # 添加到新的轨道对象
-                for sv in unique_state_vectors:
-                    orb.addStateVector(sv)
-                
-                # 设置轨道源
-                orb.setOrbitSource('Combined')
-                
-                # 更新帧的轨道
-                result.orbit = orb
             
             # 确保合并后的帧有正确的图像信息
             if result.image is None:
