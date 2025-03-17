@@ -875,39 +875,70 @@ class Lutan1(Sensor):
                 self.logger.info("Cleaning up temporary files")
                 for i in range(len(self._tiffList)):
                     try:
-                        os.remove(self.output + "_" + str(i))
-                        # 清理其他相关文件
-                        os.remove(self.output + "_" + str(i) + ".aux")
-                        # 尝试清理可能存在的其他文件
-                        for ext in [".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
-                            try:
-                                os.remove(self.output + "_" + str(i) + ext)
-                            except OSError:
-                                pass
-                    except OSError:
-                        self.logger.warning(f"Error. Cannot remove temporary file {self.output}_{i}")
+                        # 修改文件名匹配模式
+                        temp_file = self.output + "_" + str(i)  # 旧模式
+                        temp_file_alt = self.output + "." + str(i)  # 新模式，使用点号分隔
+                        
+                        # 尝试两种文件名模式
+                        for base_file in [temp_file, temp_file_alt]:
+                            if os.path.exists(base_file):
+                                os.remove(base_file)
+                                self.logger.info(f"Removed temporary file: {base_file}")
+                            
+                            # 清理其他相关文件
+                            for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
+                                aux_file = base_file + ext
+                                if os.path.exists(aux_file):
+                                    os.remove(aux_file)
+                                    self.logger.info(f"Removed auxiliary file: {aux_file}")
+                                    
+                            # 特殊处理 slc_N 格式的文件
+                            slc_file = f"{self.output}_slc_{i}"
+                            if os.path.exists(slc_file):
+                                os.remove(slc_file)
+                                self.logger.info(f"Removed SLC file: {slc_file}")
+                                
+                            # 清理 slc_N 相关的辅助文件
+                            for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
+                                aux_file = f"{slc_file}{ext}"
+                                if os.path.exists(aux_file):
+                                    os.remove(aux_file)
+                                    self.logger.info(f"Removed auxiliary file: {aux_file}")
+                                    
+                    except OSError as e:
+                        self.logger.warning(f"Error removing temporary files for {i}: {str(e)}")
                 
-                # 清理中间文件后，为最终的 SLC 文件生成辅助文件
-                self.logger.info(f"Generating auxiliary files for combined SLC: {self.output}")
-                
-                # 生成 XML 文件
-                slcImage = self.frame.getImage()
-                if slcImage:
-                    slcImage.renderHdr()
-                    self.logger.info(f"Generated XML file: {self.output}.xml")
-                
-                # 生成 VRT 文件
-                slcImage.renderVRT()
-                self.logger.info(f"Generated VRT file: {self.output}.vrt")
-                
-                # 生成 IQ VRT 文件（如果需要）
+                # 清理完成后，确保最终文件的辅助文件存在
                 try:
-                    import subprocess
-                    cmd = f"gdal_translate -of VRT -ot CFloat32 {self.output}.vrt {self.output}.iq.vrt"
-                    subprocess.run(cmd, shell=True, check=True)
-                    self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
+                    # 确保输出目录存在
+                    output_dir = os.path.dirname(self.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    # 生成最终文件的辅助文件
+                    self.logger.info(f"Generating auxiliary files for combined SLC: {self.output}")
+                    
+                    # 生成 XML 文件
+                    slcImage = self.frame.getImage()
+                    if slcImage:
+                        slcImage.renderHdr()
+                        self.logger.info(f"Generated XML file: {self.output}.xml")
+                    
+                    # 生成 VRT 文件
+                    slcImage.renderVRT()
+                    self.logger.info(f"Generated VRT file: {self.output}.vrt")
+                    
+                    # 生成 IQ VRT 文件
+                    try:
+                        import subprocess
+                        cmd = f"gdal_translate -of VRT -ot CFloat32 {self.output}.vrt {self.output}.iq.vrt"
+                        subprocess.run(cmd, shell=True, check=True)
+                        self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
+                    
                 except Exception as e:
-                    self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
+                    self.logger.warning(f"Error generating auxiliary files: {str(e)}")
             
             # 将合并后的帧设置为当前帧
             self.frame = result
