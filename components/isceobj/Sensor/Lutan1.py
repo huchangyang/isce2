@@ -314,6 +314,11 @@ class Lutan1(Sensor):
         instrument.setRangePixelSize(rangePixelSize)
         instrument.setRangeSamplingRate(rangeSamplingRate)
         instrument.setPulseLength(pulseLength)
+        
+        # 设置 inPhaseValue 和 quadratureValue，参考 ALOS.py
+        # 这些值用于 Track.py 中的 pad_value
+        instrument.setInPhaseValue(63.5)
+        instrument.setQuadratureValue(63.5)
 
         # Frame parameters
         self.frame.setSensingStart(dataStartTime)
