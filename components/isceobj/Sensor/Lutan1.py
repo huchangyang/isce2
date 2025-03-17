@@ -54,6 +54,24 @@ ORBIT_FILE = Component.Parameter('_orbitFileList',
                             type=str,
                             doc = 'List of names of orbit files')
 
+XML_CONFIG = Component.Parameter('_xmlConfig',
+                            public_name ='XML_CONFIG',
+                            default = None,
+                            type=str,
+                            doc = 'XML configuration file with SLC and orbit directories')
+
+SLC_DIR = Component.Parameter('_slcDir',
+                            public_name ='SLC_DIR',
+                            default = None,
+                            type=str,
+                            doc = 'Directory containing SLC TIFF files')
+
+ORBIT_DIR = Component.Parameter('_orbitDir',
+                            public_name ='ORBIT_DIR',
+                            default = None,
+                            type=str,
+                            doc = 'Directory containing orbit files')
+
 
 class Lutan1(Sensor):
 
@@ -62,7 +80,7 @@ class Lutan1(Sensor):
     family = 'l1sm'
     logging_name = 'isce.sensor.Lutan1'
 
-    parameter_list = (TIFF, ORBIT_FILE) + Sensor.parameter_list
+    parameter_list = (TIFF, ORBIT_FILE, XML_CONFIG, SLC_DIR, ORBIT_DIR) + Sensor.parameter_list
 
     def __init__(self, name = ''):
         super(Lutan1,self).__init__(self.__class__.family, name=name)
@@ -75,6 +93,124 @@ class Lutan1(Sensor):
         self._tiff = None
         self._orbitFile = None
         self._xml = None
+
+    def validateUserInputs(self):
+        '''
+        验证用户输入并自动查找文件
+        参考Sentinel1.py中的实现
+        '''
+        # 如果提供了XML配置文件，从中读取
+        if self._xmlConfig:
+            self.loadFromXML()
+            return
+
+        # 如果提供了SLC目录，自动查找TIFF文件
+        if self._slcDir and not self._tiffList:
+            self.logger.info(f"Searching for TIFF files in {self._slcDir}")
+            self._tiffList = sorted(glob.glob(os.path.join(self._slcDir, "*.tiff")))
+            if not self._tiffList:
+                self.logger.warning(f"No TIFF files found in {self._slcDir}")
+                raise Exception(f"No TIFF files found in {self._slcDir}")
+            else:
+                self.logger.info(f"Found {len(self._tiffList)} TIFF files")
+                for i, tiff in enumerate(self._tiffList):
+                    self.logger.info(f"TIFF {i+1}: {tiff}")
+
+        # 如果提供了轨道目录，自动查找轨道文件
+        if self._orbitDir and not self._orbitFileList:
+            self.logger.info(f"Searching for orbit files in {self._orbitDir}")
+            self._orbitFileList = sorted(glob.glob(os.path.join(self._orbitDir, "*.xml")))
+            if not self._orbitFileList:
+                self.logger.warning(f"No orbit files found in {self._orbitDir}")
+                self._orbitFileList = []
+            else:
+                self.logger.info(f"Found {len(self._orbitFileList)} orbit files")
+                for i, orbit in enumerate(self._orbitFileList):
+                    self.logger.info(f"Orbit {i+1}: {orbit}")
+
+        # 检查是否提供了TIFF文件
+        if not self._tiffList:
+            raise Exception("No TIFF files provided. Use TIFF, SLC_DIR or XML_CONFIG parameter.")
+
+        # 如果轨道文件数量与TIFF文件数量不匹配，尝试自动匹配
+        if len(self._orbitFileList) > 0 and len(self._orbitFileList) != len(self._tiffList):
+            self.logger.warning("Number of orbit files does not match number of TIFF files")
+            self.logger.info("Attempting to match orbit files with TIFF files...")
+            
+            # 尝试根据日期匹配轨道文件
+            # 对于同一日期的多景SLC，应该使用同一个轨道文件
+            try:
+                # 提取每个TIFF文件名中的日期信息
+                tiff_dates = []
+                for tiff in self._tiffList:
+                    # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
+                    # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第8个下划线之后）
+                    basename = os.path.basename(tiff)
+                    parts = basename.split('_')
+                    if len(parts) >= 8:
+                        date_str = parts[7]  # 假设日期在第8个位置
+                        if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                            tiff_dates.append(date_str)
+                        else:
+                            tiff_dates.append(None)
+                    else:
+                        tiff_dates.append(None)
+                
+                # 提取每个轨道文件名中的日期信息
+                orbit_dates = []
+                for orbit in self._orbitFileList:
+                    # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
+                    # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第3个下划线之后）
+                    basename = os.path.basename(orbit)
+                    parts = basename.split('_')
+                    if len(parts) >= 4:
+                        date_str = parts[2][1:9]  # 假设日期在第3个位置，格式为VYYYYMMDD...
+                        if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                            orbit_dates.append(date_str)
+                        else:
+                            orbit_dates.append(None)
+                    else:
+                        orbit_dates.append(None)
+                
+                # 为每个TIFF文件匹配对应的轨道文件
+                matched_orbit_files = []
+                for i, tiff_date in enumerate(tiff_dates):
+                    if tiff_date is None:
+                        matched_orbit_files.append(None)
+                        continue
+                    
+                    # 查找日期匹配的轨道文件
+                    matched = False
+                    for j, orbit_date in enumerate(orbit_dates):
+                        if orbit_date is not None and orbit_date == tiff_date:
+                            matched_orbit_files.append(self._orbitFileList[j])
+                            matched = True
+                            break
+                    
+                    if not matched:
+                        matched_orbit_files.append(None)
+                
+                # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
+                if all(orbit is not None for orbit in matched_orbit_files):
+                    self.logger.info("Successfully matched orbit files based on date")
+                    self._orbitFileList = matched_orbit_files
+                else:
+                    # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+                    if len(self._orbitFileList) == 1:
+                        self.logger.info("Using the single orbit file for all TIFF files")
+                        self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
+                    else:
+                        self.logger.warning("Could not match orbit files based on date, proceeding without orbit files")
+                        self._orbitFileList = []
+            except Exception as e:
+                self.logger.warning(f"Error matching orbit files: {str(e)}")
+                # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+                if len(self._orbitFileList) == 1:
+                    self.logger.info("Using the single orbit file for all TIFF files")
+                    self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
+                else:
+                    self.logger.warning("Proceeding without orbit files")
+                    self._orbitFileList = []
 
     def parse(self):
         xmlFileName = self._tiff[:-4] + "meta.xml"
@@ -109,6 +245,10 @@ class Lutan1(Sensor):
 
 
     def grab_from_xml(self, path):
+        '''
+        从XML中获取指定路径的值
+        参考Sentinel1.py中的实现
+        '''
         try:
             res = self._xml_root.find(path).text
         except:
@@ -473,6 +613,15 @@ class Lutan1(Sensor):
         return frameOrbit
     
     def extractImage(self):
+        # 验证用户输入并自动查找文件
+        self.validateUserInputs()
+        
+        # 如果提供了XML配置文件，先从中加载文件列表
+        if self._xmlConfig is not None:
+            if not self.loadFromXML():
+                self.logger.error("Failed to load from XML configuration file")
+                return None
+        
         if(len(self._tiffList) != len(self._orbitFileList) and len(self._orbitFileList) > 0):
             self.logger.error(
                 "Number of orbit files different from number of image files.")
@@ -602,3 +751,164 @@ class Lutan1(Sensor):
 
         outputArray.tofile(fp)
         fp.close()
+
+    def loadFromXML(self):
+        """
+        从XML配置文件中读取SLC和轨道文件路径，并自动检索所有文件
+        支持多种XML格式
+        """
+        if self._xmlConfig is None:
+            self.logger.error("XML configuration file not provided")
+            return False
+            
+        try:
+            # 处理可能的zip文件路径
+            if self._xmlConfig.startswith('/vsizip'):
+                import zipfile
+                parts = self._xmlConfig.split(os.path.sep)
+                if parts[2] == '':
+                    parts[2] = os.path.sep
+                zipname = os.path.join(*(parts[2:-1]))
+                fname = parts[-1]
+                
+                zf = zipfile.ZipFile(zipname, 'r')
+                xmlstr = zf.read(fname)
+                zf.close()
+                root = ET.fromstring(xmlstr)
+            else:
+                tree = ET.parse(self._xmlConfig)
+                root = tree.getroot()
+            
+            # 尝试不同的XML格式
+            # 格式1: <property name="SLC_DIR"><value>./SLC</value></property>
+            slc_dir_element = root.find(".//property[@name='SLC_DIR']/value")
+            if slc_dir_element is not None:
+                slc_dir = slc_dir_element.text
+                # 检索所有TIFF文件
+                self._tiffList = sorted(glob.glob(os.path.join(slc_dir, "*.tiff")))
+                if not self._tiffList:
+                    self.logger.warning(f"No TIFF files found in {slc_dir}")
+            else:
+                # 格式2: <tiff>./SLC/file.tiff</tiff>
+                tiff_element = root.find(".//tiff")
+                if tiff_element is not None:
+                    self._tiffList = [tiff_element.text]
+                else:
+                    self.logger.error("No SLC_DIR or tiff element found in XML configuration")
+                    return False
+                
+            # 获取轨道文件目录（可选）
+            orbit_dir_element = root.find(".//property[@name='ORBIT_DIR']/value")
+            if orbit_dir_element is not None:
+                orbit_dir = orbit_dir_element.text
+                # 检索所有XML轨道文件
+                self._orbitFileList = sorted(glob.glob(os.path.join(orbit_dir, "*.xml")))
+                if not self._orbitFileList:
+                    self.logger.warning(f"No orbit XML files found in {orbit_dir}")
+                    self._orbitFileList = []
+            else:
+                # 格式2: <orbitFile>./orbits/file.xml</orbitFile>
+                orbit_element = root.find(".//orbitFile")
+                if orbit_element is not None and orbit_element.text:
+                    self._orbitFileList = [orbit_element.text]
+                else:
+                    self.logger.warning("No ORBIT_DIR or orbitFile element found in XML configuration, proceeding without orbit files")
+                    self._orbitFileList = []
+                
+            # 获取输出文件名
+            output_element = root.find(".//property[@name='OUTPUT']/value")
+            if output_element is not None:
+                self.output = output_element.text
+            else:
+                # 格式2: <OUTPUT>reference</OUTPUT>
+                output_element = root.find(".//OUTPUT")
+                if output_element is not None:
+                    self.output = output_element.text
+                else:
+                    self.logger.error("OUTPUT not found in XML configuration")
+                    return False
+                
+            # 打印找到的文件信息
+            self.logger.info(f"Found {len(self._tiffList)} TIFF files and {len(self._orbitFileList)} orbit files")
+            for i, tiff in enumerate(self._tiffList):
+                self.logger.info(f"TIFF {i+1}: {tiff}")
+            for i, orbit in enumerate(self._orbitFileList):
+                self.logger.info(f"Orbit {i+1}: {orbit}")
+                
+            # 如果轨道文件数量与TIFF文件数量不匹配，尝试自动匹配
+            if len(self._orbitFileList) > 0 and len(self._orbitFileList) != len(self._tiffList):
+                self.logger.warning("Number of orbit files does not match number of TIFF files")
+                self.logger.info("Attempting to match orbit files with TIFF files...")
+                
+                # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+                if len(self._orbitFileList) == 1:
+                    self.logger.info("Using the single orbit file for all TIFF files")
+                    self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
+                else:
+                    # 尝试根据日期匹配轨道文件
+                    try:
+                        # 提取每个TIFF文件名中的日期信息
+                        tiff_dates = []
+                        for tiff in self._tiffList:
+                            # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
+                            basename = os.path.basename(tiff)
+                            parts = basename.split('_')
+                            if len(parts) >= 8:
+                                date_str = parts[7]  # 假设日期在第8个位置
+                                if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                                    tiff_dates.append(date_str)
+                                else:
+                                    tiff_dates.append(None)
+                            else:
+                                tiff_dates.append(None)
+                        
+                        # 提取每个轨道文件名中的日期信息
+                        orbit_dates = []
+                        for orbit in self._orbitFileList:
+                            # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
+                            basename = os.path.basename(orbit)
+                            parts = basename.split('_')
+                            if len(parts) >= 4:
+                                date_str = parts[2][1:9]  # 假设日期在第3个位置，格式为VYYYYMMDD...
+                                if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                                    orbit_dates.append(date_str)
+                                else:
+                                    orbit_dates.append(None)
+                            else:
+                                orbit_dates.append(None)
+                        
+                        # 为每个TIFF文件匹配对应的轨道文件
+                        matched_orbit_files = []
+                        for i, tiff_date in enumerate(tiff_dates):
+                            if tiff_date is None:
+                                matched_orbit_files.append(None)
+                                continue
+                            
+                            # 查找日期匹配的轨道文件
+                            matched = False
+                            for j, orbit_date in enumerate(orbit_dates):
+                                if orbit_date is not None and orbit_date == tiff_date:
+                                    matched_orbit_files.append(self._orbitFileList[j])
+                                    matched = True
+                                    break
+                            
+                            if not matched:
+                                matched_orbit_files.append(None)
+                        
+                        # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
+                        if all(orbit is not None for orbit in matched_orbit_files):
+                            self.logger.info("Successfully matched orbit files based on date")
+                            self._orbitFileList = matched_orbit_files
+                        else:
+                            self.logger.warning("Could not match all orbit files based on date, proceeding without orbit files")
+                            self._orbitFileList = []
+                    except Exception as e:
+                        self.logger.warning(f"Error matching orbit files: {str(e)}")
+                        self.logger.warning("Proceeding without orbit files")
+                        self._orbitFileList = []
+                
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error loading XML configuration: {str(e)}")
+            return False
