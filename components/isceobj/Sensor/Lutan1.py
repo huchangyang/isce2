@@ -800,7 +800,8 @@ class Lutan1(Sensor):
             # 为了兼容 tkfunc 函数，临时设置 _imageFileList 属性
             self._imageFileList = self._tiffList
             
-            # 特殊处理：如果是 Lutan1 数据，使用自定义的合并方法
+            # 特殊处理：如果是 Lutan1 数据，使用自定义的合并方法而不是 Track.py 中的 findOverlapLine
+            # 这是为了避免 EOFError: read() didn't return enough bytes 错误
             from isceobj.Scene.Track import Track
             tk = Track()
             
@@ -842,26 +843,78 @@ class Lutan1(Sensor):
             # 获取合并后的帧
             result = tk._frame
             
-            # 清理中间文件
-            self.logger.info("Cleaning up temporary files")
-            for i in range(len(self._tiffList)):
+            # 确保合并后的帧有正确的轨道信息
+            if result.orbit is None or len(result.orbit._stateVectors) == 0:
+                self.logger.warning("Combined frame has no orbit information, copying from first frame")
+                result.orbit = self.frameList[0].orbit
+            
+            # 确保合并后的帧有正确的图像信息
+            if result.image is None:
+                self.logger.warning("Combined frame has no image information, creating new image")
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(self.output)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(result.getNumberOfSamples())
+                slcImage.setLength(result.getNumberOfLines())
+                slcImage.setXmin(0)
+                slcImage.setXmax(result.getNumberOfSamples())
+                result.setImage(slcImage)
+            
+            # 确保合并后的帧有正确的辅助文件
+            if not hasattr(result, 'auxFile') or result.auxFile is None:
+                self.logger.warning("Combined frame has no auxFile, setting to output.aux")
+                result.auxFile = self.output + '.aux'
+            
+            # 使用完后删除临时属性
+            delattr(self, '_imageFileList')
+            
+            # 在合并完成后，为最终的 SLC 文件生成辅助文件
+            if len(self._tiffList) > 1:
+                # 清理中间文件
+                self.logger.info("Cleaning up temporary files")
+                for i in range(len(self._tiffList)):
+                    try:
+                        os.remove(self.output + "_" + str(i))
+                        # 清理其他相关文件
+                        os.remove(self.output + "_" + str(i) + ".aux")
+                        # 尝试清理可能存在的其他文件
+                        for ext in [".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
+                            try:
+                                os.remove(self.output + "_" + str(i) + ext)
+                            except OSError:
+                                pass
+                    except OSError:
+                        self.logger.warning(f"Error. Cannot remove temporary file {self.output}_{i}")
+                
+                # 清理中间文件后，为最终的 SLC 文件生成辅助文件
+                self.logger.info(f"Generating auxiliary files for combined SLC: {self.output}")
+                
+                # 生成 XML 文件
+                slcImage = self.frame.getImage()
+                if slcImage:
+                    slcImage.renderHdr()
+                    self.logger.info(f"Generated XML file: {self.output}.xml")
+                
+                # 生成 VRT 文件
+                slcImage.renderVRT()
+                self.logger.info(f"Generated VRT file: {self.output}.vrt")
+                
+                # 生成 IQ VRT 文件（如果需要）
                 try:
-                    temp_file = self.output + "_" + str(i)
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                        self.logger.info(f"Removed temporary file: {temp_file}")
-                    
-                    # 清理其他相关文件
-                    for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
-                        aux_file = temp_file + ext
-                        if os.path.exists(aux_file):
-                            os.remove(aux_file)
-                            self.logger.info(f"Removed auxiliary file: {aux_file}")
-                except OSError as e:
-                    self.logger.warning(f"Error removing temporary files for {i}: {str(e)}")
+                    import subprocess
+                    cmd = f"gdal_translate -of VRT -ot CFloat32 {self.output}.vrt {self.output}.iq.vrt"
+                    subprocess.run(cmd, shell=True, check=True)
+                    self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
+                except Exception as e:
+                    self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
             
             # 将合并后的帧设置为当前帧
             self.frame = result
+            
+            self.logger.info(f"Successfully combined {len(self.frameList)} frames into a single frame")
+            self.logger.info(f"Combined frame: samples={result.getNumberOfSamples()}, lines={result.getNumberOfLines()}")
+            self.logger.info(f"Combined frame time range: {result.getSensingStart()} to {result.getSensingStop()}")
             
             return result
         
