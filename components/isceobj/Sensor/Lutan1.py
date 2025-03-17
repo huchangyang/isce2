@@ -364,35 +364,71 @@ class Lutan1(Sensor):
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
 
+        self.logger.info(f"Extracting orbit for time range: {tstart} to {tend}")
+        self.logger.info(f"Orbit file: {self._orbitFile}")
+
         file_ext = os.path.splitext(self._orbitFile)[1].lower()
 
         if file_ext == '.xml':
             try:
                 fp = open(self._orbitFile, 'r')
             except IOError as strerr:
-                print("IOError: %s" % strerr)
+                self.logger.error(f"IOError: {strerr}")
+                return None
             
             _xml_root = ET.ElementTree(file=fp).getroot()
             node = _xml_root.find('Data_Block/List_of_OSVs')
             
+            if node is None:
+                self.logger.error("Could not find 'Data_Block/List_of_OSVs' in orbit file")
+                fp.close()
+                return None
+            
+            count = 0
+            min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
+            max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
+            
             for child in node:
-                timestamp = self.convertToDateTime(child.find('UTC').text)
-                if (timestamp >= tstart) and (timestamp <= tend):
-                    pos = []
-                    vel = []
-                    for tag in ['VX', 'VY', 'VZ']:
-                        vel.append(float(child.find(tag).text))
+                try:
+                    timestamp_str = child.find('UTC').text
+                    timestamp = self.convertToDateTime(timestamp_str)
+                    
+                    # 更新最小和最大时间
+                    if timestamp < min_time:
+                        min_time = timestamp
+                    if timestamp > max_time:
+                        max_time = timestamp
+                    
+                    if (timestamp >= tstart) and (timestamp <= tend):
+                        pos = []
+                        vel = []
+                        for tag in ['VX', 'VY', 'VZ']:
+                            vel.append(float(child.find(tag).text))
 
-                    for tag in ['X', 'Y', 'Z']:
-                        pos.append(float(child.find(tag).text))
+                        for tag in ['X', 'Y', 'Z']:
+                            pos.append(float(child.find(tag).text))
 
-                    vec = StateVector()
-                    vec.setTime(timestamp)
-                    vec.setPosition(pos)
-                    vec.setVelocity(vel)
-                    orb.addStateVector(vec)
+                        vec = StateVector()
+                        vec.setTime(timestamp)
+                        vec.setPosition(pos)
+                        vec.setVelocity(vel)
+                        orb.addStateVector(vec)
+                        count += 1
+                except Exception as e:
+                    self.logger.warning(f"Error parsing orbit state vector: {e}")
+                    continue
 
             fp.close()
+            
+            self.logger.info(f"Extracted {count} orbit state vectors")
+            self.logger.info(f"Orbit time range: {min_time} to {max_time}")
+            self.logger.info(f"SLC sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
+            
+            if count == 0:
+                self.logger.error("No orbit state vectors found in the specified time range")
+                self.logger.error(f"Orbit file time range: {min_time} to {max_time}")
+                self.logger.error(f"Required time range: {tstart} to {tend}")
+                return None
 
         elif file_ext == '.txt':
             with open(self._orbitFile, 'r') as fid:
@@ -400,31 +436,75 @@ class Lutan1(Sensor):
                     if not line.startswith('#'):
                         break
                 
+                count = 0
+                min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
+                max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
+                
                 for line in fid:
-                    fields = line.split()
-                    if len(fields) >= 13:
-                        year = int(fields[0])
-                        month = int(fields[1])
-                        day = int(fields[2])
-                        hour = int(fields[3])
-                        minute = int(fields[4])
-                        second = float(fields[5])
-                        
-                        int_second = int(second)
-                        microsecond = int((second - int_second) * 1e6)
-                        # Convert to datetime   
-                        timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
-                        
-                        if (timestamp >= tstart) and (timestamp <= tend):
-                            pos = [float(fields[6]), float(fields[7]), float(fields[8])]
-                            vel = [float(fields[9]), float(fields[10]), float(fields[11])]
-                            vec = StateVector()
-                            vec.setTime(timestamp)
-                            vec.setPosition(pos)
-                            vec.setVelocity(vel)
-                            orb.addStateVector(vec)
+                    try:
+                        fields = line.split()
+                        if len(fields) >= 13:
+                            year = int(fields[0])
+                            month = int(fields[1])
+                            day = int(fields[2])
+                            hour = int(fields[3])
+                            minute = int(fields[4])
+                            second = float(fields[5])
+                            
+                            int_second = int(second)
+                            microsecond = int((second - int_second) * 1e6)
+                            # Convert to datetime   
+                            timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
+                            
+                            # 更新最小和最大时间
+                            if timestamp < min_time:
+                                min_time = timestamp
+                            if timestamp > max_time:
+                                max_time = timestamp
+                            
+                            if (timestamp >= tstart) and (timestamp <= tend):
+                                pos = [float(fields[6]), float(fields[7]), float(fields[8])]
+                                vel = [float(fields[9]), float(fields[10]), float(fields[11])]
+                                vec = StateVector()
+                                vec.setTime(timestamp)
+                                vec.setPosition(pos)
+                                vec.setVelocity(vel)
+                                orb.addStateVector(vec)
+                                count += 1
+                    except Exception as e:
+                        self.logger.warning(f"Error parsing orbit state vector: {e}")
+                        continue
+                
+                self.logger.info(f"Extracted {count} orbit state vectors")
+                self.logger.info(f"Orbit time range: {min_time} to {max_time}")
+                self.logger.info(f"SLC sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
+                
+                if count == 0:
+                    self.logger.error("No orbit state vectors found in the specified time range")
+                    self.logger.error(f"Orbit file time range: {min_time} to {max_time}")
+                    self.logger.error(f"Required time range: {tstart} to {tend}")
+                    return None
         else:
-            raise Exception("Unsupported orbit file extension: %s" % file_ext)
+            self.logger.error(f"Unsupported orbit file extension: {file_ext}")
+            return None
+        
+        # 检查轨道状态向量是否足够
+        if len(orb._stateVectors) < 2:
+            self.logger.error("Not enough orbit state vectors for interpolation (minimum 2 required)")
+            return None
+        
+        # 检查轨道时间范围是否覆盖 SLC 时间范围
+        orbit_times = [sv.getTime() for sv in orb._stateVectors]
+        orbit_start = min(orbit_times)
+        orbit_end = max(orbit_times)
+        
+        self.logger.info(f"Final orbit time range: {orbit_start} to {orbit_end}")
+        
+        if self.frame.getSensingStart() < orbit_start or self.frame.getSensingStop() > orbit_end:
+            self.logger.warning("SLC sensing time range is not fully covered by orbit time range")
+            self.logger.warning(f"SLC: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
+            self.logger.warning(f"Orbit: {orbit_start} to {orbit_end}")
+        
         return orb
         
     def filter_orbit(self, times, positions, velocities):
@@ -708,12 +788,15 @@ class Lutan1(Sensor):
                 
                 # 将当前帧添加到帧列表
                 self.frameList.append(self.frame)
+                self.logger.info(f"Processed SLC {i+1}/{len(self._tiffList)}: {self._tiff}")
             except IOError as e:
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
                 continue
         
         # 如果处理了多个文件，返回帧列表
         if len(self.frameList) > 1:
+            self.logger.info(f"Combining {len(self.frameList)} frames into a single frame")
+            
             # 为了兼容 tkfunc 函数，临时设置 _imageFileList 属性
             self._imageFileList = self._tiffList
             
@@ -735,18 +818,23 @@ class Lutan1(Sensor):
             
             def custom_reAdjustStartLine(sortedList, width):
                 """自定义的 reAdjustStartLine 方法，跳过 findOverlapLine"""
+                self.logger.info("Using custom reAdjustStartLine method to avoid EOFError")
                 startLine = [sortedList[0][0]]
                 outputs = [sortedList[0][1]]
                 for i in range(1, len(sortedList)):
                     startLine.append(sortedList[i][0])
                     outputs.append(sortedList[i][1])
+                    self.logger.info(f"Frame {i}: startLine={sortedList[i][0]}, output={sortedList[i][1]}")
                 return startLine, outputs
             
             # 替换方法
             tk.reAdjustStartLine = custom_reAdjustStartLine
             
             # 继续合并过程
+            self.logger.info("Creating track from multiple frames")
             tk.createTrack(self.output)
+            
+            self.logger.info("Creating orbit from multiple frames")
             tk.createOrbit()
             
             # 恢复原始方法
@@ -755,11 +843,58 @@ class Lutan1(Sensor):
             # 获取合并后的帧
             result = tk._frame
             
+            # 确保合并后的帧有正确的轨道信息
+            if result.orbit is None or len(result.orbit._stateVectors) == 0:
+                self.logger.warning("Combined frame has no orbit information, copying from first frame")
+                result.orbit = self.frameList[0].orbit
+            
+            # 确保合并后的帧有正确的图像信息
+            if result.image is None:
+                self.logger.warning("Combined frame has no image information, creating new image")
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(self.output)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(result.getNumberOfSamples())
+                slcImage.setLength(result.getNumberOfLines())
+                slcImage.setXmin(0)
+                slcImage.setXmax(result.getNumberOfSamples())
+                result.setImage(slcImage)
+            
+            # 确保合并后的帧有正确的辅助文件
+            if not hasattr(result, 'auxFile') or result.auxFile is None:
+                self.logger.warning("Combined frame has no auxFile, setting to output.aux")
+                result.auxFile = self.output + '.aux'
+            
             # 使用完后删除临时属性
             delattr(self, '_imageFileList')
+            
+            # 将合并后的帧设置为当前帧
+            self.frame = result
+            
+            self.logger.info(f"Successfully combined {len(self.frameList)} frames into a single frame")
+            self.logger.info(f"Combined frame: samples={result.getNumberOfSamples()}, lines={result.getNumberOfLines()}")
+            self.logger.info(f"Combined frame time range: {result.getSensingStart()} to {result.getSensingStop()}")
+            
+            # 删除临时文件
+            if len(self._tiffList) > 1:
+                self.logger.info("Cleaning up temporary files")
+                for i in range(len(self._tiffList)):
+                    temp_file = self.output + "_" + str(i)
+                    try:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                            self.logger.info(f"Removed temporary file: {temp_file}")
+                        if os.path.exists(temp_file + '.aux'):
+                            os.remove(temp_file + '.aux')
+                            self.logger.info(f"Removed temporary file: {temp_file}.aux")
+                    except OSError as e:
+                        self.logger.warning(f"Error removing temporary file {temp_file}: {str(e)}")
+            
             return result
         
         # 如果只处理了一个文件，返回单个帧
+        self.logger.info("Only one frame processed, returning it directly")
         return self.frame
 
     def extractDoppler(self):
