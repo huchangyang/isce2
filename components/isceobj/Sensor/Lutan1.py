@@ -521,7 +521,7 @@ class Lutan1(Sensor):
             
             vel_coef = np.polyfit(seconds, velocities[:,i], 5)
             filtered_vel[:,i] = np.polyval(vel_coef, seconds)
-            
+        
         return filtered_pos, filtered_vel
 
     def filter_orbit_sliding(self, times, positions, velocities, window_size=20):
@@ -873,34 +873,28 @@ class Lutan1(Sensor):
             if len(self._tiffList) > 1:
                 # 清理中间文件
                 self.logger.info("Cleaning up temporary files")
+                base_dir = os.path.dirname(self.output)
+                base_name = os.path.basename(self.output)
+
                 for i in range(len(self._tiffList)):
                     try:
-                        # 修改文件名匹配模式
-                        temp_file = self.output + "_" + str(i)  # 旧模式
-                        temp_file_alt = self.output + "." + str(i)  # 新模式，使用点号分隔
+                        # 尝试所有可能的文件名模式
+                        patterns = [
+                            f"{base_name}_slc_{i}",  # reference.slc_0
+                            f"{base_name}.slc_{i}",   # reference.slc.0
+                            f"{base_name}_{i}",       # reference_0
+                            f"{base_name}.{i}"        # reference.0
+                        ]
                         
-                        # 尝试两种文件名模式
-                        for base_file in [temp_file, temp_file_alt]:
-                            if os.path.exists(base_file):
-                                os.remove(base_file)
-                                self.logger.info(f"Removed temporary file: {base_file}")
+                        for pattern in patterns:
+                            full_path = os.path.join(base_dir, pattern) if base_dir else pattern
+                            if os.path.exists(full_path):
+                                os.remove(full_path)
+                                self.logger.info(f"Removed temporary file: {full_path}")
                             
-                            # 清理其他相关文件
+                            # 清理相关的辅助文件
                             for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
-                                aux_file = base_file + ext
-                                if os.path.exists(aux_file):
-                                    os.remove(aux_file)
-                                    self.logger.info(f"Removed auxiliary file: {aux_file}")
-                                    
-                            # 特殊处理 slc_N 格式的文件
-                            slc_file = f"{self.output}_slc_{i}"
-                            if os.path.exists(slc_file):
-                                os.remove(slc_file)
-                                self.logger.info(f"Removed SLC file: {slc_file}")
-                                
-                            # 清理 slc_N 相关的辅助文件
-                            for ext in [".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]:
-                                aux_file = f"{slc_file}{ext}"
+                                aux_file = full_path + ext
                                 if os.path.exists(aux_file):
                                     os.remove(aux_file)
                                     self.logger.info(f"Removed auxiliary file: {aux_file}")
@@ -911,9 +905,8 @@ class Lutan1(Sensor):
                 # 清理完成后，确保最终文件的辅助文件存在
                 try:
                     # 确保输出目录存在
-                    output_dir = os.path.dirname(self.output)
-                    if output_dir and not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
+                    if base_dir and not os.path.exists(base_dir):
+                        os.makedirs(base_dir)
                     
                     # 生成最终文件的辅助文件
                     self.logger.info(f"Generating auxiliary files for combined SLC: {self.output}")
@@ -928,14 +921,17 @@ class Lutan1(Sensor):
                     slcImage.renderVRT()
                     self.logger.info(f"Generated VRT file: {self.output}.vrt")
                     
-                    # 生成 IQ VRT 文件
-                    try:
-                        import subprocess
-                        cmd = f"gdal_translate -of VRT -ot CFloat32 {self.output}.vrt {self.output}.iq.vrt"
-                        subprocess.run(cmd, shell=True, check=True)
-                        self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
+                    # 确保 VRT 文件存在后再生成 IQ VRT 文件
+                    if os.path.exists(f"{self.output}.vrt"):
+                        try:
+                            import subprocess
+                            cmd = f"gdal_translate -of VRT -ot CFloat32 {self.output}.vrt {self.output}.iq.vrt"
+                            subprocess.run(cmd, shell=True, check=True)
+                            self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
+                    else:
+                        self.logger.warning(f"VRT file not found: {self.output}.vrt")
                     
                 except Exception as e:
                     self.logger.warning(f"Error generating auxiliary files: {str(e)}")
