@@ -698,7 +698,12 @@ class Lutan1(Sensor):
         
         # 如果处理了多个文件，返回帧列表
         if len(self.frameList) > 1:
-            return tkfunc(self)
+            # 为了兼容 tkfunc 函数，临时设置 _imageFileList 属性
+            self._imageFileList = self._tiffList
+            result = tkfunc(self)
+            # 使用完后删除临时属性
+            delattr(self, '_imageFileList')
+            return result
         
         # 如果只处理了一个文件，返回单个帧
         return self.frame
