@@ -876,7 +876,6 @@ class Lutan1(Sensor):
         self.frameList = []
         for i in range(len(self._tiffList)):
             appendStr = "_" + str(i)
-            # 如果只有一个文件，不改变输出文件名
             if(len(self._tiffList) == 1):
                 appendStr = ''
 
@@ -884,13 +883,11 @@ class Lutan1(Sensor):
             self.frame.configure()
 
             self._tiff = self._tiffList[i]
-            # 检查是否提供了轨道文件
             if len(self._orbitFileList) > 0:
                 self._orbitFile = self._orbitFileList[i]
             else:
                 self._orbitFile = None
             
-            # 解析元数据并提取图像
             try:
                 self.parse()
                 outputNow = self.output + appendStr
@@ -942,9 +939,13 @@ class Lutan1(Sensor):
                 # 生成辅助文件
                 self.makeFakeAux(outputNow)
                 
-                # 将当前帧添加到帧列表
+                # 保存轨道信息到单独的文件
+                orbit_file = outputNow + '.orb'
+                self.saveOrbitToFile(self.frame.orbit, orbit_file)
+                
                 self.frameList.append(self.frame)
                 self.logger.info(f"Processed SLC {i+1}/{len(self._tiffList)}: {self._tiff}")
+                
             except IOError as e:
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
                 continue
@@ -971,36 +972,14 @@ class Lutan1(Sensor):
         
         # 使用 tkfunc 进行合并
         result = tkfunc(self)
-        import pdb; pdb.set_trace()
-        # 确保合并后的帧有正确的图像信息
+        
+        # 如果合并成功,恢复轨道信息
         if result is not None:
-            # 验证合并后的结果
-            if not hasattr(result, 'image'):
-                self.logger.error("Combined frame has no image attribute")
-                return None
-            
-            if result.image is None:
-                self.logger.error("Combined frame's image is None")
-                return None
-            
-            # 验证图像属性
-            if result.getNumberOfLines() <= 0 or result.getNumberOfSamples() <= 0:
-                self.logger.error("Invalid dimensions in combined frame")
-                return None
-            
-            if result.image is None:
-                self.logger.warning("Combined frame has no image information, creating new image")
-                slcImage = isceobj.createSlcImage()
-                slcImage.setByteOrder('l')
-                slcImage.setFilename(self.output)
-                slcImage.setAccessMode('read')
-                slcImage.setWidth(result.getNumberOfSamples())
-                slcImage.setLength(result.getNumberOfLines())
-                slcImage.setXmin(0)
-                slcImage.setXmax(result.getNumberOfSamples())
-                slcImage.setDataType('CFLOAT')
-                slcImage.setImageType('slc')
-                result.setImage(slcImage)
+            # 从第一个帧的轨道文件恢复轨道信息
+            orbit_file = self.output + '_0.orb'
+            if os.path.exists(orbit_file):
+                result.orbit = self.loadOrbitFromFile(orbit_file)
+                self.logger.info("Successfully restored orbit information")
         
         return result
 
@@ -1222,3 +1201,52 @@ class Lutan1(Sensor):
         except Exception as e:
             self.logger.error(f"Error loading XML configuration: {str(e)}")
             return False
+
+    def saveOrbitToFile(self, orbit, filename):
+        """
+        将轨道信息保存到单独的文件中
+        """
+        import pickle
+        state_vectors_data = []
+        for sv in orbit._stateVectors:
+            state_vectors_data.append({
+                'time': sv.time,
+                'position': sv.position,
+                'velocity': sv.velocity
+            })
+        
+        with open(filename, 'wb') as f:
+            pickle.dump({
+                'state_vectors': state_vectors_data,
+                'orbit_quality': orbit._orbitQuality,
+                'orbit_source': orbit._orbitSource,
+                'reference_frame': orbit._referenceFrame
+            }, f)
+
+    def loadOrbitFromFile(self, filename):
+        """
+        从文件中恢复轨道信息
+        """
+        import pickle
+        from isceobj.Orbit.Orbit import Orbit, StateVector
+        
+        with open(filename, 'rb') as f:
+            data = pickle.load(f)
+        
+        orbit = Orbit()
+        orbit.configure()
+        
+        # 恢复轨道属性
+        orbit.setOrbitQuality(data['orbit_quality'])
+        orbit.setOrbitSource(data['orbit_source'])
+        orbit.setReferenceFrame(data['reference_frame'])
+        
+        # 恢复状态向量
+        for sv_data in data['state_vectors']:
+            sv = StateVector()
+            sv.setTime(sv_data['time'])
+            sv.setPosition(sv_data['position'])
+            sv.setVelocity(sv_data['velocity'])
+            orbit.addStateVector(sv)
+        
+        return orbit
