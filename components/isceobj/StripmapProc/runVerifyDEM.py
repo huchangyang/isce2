@@ -107,7 +107,7 @@ def runVerifyDEM(self):
             raise Exception('Unknown reference system for DEM: {0}'.format(demimg.reference))
 
     else:
-        import pdb; pdb.set_trace()
+        
         reference = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
         secondary  = self._insar.loadProduct(self._insar.secondarySlcCropProduct)
 
