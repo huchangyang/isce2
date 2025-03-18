@@ -822,7 +822,10 @@ class Lutan1(Sensor):
                 prev_frame = self.frameList[i-1]
                 if frame.getSensingStart() < prev_frame.getSensingStop():
                     self.logger.warning(f"Frame {i} starts before previous frame ends")
-                
+        
+        # 在调用 tkfunc 之前设置 _imageFileList
+        self._imageFileList = self._tiffList
+        
         # 使用 tkfunc 进行合并
         result = tkfunc(self)
         
