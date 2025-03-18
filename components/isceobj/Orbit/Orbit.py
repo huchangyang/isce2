@@ -338,29 +338,19 @@ class Orbit(Component):
             import sys
             sys.exit(0)
 
-        vtime = vec.getTime()
-        self.logger.info(f"Adding state vector with time {vtime}")
-        self.logger.info(f"Current number of state vectors: {len(self._stateVectors)}")
-        
+        vtime  = vec.getTime()
         if vtime > self.maxTime:
             self._stateVectors.append(vec)
-            self.logger.info("Appending state vector at the end")
         else:
             for ind, sv in enumerate(self._stateVectors):
                 if sv.time > vtime:
                     break
+
             self._stateVectors.insert(ind, vec)
-            self.logger.info(f"Inserting state vector at index {ind}")
 
         # Reset the minimum and maximum time bounds if necessary
-        if vec.time < self.minTime: 
-            self.minTime = vec._time
-            self.logger.info(f"Updated minTime to {self.minTime}")
-        if vec.time > self.maxTime: 
-            self.maxTime = vec._time
-            self.logger.info(f"Updated maxTime to {self.maxTime}")
-        
-        self.logger.info(f"After adding state vector, total number of state vectors: {len(self._stateVectors)}")
+        if vec.time < self.minTime: self.minTime = vec._time
+        if vec.time > self.maxTime: self.maxTime = vec._time
 
     def __next__(self):
         if self._last < len(self):
