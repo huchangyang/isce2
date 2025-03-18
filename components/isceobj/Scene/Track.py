@@ -324,42 +324,43 @@ class Track(object):
             self.logger.info(f"Frame {idx}: Lines={frame.getNumberOfLines()}, Samples={frame.getNumberOfSamples()}")
             self.logger.info(f"Frame {idx}: Start time={frame.getSensingStart()}, Stop time={frame.getSensingStop()}")
             
-        # 计算并输出时间差和行数
-        for idx, frame in enumerate(self._frames):
-            timeDiff = DTU.timeDeltaToSeconds(frame.getSensingStart()-self._startTime)
-            startLine = int(round(timeDiff*prf))
-            self.logger.info(f"Frame {idx}: Time diff={timeDiff} seconds, PRF={prf}, Start line={startLine}")
-        
-        for idx, sl in enumerate(startLines):
-            self.logger.info(f"Sorted frame {idx}: Start line={sl}")
-            
-        # 计算使用旧方法的总行数供比较
-        fileSize = os.path.getsize(outputs[-1])
-        oldNumLines = fileSize//totalWidth + startLines[-1]
-        self.logger.info(f"Last file size: {fileSize}, Total width: {totalWidth}, Last start line: {startLines[-1]}")
-        self.logger.info(f"Old calculation: {fileSize//totalWidth} + {startLines[-1]} = {oldNumLines}")
-        
-        # 计算考虑重叠的总行数
+        # 计算更准确的总行数 - 基于帧的合并逻辑
+        # 使用排序后的startLines
+        totalLines = 0
         if len(self._frames) == 1:
+            # 单帧情况
             totalLines = self._frames[0].getNumberOfLines()
         else:
-            # 使用排序后的startLines和每个帧的行数计算总行数
-            totalLines = startLines[-1]  # 最后一个帧的起始行
-            lastFrameLines = self._frames[-1].getNumberOfLines()
-            totalLines += lastFrameLines  # 加上最后一个帧的行数
+            # 多帧情况 - 确保每一帧都被正确计算
+            # 最后一帧的起始行加上最后一帧的行数
+            totalLines = startLines[-1] + self._frames[-1].getNumberOfLines()
             
-        self.logger.info(f"New calculation (considering overlap): {totalLines}")
-        
-        # 检查计算出的行数是否合理
-        sumLines = sum(frame.getNumberOfLines() for frame in self._frames)
-        self.logger.info(f"Sum of all frame lines (without overlap consideration): {sumLines}")
-        
-        if totalLines > 2 * sumLines:
-            self.logger.warning(f"Calculated total lines ({totalLines}) seems too large compared to sum of frame lines ({sumLines})")
-            # 在异常情况下，采用更保守的计算方法
-            totalLines = startLines[-1] + min(lastFrameLines, self._frames[-2].getNumberOfLines())
-            self.logger.info(f"Using more conservative estimate: {totalLines}")
-            
+            # 检查计算的合理性
+            sumFrameLines = sum(frame.getNumberOfLines() for frame in self._frames)
+            # 如果计算的总行数与帧行数总和相差太大，使用更保守的估计
+            if totalLines > 1.5 * sumFrameLines:
+                self.logger.warning(f"计算的总行数 ({totalLines}) 远大于帧行数总和 ({sumFrameLines})，可能不准确")
+                self.logger.warning("使用更保守的行数估计")
+                
+                # 使用修正的估计 - 根据实际情况调整
+                if len(startLines) >= 2:
+                    # 估计重叠 - 基于前两帧的起始行差异
+                    overlap_estimate = self._frames[0].getNumberOfLines() - (startLines[1] - startLines[0])
+                    self.logger.info(f"估计的帧间重叠: {overlap_estimate} 行")
+                    
+                    # 计算总行数 - 考虑重叠
+                    totalLines = startLines[-1] + self._frames[-1].getNumberOfLines()
+                    # 确保总行数不超过合理值
+                    max_reasonable = sumFrameLines + (len(self._frames) - 1) * 100  # 允许少量额外行
+                    if totalLines > max_reasonable:
+                        totalLines = max_reasonable
+                        self.logger.info(f"总行数已调整为更合理的值: {totalLines}")
+                else:
+                    # 保守估计
+                    totalLines = sumFrameLines
+                    self.logger.info(f"使用保守估计的总行数: {totalLines}")
+                    
+        self.logger.info(f"最终计算的总行数: {totalLines}")
         totalLines_c = c_int(totalLines)
         # Next, call frame_concatenate
         width_c = c_int(totalWidth) # Width of each frame (with the padding added in swst_resample)

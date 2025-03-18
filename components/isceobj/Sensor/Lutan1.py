@@ -1003,8 +1003,32 @@ class Lutan1(Sensor):
                     if os.path.exists(f"{self.output}.vrt"):
                         try:
                             import subprocess
-                            cmd = f"gdal_translate -of VRT -ot CFloat32 -outsize {slcImage.getWidth()} {slcImage.getLength()} {self.output}.vrt {self.output}.iq.vrt"
-                            subprocess.run(cmd, shell=True, check=True)
+                            
+                            # 计算实际SLC文件的行数 (比使用可能不准确的元数据更安全)
+                            import os
+                            slc_file = self.output
+                            file_size = os.path.getsize(slc_file)
+                            width = slcImage.getWidth()
+                            # 对于复数数据，每个像素占8字节
+                            pixels_per_byte = 8
+                            calculated_lines = file_size // (width * pixels_per_byte)
+                            
+                            # 如果元数据中的行数与计算的行数不一致，使用更保守的估计
+                            declared_lines = slcImage.getLength()
+                            if calculated_lines < declared_lines:
+                                self.logger.warning(f"文件大小检查: 元数据行数 ({declared_lines}) 大于实际估计行数 ({calculated_lines})")
+                                self.logger.warning(f"使用基于文件大小的行数: {calculated_lines}")
+                                slcImage.setLength(calculated_lines)
+                                
+                                # 更新VRT文件以反映实际大小
+                                slcImage.renderVRT()
+                                self.logger.info(f"更新了VRT文件使用实际估计的行数: {calculated_lines}")
+                            
+                            # 使用正确的尺寸生成IQ VRT文件
+                            cmd = ["gdal_translate", "-of", "VRT", "-ot", "CFloat32", 
+                                   "-outsize", str(slcImage.getWidth()), str(slcImage.getLength()),
+                                   f"{self.output}.vrt", f"{self.output}.iq.vrt"]
+                            subprocess.run(cmd, check=True)
                             self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
                         except Exception as e:
                             self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
