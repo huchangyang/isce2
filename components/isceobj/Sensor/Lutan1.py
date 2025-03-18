@@ -788,6 +788,8 @@ class Lutan1(Sensor):
                 slcImage.setLength(self.frame.getNumberOfLines())
                 slcImage.setXmin(0)
                 slcImage.setXmax(self.frame.getNumberOfSamples())
+                slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
+                slcImage.setImageType('slc')    # 明确设置为SLC类型
                 self.frame.setImage(slcImage)
 
                 # 使用ISCE标准方法生成头文件和VRT文件
@@ -804,225 +806,60 @@ class Lutan1(Sensor):
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
                 continue
         
-        # 如果处理了多个文件，返回帧列表
-        if len(self.frameList) > 1:
-            self.logger.info(f"Combining {len(self.frameList)} frames into a single frame")
-            
-            # 为了兼容 tkfunc 函数，临时设置 _imageFileList 属性
-            self._imageFileList = self._tiffList
-            
-            from isceobj.Scene.Track import Track
-            tk = Track()
-            
-            # 添加所有帧到 Track 对象
-            for frame in self.frameList:
-                tk.addFrame(frame)
-                
-            # 创建合并后的帧
-            tk.createInstrument()
-            
-            # 自定义合并方法：直接使用基于时间的合并，跳过 findOverlapLine
-            # 修改 Track.py 中的 reAdjustStartLine 方法
-            original_reAdjustStartLine = tk.reAdjustStartLine
-            
-            def custom_reAdjustStartLine(sortedList, width):
-                """自定义的 reAdjustStartLine 方法，跳过 findOverlapLine"""
-                self.logger.info("Using custom reAdjustStartLine method to avoid EOFError")
-                startLine = [sortedList[0][0]]
-                outputs = [sortedList[0][1]]
-                for i in range(1, len(sortedList)):
-                    startLine.append(sortedList[i][0])
-                    outputs.append(sortedList[i][1])
-                    self.logger.info(f"Frame {i}: startLine={sortedList[i][0]}, output={sortedList[i][1]}")
-                return startLine, outputs
-            
-            # 替换方法
-            tk.reAdjustStartLine = custom_reAdjustStartLine
-            
-            # 继续合并过程
-            self.logger.info("Creating track from multiple frames")
-            tk.createTrack(self.output)
-            
-            # 创建新的轨道对象
-            self.logger.info("Creating orbit from multiple frames")
-            try:
-                orbit = self.createOrbit()
-                if orbit and len(orbit._stateVectors) >= 4:
-                    tk._frame.orbit = orbit
-                    self.logger.info(f"Successfully created orbit with {len(orbit._stateVectors)} state vectors")
-                else:
-                    self.logger.error("Failed to create valid orbit")
-                    raise RuntimeError("Failed to create valid orbit")
-            except Exception as e:
-                self.logger.error(f"Error creating orbit: {str(e)}")
-                raise RuntimeError(f"Error creating orbit: {str(e)}")
-            
-            # 恢复原始方法
-            tk.reAdjustStartLine = original_reAdjustStartLine
-            
-            # 获取合并后的帧
-            result = tk._frame
-            
-            # 将合并后的帧设置为当前帧
-            self.frame = result
-            
-            # 确保合并后的帧有正确的图像信息
-            if result.image is None:
-                self.logger.warning("Combined frame has no image information, creating new image")
+        # 使用 tkfunc 进行合并，与 ALOS.py 保持一致
+        from isceobj.Sensor import tkfunc
+        result = tkfunc(self)
+        
+        # 确保合并后的帧有正确的图像信息
+        if result.image is None:
+            self.logger.warning("Combined frame has no image information, creating new image")
+            slcImage = isceobj.createSlcImage()
+            slcImage.setByteOrder('l')
+            slcImage.setFilename(self.output)
+            slcImage.setAccessMode('read')
+            slcImage.setWidth(result.getNumberOfSamples())
+            slcImage.setLength(result.getNumberOfLines())
+            slcImage.setXmin(0)
+            slcImage.setXmax(result.getNumberOfSamples())
+            slcImage.setDataType('CFLOAT')
+            slcImage.setImageType('slc')
+            result.setImage(slcImage)
+        else:
+            # 如果已有图像对象，确保它是SlcImage类型
+            if not isinstance(result.image, SlcImage):
+                self.logger.warning("Converting RawImage to SlcImage")
+                oldImage = result.image
                 slcImage = isceobj.createSlcImage()
                 slcImage.setByteOrder('l')
-                slcImage.setFilename(self.output)
+                slcImage.setFilename(oldImage.filename)
                 slcImage.setAccessMode('read')
-                slcImage.setWidth(result.getNumberOfSamples())
-                slcImage.setLength(result.getNumberOfLines())
+                slcImage.setWidth(oldImage.width)
+                slcImage.setLength(oldImage.length)
                 slcImage.setXmin(0)
-                slcImage.setXmax(result.getNumberOfSamples())
-                slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
-                slcImage.setImageType('slc')    # 明确设置为SLC类型
+                slcImage.setXmax(oldImage.width)
+                slcImage.setDataType('CFLOAT')
+                slcImage.setImageType('slc')
                 result.setImage(slcImage)
-            else:
-                # 如果已有图像对象，确保它是SlcImage类型
-                if not isinstance(result.image, SlcImage):
-                    self.logger.warning("Converting RawImage to SlcImage")
-                    oldImage = result.image
-                    slcImage = isceobj.createSlcImage()
-                    slcImage.setByteOrder('l')
-                    slcImage.setFilename(oldImage.filename)
-                    slcImage.setAccessMode('read')
-                    slcImage.setWidth(oldImage.width)
-                    slcImage.setLength(oldImage.length)
-                    slcImage.setXmin(0)
-                    slcImage.setXmax(oldImage.width)
-                    slcImage.setDataType('CFLOAT')
-                    slcImage.setImageType('slc')
-                    result.setImage(slcImage)
-                
-                # 确保图像属性正确
-                result.image.setDataType('CFLOAT')
-                result.image.setImageType('slc')
-                result.image.setLength(result.getNumberOfLines())
-
-                # 使用ISCE标准方法生成头文件和VRT文件
-                result.image.renderHdr()
-                result.image.renderVRT()
-
-                # 确保合并后的帧有正确的辅助文件
-                if not hasattr(result, 'auxFile') or result.auxFile is None:
-                    self.logger.warning("Combined frame has no auxFile, setting to output.aux")
-                    result.auxFile = self.output + '.aux'
             
-            # 使用完后删除临时属性
-            delattr(self, '_imageFileList')
-            
-            # 在合并完成后，为最终的 SLC 文件生成辅助文件
-            if len(self._tiffList) > 1:
-                # 清理中间文件
-                self.logger.info("Cleaning up temporary files")
-                base_dir = os.path.dirname(self.output)
-                base_name = os.path.basename(self.output)
+            # 确保图像属性正确
+            result.image.setDataType('CFLOAT')
+            result.image.setImageType('slc')
+            result.image.setLength(result.getNumberOfLines())
 
-                # 获取当前目录下所有可能的中间文件
-                if base_dir:
-                    existing_files = os.listdir(base_dir)
-                else:
-                    existing_files = os.listdir('.')
+            # 使用ISCE标准方法生成头文件和VRT文件
+            result.image.renderHdr()
+            result.image.renderVRT()
 
-                # 构建基本文件名模式用于匹配
-                base_patterns = [
-                    f"{base_name}_slc_",  # reference.slc_
-                    f"{base_name}.slc_",  # reference.slc.
-                    f"{base_name}_",      # reference_
-                    f"{base_name}."       # reference.
-                ]
-
-                # 用于匹配所有可能的扩展名
-                extensions = ["", ".aux", ".xml", ".vrt", ".iq.vrt", ".iq.xml"]
-
-                # 遍历所有文件，查找匹配的中间文件
-                for existing_file in existing_files:
-                    try:
-                        # 首先检查是否是我们要处理的文件类型
-                        is_target_file = False
-                        base_file = existing_file
-                        
-                        # 移除所有已知的扩展名
-                        for ext in extensions:
-                            if base_file.endswith(ext):
-                                base_file = base_file[:-len(ext)]
-                                is_target_file = True
-                                break
-                        
-                        if not is_target_file:
-                            continue
-                            
-                        # 检查剩余的文件名是否匹配任何基本模式
-                        for pattern in base_patterns:
-                            if base_file.startswith(pattern):
-                                # 提取文件名中的数字部分
-                                remaining = base_file[len(pattern):]
-                                # 检查剩余部分是否以数字开头
-                                if remaining and remaining[0].isdigit():
-                                    # 获取数字部分（可能包含多位数字）
-                                    num = ''
-                                    for c in remaining:
-                                        if c.isdigit():
-                                            num += c
-                                        else:
-                                            break
-                                    
-                                    if num:  # 如果找到了数字
-                                        full_path = os.path.join(base_dir, existing_file) if base_dir else existing_file
-                                        if os.path.exists(full_path):
-                                            os.remove(full_path)
-                                            self.logger.info(f"Removed file: {full_path}")
-                                        break  # 找到匹配后就不需要继续检查其他模式
-                                                
-                    except OSError as e:
-                        self.logger.warning(f"Error removing file {existing_file}: {str(e)}")
-                
-                # 清理完成后，确保最终文件的辅助文件存在
-                try:
-                    # 确保输出目录存在
-                    if base_dir and not os.path.exists(base_dir):
-                        os.makedirs(base_dir)
-                    
-                    # 生成最终文件的辅助文件
-                    self.logger.info(f"Generating auxiliary files for combined SLC: {self.output}")
-                    
-                    # 生成 XML 文件
-                    slcImage = self.frame.getImage()
-                    if slcImage:
-                        slcImage.renderHdr()
-                        self.logger.info(f"Generated XML file: {self.output}.xml")
-                    
-                    # 生成 VRT 文件
-                    slcImage.renderVRT()
-                    self.logger.info(f"Generated VRT file: {self.output}.vrt")
-                    
-                    # 确保 VRT 文件存在后再生成 IQ VRT 文件
-                    if os.path.exists(f"{self.output}.vrt"):
-                        try:
-                            import subprocess
-                            cmd = f"gdal_translate -of VRT -ot CFloat32 -outsize {slcImage.getWidth()} {slcImage.getLength()} {self.output}.vrt {self.output}.iq.vrt"
-                            subprocess.run(cmd, shell=True, check=True)
-                            self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
-                        except Exception as e:
-                            self.logger.warning(f"Failed to generate IQ VRT file: {str(e)}")
-                    else:
-                        self.logger.warning(f"VRT file not found: {self.output}.vrt")
-                    
-                except Exception as e:
-                    self.logger.warning(f"Error generating auxiliary files: {str(e)}")
-            
-            self.logger.info(f"Successfully combined {len(self.frameList)} frames into a single frame")
-            self.logger.info(f"Combined frame: samples={result.getNumberOfSamples()}, lines={result.getNumberOfLines()}")
-            self.logger.info(f"Combined frame time range: {result.getSensingStart()} to {result.getSensingStop()}")
-            
-            return result
+        # 确保合并后的帧有正确的辅助文件
+        if not hasattr(result, 'auxFile') or result.auxFile is None:
+            self.logger.warning("Combined frame has no auxFile, setting to output.aux")
+            result.auxFile = self.output + '.aux'
         
-        # 如果只处理了一个文件，返回单个帧
-        self.logger.info("Only one frame processed, returning it directly")
-        return self.frame
+        self.logger.info(f"Successfully combined {len(self.frameList)} frames into a single frame")
+        self.logger.info(f"Combined frame: samples={result.getNumberOfSamples()}, lines={result.getNumberOfLines()}")
+        self.logger.info(f"Combined frame time range: {result.getSensingStart()} to {result.getSensingStop()}")
+        
+        return result
 
     def extractDoppler(self):
         '''
