@@ -317,11 +317,49 @@ class Track(object):
 
 
         self.logger.info("Concatenating Frames along Track")
-        # Calculate total number of lines correctly
-        totalLines = 0
-        for frame in self._frames:
-            totalLines += frame.getNumberOfLines()
         
+        # 添加调试信息
+        self.logger.info("Debug information for frame merging:")
+        for idx, frame in enumerate(self._frames):
+            self.logger.info(f"Frame {idx}: Lines={frame.getNumberOfLines()}, Samples={frame.getNumberOfSamples()}")
+            self.logger.info(f"Frame {idx}: Start time={frame.getSensingStart()}, Stop time={frame.getSensingStop()}")
+            
+        # 计算并输出时间差和行数
+        for idx, frame in enumerate(self._frames):
+            timeDiff = DTU.timeDeltaToSeconds(frame.getSensingStart()-self._startTime)
+            startLine = int(round(timeDiff*prf))
+            self.logger.info(f"Frame {idx}: Time diff={timeDiff} seconds, PRF={prf}, Start line={startLine}")
+        
+        for idx, sl in enumerate(startLines):
+            self.logger.info(f"Sorted frame {idx}: Start line={sl}")
+            
+        # 计算使用旧方法的总行数供比较
+        fileSize = os.path.getsize(outputs[-1])
+        oldNumLines = fileSize//totalWidth + startLines[-1]
+        self.logger.info(f"Last file size: {fileSize}, Total width: {totalWidth}, Last start line: {startLines[-1]}")
+        self.logger.info(f"Old calculation: {fileSize//totalWidth} + {startLines[-1]} = {oldNumLines}")
+        
+        # 计算考虑重叠的总行数
+        if len(self._frames) == 1:
+            totalLines = self._frames[0].getNumberOfLines()
+        else:
+            # 使用排序后的startLines和每个帧的行数计算总行数
+            totalLines = startLines[-1]  # 最后一个帧的起始行
+            lastFrameLines = self._frames[-1].getNumberOfLines()
+            totalLines += lastFrameLines  # 加上最后一个帧的行数
+            
+        self.logger.info(f"New calculation (considering overlap): {totalLines}")
+        
+        # 检查计算出的行数是否合理
+        sumLines = sum(frame.getNumberOfLines() for frame in self._frames)
+        self.logger.info(f"Sum of all frame lines (without overlap consideration): {sumLines}")
+        
+        if totalLines > 2 * sumLines:
+            self.logger.warning(f"Calculated total lines ({totalLines}) seems too large compared to sum of frame lines ({sumLines})")
+            # 在异常情况下，采用更保守的计算方法
+            totalLines = startLines[-1] + min(lastFrameLines, self._frames[-2].getNumberOfLines())
+            self.logger.info(f"Using more conservative estimate: {totalLines}")
+            
         totalLines_c = c_int(totalLines)
         # Next, call frame_concatenate
         width_c = c_int(totalWidth) # Width of each frame (with the padding added in swst_resample)
