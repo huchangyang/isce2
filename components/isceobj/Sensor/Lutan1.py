@@ -789,7 +789,11 @@ class Lutan1(Sensor):
                 slcImage.setXmin(0)
                 slcImage.setXmax(self.frame.getNumberOfSamples())
                 self.frame.setImage(slcImage)
-                
+
+                # 使用ISCE标准方法生成头文件和VRT文件
+                slcImage.renderHdr()
+                slcImage.renderVRT()
+
                 # 生成辅助文件
                 self.makeFakeAux(outputNow)
                 
@@ -897,11 +901,15 @@ class Lutan1(Sensor):
                 result.image.setDataType('CFLOAT')
                 result.image.setImageType('slc')
                 result.image.setLength(result.getNumberOfLines())
-            
-            # 确保合并后的帧有正确的辅助文件
-            if not hasattr(result, 'auxFile') or result.auxFile is None:
-                self.logger.warning("Combined frame has no auxFile, setting to output.aux")
-                result.auxFile = self.output + '.aux'
+
+                # 使用ISCE标准方法生成头文件和VRT文件
+                result.image.renderHdr()
+                result.image.renderVRT()
+
+                # 确保合并后的帧有正确的辅助文件
+                if not hasattr(result, 'auxFile') or result.auxFile is None:
+                    self.logger.warning("Combined frame has no auxFile, setting to output.aux")
+                    result.auxFile = self.output + '.aux'
             
             # 使用完后删除临时属性
             delattr(self, '_imageFileList')
