@@ -874,11 +874,14 @@ class Lutan1(Sensor):
                 slcImage.setXmax(result.getNumberOfSamples())
                 slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
                 slcImage.setImageType('slc')    # 明确设置为SLC类型
+                slcImage.setFamily('slcimage')  # 明确设置为SLC图像族
                 result.setImage(slcImage)
             else:
                 # 即使已有图像对象,也确保其属性正确
                 result.image.setDataType('CFLOAT')
                 result.image.setImageType('slc')
+                result.image.setFamily('slcimage')
+                result.image.setLength(result.getNumberOfLines())  # 确保长度正确
                 if hasattr(result.image, 'number_good_bytes'):
                     delattr(result.image, 'number_good_bytes')
             
