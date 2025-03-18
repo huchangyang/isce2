@@ -806,65 +806,55 @@ class Lutan1(Sensor):
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
                 continue
         
-        # 使用 tkfunc 进行合并，与 ALOS.py 保持一致
-        from isceobj.Sensor import tkfunc
-        
-        # 为了兼容 tkfunc，临时设置 _imageFileList 属性
-        self._imageFileList = self._tiffList
-        
+        # 添加验证
+        for i, frame in enumerate(self.frameList):
+            if frame.image is None:
+                self.logger.error(f"Frame {i} has no image information")
+                return None
+            
+            # 验证图像属性
+            if not hasattr(frame, 'numberOfLines') or not hasattr(frame, 'numberOfSamples'):
+                self.logger.error(f"Frame {i} is missing required attributes")
+                return None
+            
+            # 验证时间连续性
+            if i > 0:
+                prev_frame = self.frameList[i-1]
+                if frame.getSensingStart() < prev_frame.getSensingStop():
+                    self.logger.warning(f"Frame {i} starts before previous frame ends")
+                
+        # 使用 tkfunc 进行合并
         result = tkfunc(self)
         
-        # 使用完后删除临时属性
-        delattr(self, '_imageFileList')
-        
         # 确保合并后的帧有正确的图像信息
-        if result.image is None:
-            self.logger.warning("Combined frame has no image information, creating new image")
-            slcImage = isceobj.createSlcImage()
-            slcImage.setByteOrder('l')
-            slcImage.setFilename(self.output)
-            slcImage.setAccessMode('read')
-            slcImage.setWidth(result.getNumberOfSamples())
-            slcImage.setLength(result.getNumberOfLines())
-            slcImage.setXmin(0)
-            slcImage.setXmax(result.getNumberOfSamples())
-            slcImage.setDataType('CFLOAT')
-            slcImage.setImageType('slc')
-            result.setImage(slcImage)
-        else:
-            # 如果已有图像对象，确保它是SlcImage类型
-            if not isinstance(result.image, SlcImage):
-                self.logger.warning("Converting RawImage to SlcImage")
-                oldImage = result.image
+        if result is not None:
+            # 验证合并后的结果
+            if not hasattr(result, 'image'):
+                self.logger.error("Combined frame has no image attribute")
+                return None
+            
+            if result.image is None:
+                self.logger.error("Combined frame's image is None")
+                return None
+            
+            # 验证图像属性
+            if result.getNumberOfLines() <= 0 or result.getNumberOfSamples() <= 0:
+                self.logger.error("Invalid dimensions in combined frame")
+                return None
+            
+            if result.image is None:
+                self.logger.warning("Combined frame has no image information, creating new image")
                 slcImage = isceobj.createSlcImage()
                 slcImage.setByteOrder('l')
-                slcImage.setFilename(oldImage.filename)
+                slcImage.setFilename(self.output)
                 slcImage.setAccessMode('read')
-                slcImage.setWidth(oldImage.width)
-                slcImage.setLength(oldImage.length)
+                slcImage.setWidth(result.getNumberOfSamples())
+                slcImage.setLength(result.getNumberOfLines())
                 slcImage.setXmin(0)
-                slcImage.setXmax(oldImage.width)
+                slcImage.setXmax(result.getNumberOfSamples())
                 slcImage.setDataType('CFLOAT')
                 slcImage.setImageType('slc')
                 result.setImage(slcImage)
-            
-            # 确保图像属性正确
-            result.image.setDataType('CFLOAT')
-            result.image.setImageType('slc')
-            result.image.setLength(result.getNumberOfLines())
-
-            # 使用ISCE标准方法生成头文件和VRT文件
-            result.image.renderHdr()
-            result.image.renderVRT()
-
-        # 确保合并后的帧有正确的辅助文件
-        if not hasattr(result, 'auxFile') or result.auxFile is None:
-            self.logger.warning("Combined frame has no auxFile, setting to output.aux")
-            result.auxFile = self.output + '.aux'
-        
-        self.logger.info(f"Successfully combined {len(self.frameList)} frames into a single frame")
-        self.logger.info(f"Combined frame: samples={result.getNumberOfSamples()}, lines={result.getNumberOfLines()}")
-        self.logger.info(f"Combined frame time range: {result.getSensingStart()} to {result.getSensingStop()}")
         
         return result
 
