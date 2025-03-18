@@ -57,6 +57,7 @@ def getBbox(frame, zrange=[-500., 9000.],geom='zero doppler', margin=0.05):
     for z in zrange:
         for taz in tarr:
             for rng in [r0, rmax]:
+                import pdb; pdb.set_trace()
                 pt = frame.orbit.rdr2geo(taz, rng, doppler=doppler, height=z,
                                         wvl=wvl, side=lookSide)
                 ###If nan, use nadir point
