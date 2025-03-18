@@ -1,9 +1,0 @@
-<VRTDataset rasterXSize="39394" rasterYSize="28806">
-    <VRTRasterBand dataType="CFloat32" band="1" subClass="VRTRawRasterBand">
-        <SourceFilename relativeToVRT="1">reference.slc</SourceFilename>
-        <ByteOrder>LSB</ByteOrder>
-        <ImageOffset>0</ImageOffset>
-        <PixelOffset>8</PixelOffset>
-        <LineOffset>315152</LineOffset>
-    </VRTRasterBand>
-</VRTDataset> 
