@@ -127,29 +127,38 @@ class Track(object):
 
     def createOrbit(self):
         orbitAll = Orbit()
+        self.logger.info("开始合并轨道状态向量")
         for i in range(len(self._frames)):
             orbit = self._frames[i].getOrbit()
+            self.logger.info(f"处理第{i+1}个frame的轨道，包含{len(orbit._stateVectors)}个状态向量")
             #remember that everything is by reference, so the changes applied to orbitAll will be made to the Orbit
             #object in self.frame
             for sv in orbit._stateVectors:
                 orbitAll.addStateVector(sv)
             # sort the orbit state vecotrs according to time
             orbitAll._stateVectors.sort(key=lambda sv: sv.time)
+        self.logger.info(f"合并后的轨道包含{len(orbitAll._stateVectors)}个状态向量")
         self.removeDuplicateVectors(orbitAll._stateVectors)
+        self.logger.info(f"移除重复后剩余{len(orbitAll._stateVectors)}个状态向量")
         self._frame.setOrbit(orbitAll)
+        self.logger.info("轨道合并完成")
 
     def removeDuplicateVectors(self,stateVectors):
+        self.logger.info("开始移除重复的状态向量")
         i1 = 0
+        removed_count = 0
         #remove duplicate state vectors
         while True:
             if i1 >= len(stateVectors) - 1:
                 break
             if stateVectors[i1].time == stateVectors[i1+1].time:
+                self.logger.info(f"发现重复状态向量，时间: {stateVectors[i1].time}")
                 stateVectors.pop(i1+1)
+                removed_count += 1
             #since is sorted by time if is not equal we can pass to the next
             else:
                 i1 += 1
-
+        self.logger.info(f"共移除了{removed_count}个重复状态向量")
 
     def createAttitude(self):
         attitudeAll = Attitude()

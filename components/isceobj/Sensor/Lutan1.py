@@ -247,7 +247,6 @@ class Lutan1(Sensor):
         if orb is None:
             self.logger.error("Failed to extract orbit information.")
             raise RuntimeError("Failed to extract orbit information.")
-        import pdb; pdb.set_trace()
         for sv in orb:
             self.frame.orbit.addStateVector(sv)
 
@@ -895,7 +894,7 @@ class Lutan1(Sensor):
             try:
                 self.parse()
                 outputNow = self.output + appendStr
-                import pdb; pdb.set_trace()
+                
                 # 提取图像数据
                 width = self.frame.getNumberOfSamples()
                 lgth = self.frame.getNumberOfLines()
@@ -972,7 +971,7 @@ class Lutan1(Sensor):
         
         # 使用 tkfunc 进行合并
         result = tkfunc(self)
-        
+        import pdb; pdb.set_trace()
         # 确保合并后的帧有正确的图像信息
         if result is not None:
             # 验证合并后的结果
