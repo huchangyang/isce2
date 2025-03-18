@@ -1,0 +1,34 @@
+  <property name="length">
+    <value>28806</value>
+    <doc>Image length</doc>
+  </property>
+
+  <component name="coordinate2">
+    <factorymodule>isceobj.Image</factorymodule>
+    <factoryname>createCoordinate</factoryname>
+    <doc>Second coordinate of a 2D image (length).</doc>
+    <property name="delta">
+      <value>1</value>
+      <doc>Coordinate quantization.</doc>
+    </property>
+    <property name="endingvalue">
+      <value>28806</value>
+      <doc>Ending value of the coordinate.</doc>
+    </property>
+    <property name="family">
+      <value>imagecoordinate</value>
+      <doc>Instance family name</doc>
+    </property>
+    <property name="name">
+      <value>imagecoordinate_name</value>
+      <doc>Instance name</doc>
+    </property>
+    <property name="size">
+      <value>28806</value>
+      <doc>Coordinate size.</doc>
+    </property>
+    <property name="startingvalue">
+      <value>0</value>
+      <doc>Starting value of the coordinate.</doc>
+    </property>
+  </component> 
