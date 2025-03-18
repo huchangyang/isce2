@@ -352,21 +352,23 @@ class Lutan1(Sensor):
 
 
     def extractOrbit(self):
-
         '''
         Extract orbit information from the orbit file
         '''
         orb = Orbit()
         orb.configure()
 
-        # I based the margin on the data that I have.
-        # Lutan-1 position and velocity sampling frequency is 1 Hz
-        margin = datetime.timedelta(minutes=30.0)
+        # 增加时间范围以确保有足够的状态向量
+        margin = datetime.timedelta(minutes=60.0)  # 增加到60分钟
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
 
         self.logger.info(f"Extracting orbit for time range: {tstart} to {tend}")
         self.logger.info(f"Orbit file: {self._orbitFile}")
+
+        if not os.path.exists(self._orbitFile):
+            self.logger.error(f"Orbit file does not exist: {self._orbitFile}")
+            return None
 
         file_ext = os.path.splitext(self._orbitFile)[1].lower()
 
@@ -490,8 +492,8 @@ class Lutan1(Sensor):
             return None
         
         # 检查轨道状态向量是否足够
-        if len(orb._stateVectors) < 2:
-            self.logger.error("Not enough orbit state vectors for interpolation (minimum 2 required)")
+        if len(orb._stateVectors) < 4:
+            self.logger.error("Not enough orbit state vectors for interpolation (minimum 4 required)")
             return None
         
         # 检查轨道时间范围是否覆盖 SLC 时间范围
@@ -507,7 +509,7 @@ class Lutan1(Sensor):
             self.logger.warning(f"Orbit: {orbit_start} to {orbit_end}")
         
         return orb
-        
+
     def filter_orbit(self, times, positions, velocities):
         """使用标准多项式拟合滤波轨道数据"""
         t0 = times[0]
@@ -679,7 +681,7 @@ class Lutan1(Sensor):
             t_end = unique_vectors[-1].getTime()
             
             # 扩展时间范围
-            margin = datetime.timedelta(minutes=30)
+            margin = datetime.timedelta(minutes=60)
             t_start_extended = t_start - margin
             t_end_extended = t_end + margin
             
