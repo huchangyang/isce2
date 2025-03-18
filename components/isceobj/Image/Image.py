@@ -309,6 +309,7 @@ class Image(DataAccessor, Configurable):
             print("File", self.filename, "not found")
             raise OSError
         size = self.getTypeSize()
+        import pdb; pdb.set_trace()
         if(fsize != self.width * self.length * size * self.bands):
             print("Image.py::createImage():Size on disk and  size computed from metadata for file", \
                   self.filename, "do not match")
