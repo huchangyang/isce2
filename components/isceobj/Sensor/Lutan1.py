@@ -24,6 +24,7 @@ from osgeo import gdal
 import warnings
 from scipy.interpolate import UnivariateSpline
 from isceobj.Sensor import tkfunc
+from isceobj.Image.SlcImage import SlcImage
 
 
 lookMap = { 'RIGHT' : -1,
@@ -877,7 +878,7 @@ class Lutan1(Sensor):
                 result.setImage(slcImage)
             else:
                 # 如果已有图像对象，确保它是SlcImage类型
-                if not isinstance(result.image, isceobj.Image.SlcImage):
+                if not isinstance(result.image, SlcImage):
                     self.logger.warning("Converting RawImage to SlcImage")
                     oldImage = result.image
                     slcImage = isceobj.createSlcImage()
