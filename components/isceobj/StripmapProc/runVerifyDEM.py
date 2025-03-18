@@ -39,6 +39,8 @@ def getBbox(frame, zrange=[-500., 9000.],geom='zero doppler', margin=0.05):
     for ind in range(11):
         tarr.append(t0 + datetime.timedelta(seconds=ind*tdiff/10.0))
 
+    import pdb; pdb.set_trace()
+
     if geom.lower().startswith('native'):
         coeff = frame._dopplerVsPixel
         doppler = Poly2D()
