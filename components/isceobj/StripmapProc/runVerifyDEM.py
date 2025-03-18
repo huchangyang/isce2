@@ -39,7 +39,7 @@ def getBbox(frame, zrange=[-500., 9000.],geom='zero doppler', margin=0.05):
     for ind in range(11):
         tarr.append(t0 + datetime.timedelta(seconds=ind*tdiff/10.0))
 
-    import pdb; pdb.set_trace()
+    
 
     if geom.lower().startswith('native'):
         coeff = frame._dopplerVsPixel
@@ -57,7 +57,6 @@ def getBbox(frame, zrange=[-500., 9000.],geom='zero doppler', margin=0.05):
     for z in zrange:
         for taz in tarr:
             for rng in [r0, rmax]:
-                import pdb; pdb.set_trace()
                 pt = frame.orbit.rdr2geo(taz, rng, doppler=doppler, height=z,
                                         wvl=wvl, side=lookSide)
                 ###If nan, use nadir point
@@ -108,7 +107,7 @@ def runVerifyDEM(self):
             raise Exception('Unknown reference system for DEM: {0}'.format(demimg.reference))
 
     else:
-
+        import pdb; pdb.set_trace()
         reference = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
         secondary  = self._insar.loadProduct(self._insar.secondarySlcCropProduct)
 
