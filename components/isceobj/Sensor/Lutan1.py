@@ -358,8 +358,8 @@ class Lutan1(Sensor):
         orb = Orbit()
         orb.configure()
 
-        # 增加时间范围以确保有足够的状态向量
-        margin = datetime.timedelta(minutes=60.0)  # 增加到60分钟
+        # 设置时间范围，只收集成像时间段附近的状态向量
+        margin = datetime.timedelta(minutes=30.0)  # 设置30分钟的时间余量
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
 
@@ -391,12 +391,16 @@ class Lutan1(Sensor):
             min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
             max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
             
-            # 首先收集所有状态向量
+            # 只收集时间范围内的状态向量
             all_vectors = []
             for child in node:
                 try:
                     timestamp_str = child.find('UTC').text
                     timestamp = self.convertToDateTime(timestamp_str)
+                    
+                    # 只处理时间范围内的状态向量
+                    if timestamp < tstart or timestamp > tend:
+                        continue
                     
                     # 更新最小和最大时间
                     if timestamp < min_time:
@@ -455,16 +459,33 @@ class Lutan1(Sensor):
                 t_end = unique_vectors[-1].getTime()
                 
                 # 扩展时间范围
-                margin = datetime.timedelta(minutes=60)
+                margin = datetime.timedelta(minutes=30)
                 t_start_extended = t_start - margin
                 t_end_extended = t_end + margin
                 
                 # 重新收集扩展时间范围内的状态向量
                 extended_vectors = []
-                for sv in all_vectors:
-                    t = sv.getTime()
-                    if t_start_extended <= t <= t_end_extended:
-                        extended_vectors.append(sv)
+                for child in node:
+                    try:
+                        timestamp_str = child.find('UTC').text
+                        timestamp = self.convertToDateTime(timestamp_str)
+                        
+                        if t_start_extended <= timestamp <= t_end_extended:
+                            pos = []
+                            vel = []
+                            for tag in ['VX', 'VY', 'VZ']:
+                                vel.append(float(child.find(tag).text))
+                            for tag in ['X', 'Y', 'Z']:
+                                pos.append(float(child.find(tag).text))
+                            
+                            vec = StateVector()
+                            vec.setTime(timestamp)
+                            vec.setPosition(pos)
+                            vec.setVelocity(vel)
+                            extended_vectors.append(vec)
+                    except Exception as e:
+                        self.logger.warning(f"Error parsing orbit state vector: {e}")
+                        continue
                 
                 # 重新排序和去重
                 extended_vectors.sort(key=lambda x: x.getTime())
@@ -499,7 +520,7 @@ class Lutan1(Sensor):
                 min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
                 max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
                 
-                # 首先收集所有状态向量
+                # 只收集时间范围内的状态向量
                 all_vectors = []
                 for line in fid:
                     try:
@@ -516,6 +537,10 @@ class Lutan1(Sensor):
                             microsecond = int((second - int_second) * 1e6)
                             # Convert to datetime   
                             timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
+                            
+                            # 只处理时间范围内的状态向量
+                            if timestamp < tstart or timestamp > tend:
+                                continue
                             
                             # 更新最小和最大时间
                             if timestamp < min_time:
@@ -566,16 +591,40 @@ class Lutan1(Sensor):
                     t_end = unique_vectors[-1].getTime()
                     
                     # 扩展时间范围
-                    margin = datetime.timedelta(minutes=60)
+                    margin = datetime.timedelta(minutes=30)
                     t_start_extended = t_start - margin
                     t_end_extended = t_end + margin
                     
                     # 重新收集扩展时间范围内的状态向量
-                    extended_vectors = []
-                    for sv in all_vectors:
-                        t = sv.getTime()
-                        if t_start_extended <= t <= t_end_extended:
-                            extended_vectors.append(sv)
+                    fid.seek(0)  # 重置文件指针
+                    for line in fid:
+                        if line.startswith('#'):
+                            continue
+                        try:
+                            fields = line.split()
+                            if len(fields) >= 13:
+                                year = int(fields[0])
+                                month = int(fields[1])
+                                day = int(fields[2])
+                                hour = int(fields[3])
+                                minute = int(fields[4])
+                                second = float(fields[5])
+                                
+                                int_second = int(second)
+                                microsecond = int((second - int_second) * 1e6)
+                                timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
+                                
+                                if t_start_extended <= timestamp <= t_end_extended:
+                                    pos = [float(fields[6]), float(fields[7]), float(fields[8])]
+                                    vel = [float(fields[9]), float(fields[10]), float(fields[11])]
+                                    vec = StateVector()
+                                    vec.setTime(timestamp)
+                                    vec.setPosition(pos)
+                                    vec.setVelocity(vel)
+                                    extended_vectors.append(vec)
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing orbit state vector: {e}")
+                            continue
                     
                     # 重新排序和去重
                     extended_vectors.sort(key=lambda x: x.getTime())
