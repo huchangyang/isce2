@@ -317,13 +317,12 @@ class Track(object):
 
 
         self.logger.info("Concatenating Frames along Track")
-        # this is a hack since the length of the file could be actually different from the one computed using start and stop time. it only matters the last frame added
-        import os
-
-        fileSize = os.path.getsize(outputs[-1])
-
-        numLines = fileSize//totalWidth + startLines[-1]
-        totalLines_c = c_int(numLines)
+        # Calculate total number of lines correctly
+        totalLines = 0
+        for frame in self._frames:
+            totalLines += frame.getNumberOfLines()
+        
+        totalLines_c = c_int(totalLines)
         # Next, call frame_concatenate
         width_c = c_int(totalWidth) # Width of each frame (with the padding added in swst_resample)
         numberOfFrames_c = c_int(len(self._frames))
@@ -361,7 +360,7 @@ class Track(object):
         self._frame.setProcessingSystem(procSys)
         self._frame.setProcessingSoftwareVersion(procSoft)
         self._frame.setPolarization(pol)
-        self._frame.setNumberOfLines(numLines)
+        self._frame.setNumberOfLines(totalLines)
         self._frame.setNumberOfSamples(width)
         
         # 获取第一个帧的图像类型
