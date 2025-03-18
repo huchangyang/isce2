@@ -787,7 +787,6 @@ class Lutan1(Sensor):
                 slcImage.setLength(self.frame.getNumberOfLines())
                 slcImage.setXmin(0)
                 slcImage.setXmax(self.frame.getNumberOfSamples())
-                slcImage.number_good_bytes = self.frame.getNumberOfSamples() * 8  # 每个复数像素占用 8 字节
                 self.frame.setImage(slcImage)
                 
                 # 生成辅助文件
@@ -859,6 +858,9 @@ class Lutan1(Sensor):
             # 获取合并后的帧
             result = tk._frame
             
+            # 将合并后的帧设置为当前帧
+            self.frame = result
+            
             # 确保合并后的帧有正确的图像信息
             if result.image is None:
                 self.logger.warning("Combined frame has no image information, creating new image")
@@ -870,8 +872,15 @@ class Lutan1(Sensor):
                 slcImage.setLength(result.getNumberOfLines())
                 slcImage.setXmin(0)
                 slcImage.setXmax(result.getNumberOfSamples())
-                slcImage.number_good_bytes = result.getNumberOfSamples() * 8  # 每个复数像素占用 8 字节
+                slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
+                slcImage.setImageType('slc')    # 明确设置为SLC类型
                 result.setImage(slcImage)
+            else:
+                # 即使已有图像对象,也确保其属性正确
+                result.image.setDataType('CFLOAT')
+                result.image.setImageType('slc')
+                if hasattr(result.image, 'number_good_bytes'):
+                    delattr(result.image, 'number_good_bytes')
             
             # 确保合并后的帧有正确的辅助文件
             if not hasattr(result, 'auxFile') or result.auxFile is None:
@@ -980,9 +989,6 @@ class Lutan1(Sensor):
                     
                 except Exception as e:
                     self.logger.warning(f"Error generating auxiliary files: {str(e)}")
-            
-            # 将合并后的帧设置为当前帧
-            self.frame = result
             
             self.logger.info(f"Successfully combined {len(self.frameList)} frames into a single frame")
             self.logger.info(f"Combined frame: samples={result.getNumberOfSamples()}, lines={result.getNumberOfLines()}")
