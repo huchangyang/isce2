@@ -24,7 +24,7 @@ def estimateOffsetField(reference, secondary, denseOffsetFileName,
     sim.load(secondary+'.xml')
     sim.setAccessMode('READ')
     sim.createImage()
-    import pdb; pdb.set_trace()
+    
     ###Loading the reference image object
     sar = isceobj.createSlcImage()
     sar.load(reference + '.xml')
