@@ -363,15 +363,26 @@ class Track(object):
         self._frame.setPolarization(pol)
         self._frame.setNumberOfLines(numLines)
         self._frame.setNumberOfSamples(width)
-        # add image to frame
-        rawImage = isceobj.createRawImage()
-        rawImage.setByteOrder('l')
-        rawImage.setFilename(output)
-        rawImage.setAccessMode('r')
-        rawImage.setWidth(totalWidth)
-        rawImage.setXmax(totalWidth)
-        rawImage.setXmin(xmin)
-        self._frame.setImage(rawImage)
+        
+        # 获取第一个帧的图像类型
+        firstImage = self._frames[0].getImage()
+        imageType = firstImage.__class__.__name__
+        
+        # 根据图像类型创建相应的图像对象
+        if imageType == 'SlcImage':
+            image = isceobj.createSlcImage()
+            image.setDataType('CFLOAT')
+            image.setImageType('slc')
+        else:
+            image = isceobj.createRawImage()
+            
+        image.setByteOrder('l')
+        image.setFilename(output)
+        image.setAccessMode('r')
+        image.setWidth(totalWidth)
+        image.setXmax(totalWidth)
+        image.setXmin(xmin)
+        self._frame.setImage(image)
 
 
     # Extract the early, late, start and stop times from a Frame object
