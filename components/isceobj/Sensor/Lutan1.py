@@ -231,7 +231,6 @@ class Lutan1(Sensor):
             # Check if orbit file exists or not
             if os.path.isfile(self._orbitFile) == True:
                 orb = self.extractOrbit()
-                self.logger.info(f"Extracted orbit with {len(orb)} state vectors")
                 self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
                 self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
@@ -248,15 +247,9 @@ class Lutan1(Sensor):
         if orb is None:
             self.logger.error("Failed to extract orbit information.")
             raise RuntimeError("Failed to extract orbit information.")
-
-        # 添加调试信息
-        self.logger.info(f"Before adding state vectors to frame.orbit, frame.orbit has {len(self.frame.orbit)} state vectors")
-        self.logger.info(f"Orb has {len(orb)} state vectors to add")
-        for i, sv in enumerate(orb):
-            self.logger.info(f"Adding state vector {i+1}/{len(orb)} with time {sv.getTime()}")
+        import pdb; pdb.set_trace()
+        for sv in orb:
             self.frame.orbit.addStateVector(sv)
-            self.logger.info(f"After adding state vector {i+1}, frame.orbit has {len(self.frame.orbit)} state vectors")
-        self.logger.info(f"After adding all state vectors to frame.orbit, frame.orbit has {len(self.frame.orbit)} state vectors")
 
     def convertToDateTime(self,string):
         dt = datetime.datetime.strptime(string,"%Y-%m-%dT%H:%M:%S.%f")
@@ -902,7 +895,7 @@ class Lutan1(Sensor):
             try:
                 self.parse()
                 outputNow = self.output + appendStr
-                
+                import pdb; pdb.set_trace()
                 # 提取图像数据
                 width = self.frame.getNumberOfSamples()
                 lgth = self.frame.getNumberOfLines()
