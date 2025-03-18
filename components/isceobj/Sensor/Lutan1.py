@@ -787,6 +787,7 @@ class Lutan1(Sensor):
                 slcImage.setLength(self.frame.getNumberOfLines())
                 slcImage.setXmin(0)
                 slcImage.setXmax(self.frame.getNumberOfSamples())
+                slcImage.number_good_bytes = self.frame.getNumberOfSamples() * 8  # 每个复数像素占用 8 字节
                 self.frame.setImage(slcImage)
                 
                 # 生成辅助文件
@@ -869,6 +870,7 @@ class Lutan1(Sensor):
                 slcImage.setLength(result.getNumberOfLines())
                 slcImage.setXmin(0)
                 slcImage.setXmax(result.getNumberOfSamples())
+                slcImage.number_good_bytes = result.getNumberOfSamples() * 8  # 每个复数像素占用 8 字节
                 result.setImage(slcImage)
             
             # 确保合并后的帧有正确的辅助文件
@@ -1103,7 +1105,7 @@ class Lutan1(Sensor):
                 # 也尝试 property 格式的轨道文件
                 if orbit_element is None:
                     orbit_property = root.find(".//property[@name='orbitFile']/value") or root.find(".//property[@name='ORBITFILE']/value")
-                    if orbit_property is not None:
+                    if orbit_element is not None:
                         orbit_element = orbit_property
                 
                 if orbit_element is not None and orbit_element.text:
