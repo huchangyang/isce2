@@ -391,6 +391,8 @@ class Lutan1(Sensor):
             min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
             max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
             
+            # 首先收集所有状态向量
+            all_vectors = []
             for child in node:
                 try:
                     timestamp_str = child.find('UTC').text
@@ -402,21 +404,20 @@ class Lutan1(Sensor):
                     if timestamp > max_time:
                         max_time = timestamp
                     
-                    if (timestamp >= tstart) and (timestamp <= tend):
-                        pos = []
-                        vel = []
-                        for tag in ['VX', 'VY', 'VZ']:
-                            vel.append(float(child.find(tag).text))
+                    pos = []
+                    vel = []
+                    for tag in ['VX', 'VY', 'VZ']:
+                        vel.append(float(child.find(tag).text))
 
-                        for tag in ['X', 'Y', 'Z']:
-                            pos.append(float(child.find(tag).text))
+                    for tag in ['X', 'Y', 'Z']:
+                        pos.append(float(child.find(tag).text))
 
-                        vec = StateVector()
-                        vec.setTime(timestamp)
-                        vec.setPosition(pos)
-                        vec.setVelocity(vel)
-                        orb.addStateVector(vec)
-                        count += 1
+                    vec = StateVector()
+                    vec.setTime(timestamp)
+                    vec.setPosition(pos)
+                    vec.setVelocity(vel)
+                    all_vectors.append(vec)
+                    count += 1
                 except Exception as e:
                     self.logger.warning(f"Error parsing orbit state vector: {e}")
                     continue
@@ -433,6 +434,61 @@ class Lutan1(Sensor):
                 self.logger.error(f"Required time range: {tstart} to {tend}")
                 return None
 
+            # 按时间排序
+            all_vectors.sort(key=lambda x: x.getTime())
+            
+            # 移除重复的状态向量
+            unique_vectors = []
+            prev_time = None
+            for sv in all_vectors:
+                curr_time = sv.getTime()
+                if prev_time is None or curr_time != prev_time:
+                    unique_vectors.append(sv)
+                    prev_time = curr_time
+            
+            # 确保至少有4个状态向量
+            if len(unique_vectors) < 4:
+                self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
+                
+                # 获取第一个和最后一个向量的时间
+                t_start = unique_vectors[0].getTime()
+                t_end = unique_vectors[-1].getTime()
+                
+                # 扩展时间范围
+                margin = datetime.timedelta(minutes=60)
+                t_start_extended = t_start - margin
+                t_end_extended = t_end + margin
+                
+                # 重新收集扩展时间范围内的状态向量
+                extended_vectors = []
+                for sv in all_vectors:
+                    t = sv.getTime()
+                    if t_start_extended <= t <= t_end_extended:
+                        extended_vectors.append(sv)
+                
+                # 重新排序和去重
+                extended_vectors.sort(key=lambda x: x.getTime())
+                unique_vectors = []
+                prev_time = None
+                for sv in extended_vectors:
+                    curr_time = sv.getTime()
+                    if prev_time is None or curr_time != prev_time:
+                        unique_vectors.append(sv)
+                        prev_time = curr_time
+            
+            if len(unique_vectors) < 4:
+                self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
+                return None
+            
+            # 添加到轨道对象
+            for sv in unique_vectors:
+                orb.addStateVector(sv)
+            
+            self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
+            self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
+            
+            return orb
+
         elif file_ext == '.txt':
             with open(self._orbitFile, 'r') as fid:
                 for line in fid:
@@ -443,6 +499,8 @@ class Lutan1(Sensor):
                 min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
                 max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
                 
+                # 首先收集所有状态向量
+                all_vectors = []
                 for line in fid:
                     try:
                         fields = line.split()
@@ -465,15 +523,14 @@ class Lutan1(Sensor):
                             if timestamp > max_time:
                                 max_time = timestamp
                             
-                            if (timestamp >= tstart) and (timestamp <= tend):
-                                pos = [float(fields[6]), float(fields[7]), float(fields[8])]
-                                vel = [float(fields[9]), float(fields[10]), float(fields[11])]
-                                vec = StateVector()
-                                vec.setTime(timestamp)
-                                vec.setPosition(pos)
-                                vec.setVelocity(vel)
-                                orb.addStateVector(vec)
-                                count += 1
+                            pos = [float(fields[6]), float(fields[7]), float(fields[8])]
+                            vel = [float(fields[9]), float(fields[10]), float(fields[11])]
+                            vec = StateVector()
+                            vec.setTime(timestamp)
+                            vec.setPosition(pos)
+                            vec.setVelocity(vel)
+                            all_vectors.append(vec)
+                            count += 1
                     except Exception as e:
                         self.logger.warning(f"Error parsing orbit state vector: {e}")
                         continue
@@ -487,28 +544,64 @@ class Lutan1(Sensor):
                     self.logger.error(f"Orbit file time range: {min_time} to {max_time}")
                     self.logger.error(f"Required time range: {tstart} to {tend}")
                     return None
+
+                # 按时间排序
+                all_vectors.sort(key=lambda x: x.getTime())
+                
+                # 移除重复的状态向量
+                unique_vectors = []
+                prev_time = None
+                for sv in all_vectors:
+                    curr_time = sv.getTime()
+                    if prev_time is None or curr_time != prev_time:
+                        unique_vectors.append(sv)
+                        prev_time = curr_time
+                
+                # 确保至少有4个状态向量
+                if len(unique_vectors) < 4:
+                    self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
+                    
+                    # 获取第一个和最后一个向量的时间
+                    t_start = unique_vectors[0].getTime()
+                    t_end = unique_vectors[-1].getTime()
+                    
+                    # 扩展时间范围
+                    margin = datetime.timedelta(minutes=60)
+                    t_start_extended = t_start - margin
+                    t_end_extended = t_end + margin
+                    
+                    # 重新收集扩展时间范围内的状态向量
+                    extended_vectors = []
+                    for sv in all_vectors:
+                        t = sv.getTime()
+                        if t_start_extended <= t <= t_end_extended:
+                            extended_vectors.append(sv)
+                    
+                    # 重新排序和去重
+                    extended_vectors.sort(key=lambda x: x.getTime())
+                    unique_vectors = []
+                    prev_time = None
+                    for sv in extended_vectors:
+                        curr_time = sv.getTime()
+                        if prev_time is None or curr_time != prev_time:
+                            unique_vectors.append(sv)
+                            prev_time = curr_time
+                
+                if len(unique_vectors) < 4:
+                    self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
+                    return None
+                
+                # 添加到轨道对象
+                for sv in unique_vectors:
+                    orb.addStateVector(sv)
+                
+                self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
+                self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
+                
+                return orb
         else:
             self.logger.error(f"Unsupported orbit file extension: {file_ext}")
             return None
-        
-        # 检查轨道状态向量是否足够
-        if len(orb._stateVectors) < 4:
-            self.logger.error("Not enough orbit state vectors for interpolation (minimum 4 required)")
-            return None
-        
-        # 检查轨道时间范围是否覆盖 SLC 时间范围
-        orbit_times = [sv.getTime() for sv in orb._stateVectors]
-        orbit_start = min(orbit_times)
-        orbit_end = max(orbit_times)
-        
-        self.logger.info(f"Final orbit time range: {orbit_start} to {orbit_end}")
-        
-        if self.frame.getSensingStart() < orbit_start or self.frame.getSensingStop() > orbit_end:
-            self.logger.warning("SLC sensing time range is not fully covered by orbit time range")
-            self.logger.warning(f"SLC: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
-            self.logger.warning(f"Orbit: {orbit_start} to {orbit_end}")
-        
-        return orb
 
     def filter_orbit(self, times, positions, velocities):
         """使用标准多项式拟合滤波轨道数据"""
