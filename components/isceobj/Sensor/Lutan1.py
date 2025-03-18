@@ -1003,7 +1003,7 @@ class Lutan1(Sensor):
                     if os.path.exists(f"{self.output}.vrt"):
                         try:
                             import subprocess
-                            cmd = f"gdal_translate -of VRT -ot CFloat32 {self.output}.vrt {self.output}.iq.vrt"
+                            cmd = f"gdal_translate -of VRT -ot CFloat32 -outsize {slcImage.getWidth()} {slcImage.getLength()} {self.output}.vrt {self.output}.iq.vrt"
                             subprocess.run(cmd, shell=True, check=True)
                             self.logger.info(f"Generated IQ VRT file: {self.output}.iq.vrt")
                         except Exception as e:
