@@ -808,7 +808,14 @@ class Lutan1(Sensor):
         
         # 使用 tkfunc 进行合并，与 ALOS.py 保持一致
         from isceobj.Sensor import tkfunc
+        
+        # 为了兼容 tkfunc，临时设置 _imageFileList 属性
+        self._imageFileList = self._tiffList
+        
         result = tkfunc(self)
+        
+        # 使用完后删除临时属性
+        delattr(self, '_imageFileList')
         
         # 确保合并后的帧有正确的图像信息
         if result.image is None:
