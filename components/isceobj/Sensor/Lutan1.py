@@ -897,24 +897,30 @@ class Lutan1(Sensor):
                 lgth = self.frame.getNumberOfLines()
                 src = gdal.Open(self._tiff.strip(), gdal.GA_ReadOnly)
 
-                # Band 1 as real and band 2 as imaginary numbers
+                # 获取数据类型信息
                 band1 = src.GetRasterBand(1)
                 band2 = src.GetRasterBand(2)
-                cJ = np.complex64(1.0j)
-
-                fid = open(outputNow, 'wb')
-                for ii in range(lgth):
-                    # Combine the real and imaginary to make
-                    # them in to complex numbers
-                    real = band1.ReadAsArray(0,ii,width,1)
-                    imag = band2.ReadAsArray(0,ii,width,1)
-                    # Data becomes np.complex128 after combining them
-                    data = real + (cJ * imag)
+                datatype = band1.DataType
+                
+                # 一次性读取所有数据
+                real = band1.ReadAsArray(0, 0, width, lgth).astype(np.float32)
+                imag = band2.ReadAsArray(0, 0, width, lgth).astype(np.float32)
+                
+                # 确保数据形状正确
+                if real.shape != (lgth, width) or imag.shape != (lgth, width):
+                    raise ValueError(f"数据形状不匹配: real {real.shape}, imag {imag.shape}, 期望 ({lgth}, {width})")
+                
+                # 使用正确的数据类型进行复数转换
+                data = np.empty((lgth, width), dtype=np.complex64)
+                data.real = real
+                data.imag = imag
+                
+                # 写入文件
+                with open(outputNow, 'wb') as fid:
                     data.tofile(fid)
-
-                fid.close()
-                real = None
-                imag = None
+                
+                # 清理内存
+                del real, imag, data
                 src = None
                 band1 = None
                 band2 = None
@@ -924,64 +930,84 @@ class Lutan1(Sensor):
                 slcImage.setByteOrder('l')
                 slcImage.setFilename(outputNow)
                 slcImage.setAccessMode('read')
-                slcImage.setWidth(self.frame.getNumberOfSamples())
-                slcImage.setLength(self.frame.getNumberOfLines())
+                slcImage.setWidth(width)
+                slcImage.setLength(lgth)
                 slcImage.setXmin(0)
-                slcImage.setXmax(self.frame.getNumberOfSamples())
-                slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
-                slcImage.setImageType('slc')    # 明确设置为SLC类型
+                slcImage.setXmax(width)
+                slcImage.setDataType('CFLOAT')
+                slcImage.setImageType('slc')
+                
+                # 添加额外的元数据
+                slcImage.addMetadata('COMPLEX_DATA', 'TRUE')
+                slcImage.addMetadata('PIXEL_FORMAT', 'COMPLEX')
+                slcImage.addMetadata('PROCESSING_TYPE', 'SLC')
+                
                 self.frame.setImage(slcImage)
 
-                # 使用ISCE标准方法生成头文件和VRT文件
+                # 生成头文件和VRT文件
                 slcImage.renderHdr()
                 slcImage.renderVRT()
 
                 # 生成辅助文件
                 self.makeFakeAux(outputNow)
                 
-                # 保存轨道信息到单独的文件
+                # 保存轨道信息
                 orbit_file = outputNow + '.orb'
                 self.saveOrbitToFile(self.frame.orbit, orbit_file)
                 
                 self.frameList.append(self.frame)
                 self.logger.info(f"Processed SLC {i+1}/{len(self._tiffList)}: {self._tiff}")
                 
-            except IOError as e:
+            except Exception as e:
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
-                continue
-        
-        # 添加验证
-        for i, frame in enumerate(self.frameList):
-            if frame.image is None:
-                self.logger.error(f"Frame {i} has no image information")
-                return None
+                raise
             
-            # 验证图像属性
+            # 验证帧列表
+            self._validateFrameList()
+            
+            # 设置图像文件列表
+            self._imageFileList = self._tiffList
+            
+            # 使用tkfunc进行合并，添加错误处理
+            try:
+                result = tkfunc(self)
+                if result is None:
+                    raise RuntimeError("Frame merging failed")
+                    
+                # 恢复轨道信息
+                orbit_file = self.output + '_0.orb'
+                if os.path.exists(orbit_file):
+                    result.orbit = self.loadOrbitFromFile(orbit_file)
+                    self.logger.info("Successfully restored orbit information")
+                    
+                return result
+            except Exception as e:
+                self.logger.error(f"Error during frame merging: {str(e)}")
+                raise
+
+    def _validateFrameList(self):
+        """验证帧列表的完整性和连续性"""
+        if not self.frameList:
+            raise ValueError("No frames processed successfully")
+        
+        for i, frame in enumerate(self.frameList):
+            # 验证基本属性
+            if frame.image is None:
+                raise ValueError(f"Frame {i} has no image information")
+            
             if not hasattr(frame, 'numberOfLines') or not hasattr(frame, 'numberOfSamples'):
-                self.logger.error(f"Frame {i} is missing required attributes")
-                return None
+                raise ValueError(f"Frame {i} is missing required attributes")
             
             # 验证时间连续性
             if i > 0:
                 prev_frame = self.frameList[i-1]
-                if frame.getSensingStart() < prev_frame.getSensingStop():
-                    self.logger.warning(f"Frame {i} starts before previous frame ends")
-        
-        # 在调用 tkfunc 之前设置 _imageFileList
-        self._imageFileList = self._tiffList
-        
-        # 使用 tkfunc 进行合并
-        result = tkfunc(self)
-        
-        # 如果合并成功,恢复轨道信息
-        if result is not None:
-            # 从第一个帧的轨道文件恢复轨道信息
-            orbit_file = self.output + '_0.orb'
-            if os.path.exists(orbit_file):
-                result.orbit = self.loadOrbitFromFile(orbit_file)
-                self.logger.info("Successfully restored orbit information")
-        
-        return result
+                time_diff = (frame.getSensingStart() - prev_frame.getSensingStop()).total_seconds()
+                
+                # 警告重叠或间隙
+                if time_diff < 0:
+                    self.logger.warning(f"Frame {i} overlaps with previous frame by {abs(time_diff)} seconds")
+                elif time_diff > 1.0:  # 假设1秒是合理的间隙
+                    self.logger.warning(f"Gap of {time_diff} seconds between frames {i-1} and {i}")
 
     def extractDoppler(self):
         '''
