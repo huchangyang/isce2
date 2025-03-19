@@ -982,7 +982,26 @@ class Lutan1(Sensor):
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
-            return merged_frame
+            
+            # 清理中间文件
+            try:
+                import glob
+                import os
+                
+                # 定义需要清理的目录
+                dirs_to_clean = ['reference_slc', 'secondary_slc']
+                
+                for dir_name in dirs_to_clean:
+                    if os.path.exists(dir_name):
+                        self.logger.info(f"清理 {dir_name} 目录中的中间文件...")
+
+                        os.remove('*_*')                        
+                        self.logger.info(f"完成清理 {dir_name} 目录")
+            except Exception as e:
+                self.logger.error(f"清理中间文件时发生错误: {str(e)}")
+                # 继续执行,不中断处理
+            
+            return merged_frame 
         else:
             return self.frameList[0]
 
@@ -1121,26 +1140,7 @@ class Lutan1(Sensor):
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
-        # 清理中间文件
-        import os
-        import glob
         
-        # 获取输出文件所在目录
-        output_dir = os.path.dirname(output_file)
-        base_name = os.path.splitext(os.path.basename(output_file))[0]
-        
-        # 清理所有带有帧号的文件
-        patterns = [
-            os.path.join(output_dir, f"*_*"),  # 匹配所有带帧号的主文件
-        ]
-        
-        for pattern in patterns:
-            for file_path in glob.glob(pattern):
-                try:
-                    os.remove(file_path)
-                    self.logger.debug(f"Removed intermediate file: {file_path}")
-                except OSError as e:
-                    self.logger.warning(f"Error removing file {file_path}: {str(e)}")
         
         return merged_frame
 
