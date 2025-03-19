@@ -900,7 +900,6 @@ class Lutan1(Sensor):
                 # 获取数据类型信息
                 band1 = src.GetRasterBand(1)
                 band2 = src.GetRasterBand(2)
-                datatype = band1.DataType
                 
                 # 一次性读取所有数据
                 real = band1.ReadAsArray(0, 0, width, lgth).astype(np.float32)
@@ -934,13 +933,8 @@ class Lutan1(Sensor):
                 slcImage.setLength(lgth)
                 slcImage.setXmin(0)
                 slcImage.setXmax(width)
-                slcImage.setDataType('CFLOAT')
-                slcImage.setImageType('slc')
-                
-                # 添加额外的元数据
-                slcImage.addMetadata('COMPLEX_DATA', 'TRUE')
-                slcImage.addMetadata('PIXEL_FORMAT', 'COMPLEX')
-                slcImage.addMetadata('PROCESSING_TYPE', 'SLC')
+                slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
+                slcImage.setImageType('slc')    # 明确设置为SLC类型
                 
                 self.frame.setImage(slcImage)
 
@@ -961,53 +955,41 @@ class Lutan1(Sensor):
             except Exception as e:
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
                 raise
-            
-            # 验证帧列表
-            self._validateFrameList()
-            
-            # 设置图像文件列表
-            self._imageFileList = self._tiffList
-            
-            # 使用tkfunc进行合并，添加错误处理
-            try:
-                result = tkfunc(self)
-                if result is None:
-                    raise RuntimeError("Frame merging failed")
-                    
-                # 恢复轨道信息
-                orbit_file = self.output + '_0.orb'
-                if os.path.exists(orbit_file):
-                    result.orbit = self.loadOrbitFromFile(orbit_file)
-                    self.logger.info("Successfully restored orbit information")
-                    
-                return result
-            except Exception as e:
-                self.logger.error(f"Error during frame merging: {str(e)}")
-                raise
-
-    def _validateFrameList(self):
-        """验证帧列表的完整性和连续性"""
+        
+        # 验证所有帧
         if not self.frameList:
             raise ValueError("No frames processed successfully")
-        
+            
         for i, frame in enumerate(self.frameList):
-            # 验证基本属性
             if frame.image is None:
                 raise ValueError(f"Frame {i} has no image information")
-            
+                
             if not hasattr(frame, 'numberOfLines') or not hasattr(frame, 'numberOfSamples'):
                 raise ValueError(f"Frame {i} is missing required attributes")
-            
-            # 验证时间连续性
+                
             if i > 0:
                 prev_frame = self.frameList[i-1]
                 time_diff = (frame.getSensingStart() - prev_frame.getSensingStop()).total_seconds()
                 
-                # 警告重叠或间隙
                 if time_diff < 0:
                     self.logger.warning(f"Frame {i} overlaps with previous frame by {abs(time_diff)} seconds")
-                elif time_diff > 1.0:  # 假设1秒是合理的间隙
+                elif time_diff > 1.0:
                     self.logger.warning(f"Gap of {time_diff} seconds between frames {i-1} and {i}")
+        
+        # 设置图像文件列表并进行合并
+        self._imageFileList = self._tiffList
+        result = tkfunc(self)
+        
+        if result is None:
+            raise RuntimeError("Frame merging failed")
+            
+        # 恢复轨道信息
+        orbit_file = self.output + '_0.orb'
+        if os.path.exists(orbit_file):
+            result.orbit = self.loadOrbitFromFile(orbit_file)
+            self.logger.info("Successfully restored orbit information")
+            
+        return result
 
     def extractDoppler(self):
         '''
