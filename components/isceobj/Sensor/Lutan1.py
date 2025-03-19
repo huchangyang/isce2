@@ -1066,13 +1066,25 @@ class Lutan1(Sensor):
                         # 确保大小匹配
                         if target_size != source_size:
                             self.logger.warning(f"Size mismatch detected: target_size={target_size}, source_size={source_size}")
+                            self.logger.warning(f"Target range: [{target_start}:{target_end}], Source range: [{source_start}:{source_end}]")
+                            self.logger.warning(f"Current line: {current_line}, Total lines: {total_lines}")
+                            self.logger.warning(f"Frame {i} lines: {frame.getNumberOfLines()}, Overlap lines: {overlap_lines}")
+                            
                             # 使用较小的值
                             size = min(target_size, source_size)
                             target_end = target_start + size
                             source_end = source_start + size
+                            
+                            self.logger.info(f"Adjusted ranges - Target: [{target_start}:{target_end}], Source: [{source_start}:{source_end}]")
+                        
+                        # 验证数组形状
+                        target_shape = merged_data[target_start:target_end].shape
+                        source_shape = frame_data[source_start:source_end].shape
+                        if target_shape != source_shape:
+                            self.logger.error(f"Shape mismatch: target={target_shape}, source={source_shape}")
+                            raise ValueError(f"Shape mismatch in frame {i}: target={target_shape}, source={source_shape}")
                         
                         self.logger.info(f"Copying non-overlapping region: target[{target_start}:{target_end}], source[{source_start}:{source_end}]")
-                        
                         merged_data[target_start:target_end] = frame_data[source_start:source_end]
                         current_line += frame.getNumberOfLines()
                     else:
