@@ -1127,7 +1127,7 @@ class Lutan1(Sensor):
         
         # 更新输出文件路径
         slcImage.setFilename(output_file)
-        
+        merged_frame.setImage(slcImage)
         return merged_frame
 
     def mergeOrbits(self, orbits):
