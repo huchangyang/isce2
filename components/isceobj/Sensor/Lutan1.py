@@ -998,6 +998,7 @@ class Lutan1(Sensor):
         
         # 计算总行数
         total_lines = 0
+        current_line = 0
         for i, frame in enumerate(sorted_frames):
             if i > 0:
                 # 计算与前一帧的重叠
@@ -1006,6 +1007,8 @@ class Lutan1(Sensor):
                 if overlap > 0:
                     # 重叠区域的行数
                     overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    # 确保重叠行数不超过帧的行数
+                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
                 else:
                     total_lines += frame.getNumberOfLines()
@@ -1032,21 +1035,29 @@ class Lutan1(Sensor):
                 if overlap > 0:
                     # 重叠区域的行数
                     overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    # 确保重叠行数不超过帧的行数
+                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                    
                     # 使用加权平均处理重叠区域
                     merged_data[current_line:current_line+overlap_lines] = (
                         0.5 * merged_data[current_line:current_line+overlap_lines] +
                         0.5 * frame_data[:overlap_lines]
                     )
+                    
                     # 复制非重叠区域
-                    merged_data[current_line+overlap_lines:current_line+frame.getNumberOfLines()] = frame_data[overlap_lines:]
+                    if overlap_lines < frame.getNumberOfLines():
+                        merged_data[current_line+overlap_lines:current_line+frame.getNumberOfLines()] = frame_data[overlap_lines:]
+                        current_line += frame.getNumberOfLines()
+                    else:
+                        current_line += overlap_lines
                 else:
                     # 无重叠，直接复制
                     merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                    current_line += frame.getNumberOfLines()
             else:
                 # 第一帧直接复制
                 merged_data[:frame.getNumberOfLines()] = frame_data
-            
-            current_line += frame.getNumberOfLines()
+                current_line = frame.getNumberOfLines()
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
