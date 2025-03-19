@@ -1010,10 +1010,13 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
+                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
                 else:
                     total_lines += frame.getNumberOfLines()
             else:
                 total_lines += frame.getNumberOfLines()
+        
+        self.logger.info(f"Total lines in merged output: {total_lines}")
         
         # 创建输出文件
         output_file = self.output
@@ -1028,6 +1031,8 @@ class Lutan1(Sensor):
             with open(frame.image.getFilename(), 'rb') as f:
                 frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
             
+            self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
+            
             if i > 0:
                 # 处理与前一帧的重叠
                 prev_frame = sorted_frames[i-1]
@@ -1038,6 +1043,8 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     
+                    self.logger.info(f"Frame {i} overlap: {overlap_lines} lines")
+                    
                     # 使用加权平均处理重叠区域
                     merged_data[current_line:current_line+overlap_lines] = (
                         0.5 * merged_data[current_line:current_line+overlap_lines] +
@@ -1046,18 +1053,34 @@ class Lutan1(Sensor):
                     
                     # 复制非重叠区域
                     if overlap_lines < frame.getNumberOfLines():
-                        merged_data[current_line+overlap_lines:current_line+frame.getNumberOfLines()] = frame_data[overlap_lines:]
+                        target_end = current_line + frame.getNumberOfLines()
+                        source_start = overlap_lines
+                        source_end = frame.getNumberOfLines()
+                        
+                        self.logger.info(f"Copying non-overlapping region: target[{current_line+overlap_lines}:{target_end}], source[{source_start}:{source_end}]")
+                        
+                        merged_data[current_line+overlap_lines:target_end] = frame_data[source_start:source_end]
                         current_line += frame.getNumberOfLines()
                     else:
                         current_line += overlap_lines
                 else:
                     # 无重叠，直接复制
-                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                    target_end = current_line + frame.getNumberOfLines()
+                    self.logger.info(f"Copying frame {i}: target[{current_line}:{target_end}]")
+                    merged_data[current_line:target_end] = frame_data
                     current_line += frame.getNumberOfLines()
             else:
                 # 第一帧直接复制
+                self.logger.info(f"Copying first frame: shape={frame_data.shape}")
                 merged_data[:frame.getNumberOfLines()] = frame_data
                 current_line = frame.getNumberOfLines()
+            
+            self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
+        
+        # 验证最终的行数
+        if current_line != total_lines:
+            self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
+            raise ValueError("Line count mismatch in merged output")
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
