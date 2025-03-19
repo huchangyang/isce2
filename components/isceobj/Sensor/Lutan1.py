@@ -1109,7 +1109,7 @@ class Lutan1(Sensor):
         slcImage.setImageType('slc')
         
         merged_frame.setImage(slcImage)
-        
+        import pdb; pdb.set_trace()
         # 生成头文件和VRT文件
         slcImage.renderHdr()
         slcImage.renderVRT()
@@ -1125,9 +1125,7 @@ class Lutan1(Sensor):
         if not output_file.endswith('.slc'):
             output_file = os.path.splitext(output_file)[0] + '.slc'
         
-        # 更新输出文件路径
-        slcImage.setFilename(output_file)
-        merged_frame.setImage(slcImage)
+
         return merged_frame
 
     def mergeOrbits(self, orbits):
