@@ -1131,12 +1131,7 @@ class Lutan1(Sensor):
         
         # 清理所有带有帧号的文件
         patterns = [
-            os.path.join(output_dir, f"{base_name}_*"),  # 匹配所有带帧号的主文件
-            os.path.join(output_dir, f"{base_name}_*.xml"),  # XML文件
-            os.path.join(output_dir, f"{base_name}_*.vrt"),  # VRT文件
-            os.path.join(output_dir, f"{base_name}_*.aux"),  # 辅助文件
-            os.path.join(output_dir, f"{base_name}_*.hdr"),  # 头文件
-            os.path.join(output_dir, f"{base_name}_*.orb")   # 轨道文件
+            os.path.join(output_dir, f"*_*"),  # 匹配所有带帧号的主文件
         ]
         
         for pattern in patterns:
