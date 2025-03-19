@@ -859,94 +859,129 @@ class Lutan1(Sensor):
         return orbit
 
     def extractImage(self):
-        if(len(self._imageFileList) != len(self._leaderFileList)):
+        # 验证用户输入并自动查找文件
+        self.validateUserInputs()
+        
+        # 如果提供了XML配置文件，先从中加载文件列表
+        if self._xmlConfig is not None:
+            if not self.loadFromXML():
+                self.logger.error("Failed to load from XML configuration file")
+                return None
+        
+        if(len(self._tiffList) != len(self._orbitFileList) and len(self._orbitFileList) > 0):
             self.logger.error(
-                "Number of leader files different from number of image files.")
+                "Number of orbit files different from number of image files.")
             raise RuntimeError
+        
         self.frameList = []
-        
-        # 记录所有中间文件，以便后续清理
-        temp_files = []
-        
-        for i in range(len(self._imageFileList)):
-            appendStr = "_" + str(i+1)  # 修改为从1开始编号
-            #if only one file don't change the name
-            if(len(self._imageFileList) == 1):
+        for i in range(len(self._tiffList)):
+            appendStr = "_" + str(i)
+            if(len(self._tiffList) == 1):
                 appendStr = ''
 
             self.frame = Frame()
             self.frame.configure()
 
-            self._leaderFile = self._leaderFileList[i]
-            self._imageFile = self._imageFileList[i]
-            self.leaderFile = LeaderFile(file=self._leaderFile)
-            self.imageFile = ImageFile(self)
-
+            self._tiff = self._tiffList[i]
+            if len(self._orbitFileList) > 0:
+                self._orbitFile = self._orbitFileList[i]
+            else:
+                self._orbitFile = None
+            
             try:
-                self.leaderFile.parse()
-                self.imageFile.parse(calculateRawDimensions=False)
+                self.parse()
                 outputNow = self.output + appendStr
-                temp_files.append(outputNow)
                 
-                if not (self._resampleFlag == ''):
-                    filein = self.output + '__tmp__'
-                    temp_files.append(filein)
-                    self.imageFile.extractImage(filein, i)
-                    self.populateMetadata()
-                    objResample = None
-                    if(self._resampleFlag == 'single2dual'):
-                        objResample = ALOS_fbs2fbdPy()
-                    else:
-                        objResample = ALOS_fbd2fbsPy()
-                    objResample.wireInputPort('frame',object = self.frame)
-                    objResample.setInputFilename(filein)
-                    objResample.setOutputFilename(outputNow)
-                    objResample.run()
-                    objResample.updateFrame(self.frame)
-                    if os.path.exists(filein):
-                        os.remove(filein)
-                else:
-                    self.imageFile.extractImage(outputNow, i)
-                    self.populateMetadata()
-                
-                width = self.frame.getImage().getWidth()
-                self.makeFakeAux(outputNow)
-                self.frameList.append(self.frame)
-            except IOError:
-                return
+                # 提取图像数据
+                width = self.frame.getNumberOfSamples()
+                lgth = self.frame.getNumberOfLines()
+                src = gdal.Open(self._tiff.strip(), gdal.GA_ReadOnly)
 
-        # 如果有多个帧，进行合并
+                # 获取数据类型信息
+                band1 = src.GetRasterBand(1)
+                band2 = src.GetRasterBand(2)
+                
+                # 一次性读取所有数据
+                real = band1.ReadAsArray(0, 0, width, lgth).astype(np.float32)
+                imag = band2.ReadAsArray(0, 0, width, lgth).astype(np.float32)
+                
+                # 确保数据形状正确
+                if real.shape != (lgth, width) or imag.shape != (lgth, width):
+                    raise ValueError(f"数据形状不匹配: real {real.shape}, imag {imag.shape}, 期望 ({lgth}, {width})")
+                
+                # 使用正确的数据类型进行复数转换
+                data = np.empty((lgth, width), dtype=np.complex64)
+                data.real = real
+                data.imag = imag
+                
+                # 写入文件
+                with open(outputNow, 'wb') as fid:
+                    data.tofile(fid)
+                
+                # 清理内存
+                del real, imag, data
+                src = None
+                band1 = None
+                band2 = None
+
+                # 设置图像属性
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(outputNow)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(width)
+                slcImage.setLength(lgth)
+                slcImage.setXmin(0)
+                slcImage.setXmax(width)
+                slcImage.setDataType('CFLOAT')  # 明确设置为复数浮点型
+                slcImage.setImageType('slc')    # 明确设置为SLC类型
+                
+                self.frame.setImage(slcImage)
+
+                # 生成头文件和VRT文件
+                slcImage.renderHdr()
+                slcImage.renderVRT()
+
+                # 生成辅助文件
+                self.makeFakeAux(outputNow)
+                
+                # 保存轨道信息
+                orbit_file = outputNow + '.orb'
+                self.saveOrbitToFile(self.frame.orbit, orbit_file)
+                
+                self.frameList.append(self.frame)
+                self.logger.info(f"Processed SLC {i+1}/{len(self._tiffList)}: {self._tiff}")
+                
+            except Exception as e:
+                self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
+                raise
+        
+        # 验证所有帧
+        if not self.frameList:
+            raise ValueError("No frames processed successfully")
+            
+        for i, frame in enumerate(self.frameList):
+            if frame.image is None:
+                raise ValueError(f"Frame {i} has no image information")
+                
+            if not hasattr(frame, 'numberOfLines') or not hasattr(frame, 'numberOfSamples'):
+                raise ValueError(f"Frame {i} is missing required attributes")
+                
+            if i > 0:
+                prev_frame = self.frameList[i-1]
+                time_diff = (frame.getSensingStart() - prev_frame.getSensingStop()).total_seconds()
+                
+                if time_diff < 0:
+                    self.logger.warning(f"Frame {i} overlaps with previous frame by {abs(time_diff)} seconds")
+                elif time_diff > 1.0:
+                    self.logger.warning(f"Gap of {time_diff} seconds between frames {i-1} and {i}")
+        
+        # 合并所有帧
         if len(self.frameList) > 1:
             self.logger.info("Merging multiple frames...")
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
-                
-            # 清理中间文件
-            for temp_file in temp_files:
-                # 删除主文件
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-                # 删除相关的辅助文件
-                for ext in ['.aux', '.xml', '.vrt', '.hdr']:
-                    aux_file = temp_file + ext
-                    if os.path.exists(aux_file):
-                        os.remove(aux_file)
-                        
-            # 确保最终输出文件不包含帧号
-            final_output = self.output
-            if merged_frame.getImage().filename != final_output:
-                # 重命名合并后的文件
-                os.rename(merged_frame.getImage().filename, final_output)
-                merged_frame.getImage().filename = final_output
-                
-                # 更新相关文件
-                for ext in ['.aux', '.xml', '.vrt', '.hdr']:
-                    old_file = merged_frame.getImage().filename + ext
-                    new_file = final_output + ext
-                    if os.path.exists(old_file):
-                        os.rename(old_file, new_file)
-                
             return merged_frame
         else:
             return self.frameList[0]
@@ -1085,6 +1120,32 @@ class Lutan1(Sensor):
         # 合并轨道信息
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
+        
+        # 清理中间文件
+        import os
+        import glob
+        
+        # 获取输出文件所在目录
+        output_dir = os.path.dirname(output_file)
+        base_name = os.path.splitext(os.path.basename(output_file))[0]
+        
+        # 清理所有带有帧号的文件
+        patterns = [
+            os.path.join(output_dir, f"{base_name}_*"),  # 匹配所有带帧号的主文件
+            os.path.join(output_dir, f"{base_name}_*.xml"),  # XML文件
+            os.path.join(output_dir, f"{base_name}_*.vrt"),  # VRT文件
+            os.path.join(output_dir, f"{base_name}_*.aux"),  # 辅助文件
+            os.path.join(output_dir, f"{base_name}_*.hdr"),  # 头文件
+            os.path.join(output_dir, f"{base_name}_*.orb")   # 轨道文件
+        ]
+        
+        for pattern in patterns:
+            for file_path in glob.glob(pattern):
+                try:
+                    os.remove(file_path)
+                    self.logger.debug(f"Removed intermediate file: {file_path}")
+                except OSError as e:
+                    self.logger.warning(f"Error removing file {file_path}: {str(e)}")
         
         return merged_frame
 
