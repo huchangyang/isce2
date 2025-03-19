@@ -976,20 +976,160 @@ class Lutan1(Sensor):
                 elif time_diff > 1.0:
                     self.logger.warning(f"Gap of {time_diff} seconds between frames {i-1} and {i}")
         
-        # 设置图像文件列表并进行合并
-        self._imageFileList = self._tiffList
-        result = tkfunc(self)
+        # 合并所有帧
+        if len(self.frameList) > 1:
+            self.logger.info("Merging multiple frames...")
+            merged_frame = self.mergeFrames()
+            if merged_frame is None:
+                raise RuntimeError("Frame merging failed")
+            return merged_frame
+        else:
+            return self.frameList[0]
+
+    def mergeFrames(self):
+        """
+        合并多个帧，处理重叠区域
+        """
+        if not self.frameList:
+            return None
         
-        if result is None:
-            raise RuntimeError("Frame merging failed")
+        # 按时间排序帧
+        sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
+        
+        # 计算总行数
+        total_lines = 0
+        for i, frame in enumerate(sorted_frames):
+            if i > 0:
+                # 计算与前一帧的重叠
+                prev_frame = sorted_frames[i-1]
+                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                if overlap > 0:
+                    # 重叠区域的行数
+                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    total_lines += frame.getNumberOfLines() - overlap_lines
+                else:
+                    total_lines += frame.getNumberOfLines()
+            else:
+                total_lines += frame.getNumberOfLines()
+        
+        # 创建输出文件
+        output_file = self.output
+        width = sorted_frames[0].getNumberOfSamples()
+        
+        # 使用numpy进行数据处理
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
+        current_line = 0
+        
+        for i, frame in enumerate(sorted_frames):
+            # 读取当前帧数据
+            with open(frame.image.getFilename(), 'rb') as f:
+                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
             
-        # 恢复轨道信息
-        orbit_file = self.output + '_0.orb'
-        if os.path.exists(orbit_file):
-            result.orbit = self.loadOrbitFromFile(orbit_file)
-            self.logger.info("Successfully restored orbit information")
+            if i > 0:
+                # 处理与前一帧的重叠
+                prev_frame = sorted_frames[i-1]
+                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                if overlap > 0:
+                    # 重叠区域的行数
+                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    # 使用加权平均处理重叠区域
+                    merged_data[current_line:current_line+overlap_lines] = (
+                        0.5 * merged_data[current_line:current_line+overlap_lines] +
+                        0.5 * frame_data[:overlap_lines]
+                    )
+                    # 复制非重叠区域
+                    merged_data[current_line+overlap_lines:current_line+frame.getNumberOfLines()] = frame_data[overlap_lines:]
+                else:
+                    # 无重叠，直接复制
+                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+            else:
+                # 第一帧直接复制
+                merged_data[:frame.getNumberOfLines()] = frame_data
             
-        return result
+            current_line += frame.getNumberOfLines()
+        
+        # 写入合并后的数据
+        with open(output_file, 'wb') as f:
+            merged_data.tofile(f)
+        
+        # 创建合并后的帧
+        merged_frame = Frame()
+        merged_frame.configure()
+        
+        # 设置基本属性
+        merged_frame.setSensingStart(sorted_frames[0].getSensingStart())
+        merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
+        merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
+        merged_frame.setFarRange(sorted_frames[-1].getFarRange())
+        merged_frame.setNumberOfLines(total_lines)
+        merged_frame.setNumberOfSamples(width)
+        
+        # 设置仪器参数
+        merged_frame.setInstrument(sorted_frames[0].getInstrument())
+        
+        # 设置图像
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(output_file)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(width)
+        slcImage.setLength(total_lines)
+        slcImage.setXmin(0)
+        slcImage.setXmax(width)
+        slcImage.setDataType('CFLOAT')
+        slcImage.setImageType('slc')
+        
+        merged_frame.setImage(slcImage)
+        
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
+        
+        # 生成辅助文件
+        self.makeFakeAux(output_file)
+        
+        # 合并轨道信息
+        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
+        merged_frame.setOrbit(merged_orbit)
+        
+        return merged_frame
+
+    def mergeOrbits(self, orbits):
+        """
+        合并多个轨道的状态向量
+        """
+        from isceobj.Orbit.Orbit import Orbit, StateVector
+        
+        merged_orbit = Orbit()
+        merged_orbit.configure()
+        
+        # 收集所有状态向量
+        all_vectors = []
+        for orbit in orbits:
+            if orbit and orbit._stateVectors:
+                all_vectors.extend(orbit._stateVectors)
+        
+        if not all_vectors:
+            self.logger.warning("No orbit state vectors found in any frames")
+            return None
+        
+        # 按时间排序
+        all_vectors.sort(key=lambda x: x.getTime())
+        
+        # 移除重复的状态向量
+        unique_vectors = []
+        prev_time = None
+        for sv in all_vectors:
+            curr_time = sv.getTime()
+            if prev_time is None or curr_time != prev_time:
+                unique_vectors.append(sv)
+                prev_time = curr_time
+        
+        # 添加到合并后的轨道
+        for sv in unique_vectors:
+            merged_orbit.addStateVector(sv)
+        
+        return merged_orbit
 
     def extractDoppler(self):
         '''
