@@ -1121,7 +1121,12 @@ class Lutan1(Sensor):
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
+        # 确保输出文件路径正确
+        if not output_file.endswith('.slc'):
+            output_file = os.path.splitext(output_file)[0] + '.slc'
         
+        # 更新输出文件路径
+        slcImage.setFilename(output_file)
         
         return merged_frame
 
