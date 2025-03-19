@@ -1045,53 +1045,30 @@ class Lutan1(Sensor):
                     
                     self.logger.info(f"Frame {i} overlap: {overlap_lines} lines")
                     
-                    # 使用加权平均处理重叠区域
-                    merged_data[current_line:current_line+overlap_lines] = (
-                        0.5 * merged_data[current_line:current_line+overlap_lines] +
-                        0.5 * frame_data[:overlap_lines]
-                    )
-                    
-                    # 复制非重叠区域
+                    # 直接复制非重叠区域到当前位置
                     if overlap_lines < frame.getNumberOfLines():
                         # 计算实际需要复制的行数
                         copy_lines = min(frame.getNumberOfLines() - overlap_lines,
                                        total_lines - current_line)
                         
-                        # 计算目标区域
-                        target_start = current_line + overlap_lines
-                        target_end = target_start + copy_lines
+                        # 只复制非重叠部分
+                        merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:overlap_lines+copy_lines]
+                        current_line += copy_lines
                         
-                        # 计算源区域
-                        source_start = overlap_lines
-                        source_end = source_start + copy_lines
-                        
-                        self.logger.info(f"Copying non-overlapping region: {copy_lines} lines")
-                        self.logger.info(f"Target range: [{target_start}:{target_end}], Source range: [{source_start}:{source_end}]")
-                        
-                        # 验证数组形状
-                        target_shape = merged_data[target_start:target_end].shape
-                        source_shape = frame_data[source_start:source_end].shape
-                        if target_shape != source_shape:
-                            self.logger.error(f"Shape mismatch: target={target_shape}, source={source_shape}")
-                            raise ValueError(f"Shape mismatch in frame {i}: target={target_shape}, source={source_shape}")
-                        
-                        merged_data[target_start:target_end] = frame_data[source_start:source_end]
-                        current_line = target_end
+                        self.logger.info(f"Copied {copy_lines} non-overlapping lines from frame {i}")
                     else:
-                        current_line += overlap_lines
+                        # 无重叠,直接复制整个帧
+                        target_end = current_line + frame.getNumberOfLines()
+                        self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
+                        merged_data[current_line:target_end] = frame_data
+                        current_line += frame.getNumberOfLines()
                 else:
-                    # 无重叠，直接复制
-                    target_end = current_line + frame.getNumberOfLines()
-                    self.logger.info(f"Copying frame {i}: target[{current_line}:{target_end}]")
-                    merged_data[current_line:target_end] = frame_data
-                    current_line += frame.getNumberOfLines()
-            else:
-                # 第一帧直接复制
-                self.logger.info(f"Copying first frame: shape={frame_data.shape}")
-                merged_data[:frame.getNumberOfLines()] = frame_data
-                current_line = frame.getNumberOfLines()
-            
-            self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
+                    # 第一帧直接复制
+                    self.logger.info(f"Copying first frame: shape={frame_data.shape}")
+                    merged_data[:frame.getNumberOfLines()] = frame_data
+                    current_line = frame.getNumberOfLines()
+                
+                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
         
         # 验证最终的行数
         if current_line != total_lines:
