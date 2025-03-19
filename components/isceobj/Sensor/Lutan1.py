@@ -1056,14 +1056,15 @@ class Lutan1(Sensor):
                         # 计算目标区域大小
                         target_start = current_line + overlap_lines
                         target_end = current_line + frame.getNumberOfLines()
-                        target_size = target_end - target_start
                         
                         # 计算源区域大小
                         source_start = overlap_lines
                         source_end = frame.getNumberOfLines()
-                        source_size = source_end - source_start
                         
                         # 确保大小匹配
+                        target_size = target_end - target_start
+                        source_size = source_end - source_start
+                        
                         if target_size != source_size:
                             self.logger.warning(f"Size mismatch detected: target_size={target_size}, source_size={source_size}")
                             self.logger.warning(f"Target range: [{target_start}:{target_end}], Source range: [{source_start}:{source_end}]")
@@ -1086,7 +1087,7 @@ class Lutan1(Sensor):
                         
                         self.logger.info(f"Copying non-overlapping region: target[{target_start}:{target_end}], source[{source_start}:{source_end}]")
                         merged_data[target_start:target_end] = frame_data[source_start:source_end]
-                        current_line += frame.getNumberOfLines()
+                        current_line = target_end
                     else:
                         current_line += overlap_lines
                 else:
