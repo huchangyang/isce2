@@ -1033,7 +1033,13 @@ class Lutan1(Sensor):
             
             self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
             
-            if i > 0:
+            if i == 0:
+                # 第一帧直接复制
+                self.logger.info(f"Copying first frame: shape={frame_data.shape}")
+                merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                current_line += frame.getNumberOfLines()
+                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
+            else:
                 # 处理与前一帧的重叠
                 prev_frame = sorted_frames[i-1]
                 overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
@@ -1048,25 +1054,21 @@ class Lutan1(Sensor):
                     # 直接复制非重叠区域到当前位置
                     if overlap_lines < frame.getNumberOfLines():
                         # 计算实际需要复制的行数
-                        copy_lines = min(frame.getNumberOfLines() - overlap_lines,
-                                       total_lines - current_line)
+                        copy_lines = frame.getNumberOfLines() - overlap_lines
                         
                         # 只复制非重叠部分
-                        merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:overlap_lines+copy_lines]
+                        merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
                         current_line += copy_lines
                         
                         self.logger.info(f"Copied {copy_lines} non-overlapping lines from frame {i}")
                     else:
-                        # 无重叠,直接复制整个帧
-                        target_end = current_line + frame.getNumberOfLines()
-                        self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
-                        merged_data[current_line:target_end] = frame_data
-                        current_line += frame.getNumberOfLines()
+                        self.logger.info(f"Frame {i} completely overlaps with previous frame, skipping")
                 else:
-                    # 第一帧直接复制
-                    self.logger.info(f"Copying first frame: shape={frame_data.shape}")
-                    merged_data[:frame.getNumberOfLines()] = frame_data
-                    current_line = frame.getNumberOfLines()
+                    # 无重叠,直接复制整个帧
+                    target_end = current_line + frame.getNumberOfLines()
+                    self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
+                    merged_data[current_line:target_end] = frame_data
+                    current_line += frame.getNumberOfLines()
                 
                 self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
         
