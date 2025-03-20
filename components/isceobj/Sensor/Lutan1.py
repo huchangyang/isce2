@@ -436,9 +436,13 @@ class Lutan1(Sensor):
         
         # 计算相对时间（秒）
         time_seconds = [(t - timestamps[0]).total_seconds() for t in timestamps]
-        self.filterMethod = 'weighted'
+        self.filterMethod = 'none'
         # 根据选择的方法进行滤波
-        if self.filterMethod == 'standard':
+        if self.filterMethod == 'none':
+            # 不进行滤波，直接使用原始数据
+            filtered_pos = np.array(positions)
+            filtered_vel = np.array(velocities)
+        elif self.filterMethod == 'standard':
             filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
         elif self.filterMethod == 'sliding':
             filtered_pos, filtered_vel = self.filter_orbit_sliding(timestamps, np.array(positions), np.array(velocities))
