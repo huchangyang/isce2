@@ -1101,7 +1101,7 @@ class Lutan1(Sensor):
         merged_frame.setFarRange(sorted_frames[-1].getFarRange())
         merged_frame.setNumberOfLines(total_lines)  # 使用合并后的总行数
         merged_frame.setNumberOfSamples(width)
-        merged_frame.setNumberOfRangeBins(width)  # 确保设置range bins
+        merged_frame.setNumberRangeBins(width)  # 修正方法名
         
         # 从第一帧复制仪器参数
         instrument = sorted_frames[0].getInstrument()
