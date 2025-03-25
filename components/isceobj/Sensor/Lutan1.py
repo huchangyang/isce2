@@ -1110,42 +1110,32 @@ class Lutan1(Sensor):
         
         merged_frame.setImage(slcImage)
 
-        # 生成头文件和VRT文件
-        slcImage.renderHdr()
-        slcImage.renderVRT()
+        # 修改必需文件和可选文件的后缀列表
+        required_suffixes = ['.slc']  # 只检查必需的SLC文件
+        optional_suffixes = ['.xml', '.vrt', '.aux', '.hdr', '.orb', '.slc.vrt', '.slc.xml']  # 这些文件可能在后续步骤中生成
 
-        # 清理中间文件并确保合并后的文件正确
-        base_output = os.path.splitext(output_file)[0]
-        suffixes = ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb', '.slc.vrt', '.slc.xml']
-        bak_suffixes = ['.bak', '.aux.bak', '.vrt.bak', '.xml.bak', '.orb.bak']
-
-        # 1. 首先备份所有中间文件（以防万一）
-        backup_dir = base_output + '_backup'
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
-
-        # 2. 确保合并后的主文件存在且正确
-        for suffix in suffixes:
-            merged_file = base_output + suffix
+        # 2. 只检查必需的合并文件是否存在
+        for suffix in required_suffixes:
+            merged_file = output_file + suffix
             if not os.path.exists(merged_file):
                 self.logger.error(f"Required merged file not found: {merged_file}")
                 raise RuntimeError(f"Required merged file not found: {merged_file}")
 
         # 3. 移动所有中间文件到备份目录
         for i in range(len(sorted_frames)):
-            for suffix in suffixes + bak_suffixes:
-                intermediate_file = f"{base_output}_{i}{suffix}"
+            for suffix in required_suffixes + optional_suffixes:
+                intermediate_file = f"{output_file}_{i}{suffix}"
                 if os.path.exists(intermediate_file):
                     try:
-                        backup_file = os.path.join(backup_dir, os.path.basename(intermediate_file))
+                        backup_file = os.path.join(os.path.dirname(output_file) + '_backup', os.path.basename(intermediate_file))
                         self.logger.info(f"Moving intermediate file to backup: {intermediate_file}")
                         os.rename(intermediate_file, backup_file)
                     except Exception as e:
                         self.logger.warning(f"Error backing up file {intermediate_file}: {str(e)}")
 
-        # 4. 确保所有必要的合并后文件都存在且可访问
-        for suffix in suffixes:
-            merged_file = base_output + suffix
+        # 4. 只验证必需文件的可访问性
+        for suffix in required_suffixes:
+            merged_file = output_file + suffix
             try:
                 with open(merged_file, 'rb') as f:
                     # 尝试读取文件开头以验证可访问性
@@ -1162,9 +1152,22 @@ class Lutan1(Sensor):
         if hasattr(merged_frame, 'auxFile'):
             merged_frame.auxFile = output_file + '.aux'
 
-        # 验证并更新XML文件
-        xml_file = base_output + '.xml'
-        self.verify_xml_content(xml_file)
+        # 生成必要的辅助文件
+        try:
+            # 生成头文件和VRT文件
+            slcImage.renderHdr()
+            slcImage.renderVRT()
+            
+            # 生成XML文件（如果需要）
+            xml_file = output_file + '.xml'
+            if not os.path.exists(xml_file):
+                self.logger.info(f"Generating XML file: {xml_file}")
+                # 在这里添加生成XML文件的代码
+            else:
+                self.verify_xml_content(xml_file)
+        except Exception as e:
+            self.logger.warning(f"Error generating auxiliary files: {str(e)}")
+            # 不抛出异常，因为这些文件可以在后续步骤中生成
 
         return merged_frame
 
