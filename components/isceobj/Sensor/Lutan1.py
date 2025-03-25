@@ -1110,47 +1110,52 @@ class Lutan1(Sensor):
         
         merged_frame.setImage(slcImage)
 
-        # 修改必需文件和可选文件的后缀列表
-        required_suffixes = ['.slc']  # 只检查必需的SLC文件
-        optional_suffixes = ['.xml', '.vrt', '.aux', '.hdr', '.orb', '.slc.vrt', '.slc.xml']  # 这些文件可能在后续步骤中生成
+        # 修改必需文件的后缀列表
+        required_suffixes = ['']  # 空字符串表示原始文件名，不需要额外后缀
 
-        # 2. 只检查必需的合并文件是否存在
-        for suffix in required_suffixes:
-            merged_file = output_file + suffix
-            if not os.path.exists(merged_file):
-                self.logger.error(f"Required merged file not found: {merged_file}")
-                raise RuntimeError(f"Required merged file not found: {merged_file}")
+        # 2. 检查必需的合并文件是否存在
+        base_output = output_file  # output_file 已经包含了完整的路径和.slc后缀
+        if not os.path.exists(base_output):
+            self.logger.error(f"Required merged file not found: {base_output}")
+            raise RuntimeError(f"Required merged file not found: {base_output}")
+
+        # 创建备份目录
+        backup_dir = os.path.join(os.path.dirname(base_output), 'backup')
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
 
         # 3. 移动所有中间文件到备份目录
         for i in range(len(sorted_frames)):
-            for suffix in required_suffixes + optional_suffixes:
-                intermediate_file = f"{output_file}_{i}{suffix}"
+            # 构建中间文件的基本名称
+            intermediate_base = f"{os.path.splitext(base_output)[0]}_{i}"
+            
+            # 检查所有可能的后缀
+            for suffix in ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb', '.slc.vrt', '.slc.xml']:
+                intermediate_file = intermediate_base + suffix
                 if os.path.exists(intermediate_file):
                     try:
-                        backup_file = os.path.join(os.path.dirname(output_file) + '_backup', os.path.basename(intermediate_file))
+                        backup_file = os.path.join(backup_dir, os.path.basename(intermediate_file))
                         self.logger.info(f"Moving intermediate file to backup: {intermediate_file}")
                         os.rename(intermediate_file, backup_file)
                     except Exception as e:
                         self.logger.warning(f"Error backing up file {intermediate_file}: {str(e)}")
 
-        # 4. 只验证必需文件的可访问性
-        for suffix in required_suffixes:
-            merged_file = output_file + suffix
-            try:
-                with open(merged_file, 'rb') as f:
-                    # 尝试读取文件开头以验证可访问性
-                    f.read(1)
-                self.logger.info(f"Verified merged file: {merged_file}")
-            except Exception as e:
-                self.logger.error(f"Error accessing merged file {merged_file}: {str(e)}")
-                raise RuntimeError(f"Error accessing merged file {merged_file}")
+        # 4. 验证合并后的文件可访问性
+        try:
+            with open(base_output, 'rb') as f:
+                # 尝试读取文件开头以验证可访问性
+                f.read(1)
+            self.logger.info(f"Verified merged file: {base_output}")
+        except Exception as e:
+            self.logger.error(f"Error accessing merged file {base_output}: {str(e)}")
+            raise RuntimeError(f"Error accessing merged file {base_output}")
 
         self.logger.info("Merged files verification completed")
 
         # 5. 更新 frame 的文件路径
-        merged_frame.image.filename = output_file
+        merged_frame.image.filename = base_output
         if hasattr(merged_frame, 'auxFile'):
-            merged_frame.auxFile = output_file + '.aux'
+            merged_frame.auxFile = base_output + '.aux'
 
         # 生成必要的辅助文件
         try:
@@ -1159,11 +1164,8 @@ class Lutan1(Sensor):
             slcImage.renderVRT()
             
             # 生成XML文件（如果需要）
-            xml_file = output_file + '.xml'
-            if not os.path.exists(xml_file):
-                self.logger.info(f"Generating XML file: {xml_file}")
-                # 在这里添加生成XML文件的代码
-            else:
+            xml_file = base_output + '.xml'
+            if os.path.exists(xml_file):
                 self.verify_xml_content(xml_file)
         except Exception as e:
             self.logger.warning(f"Error generating auxiliary files: {str(e)}")
