@@ -982,9 +982,14 @@ class Lutan1(Sensor):
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
-            return merged_frame 
+            # 更新实例的frame属性
+            self.frame = merged_frame
+            self.logger.info(f"Updated instance frame with merged frame (lines={merged_frame.getNumberOfLines()}, samples={merged_frame.getNumberOfSamples()})")
+            return self.frame
         else:
-            return self.frameList[0]
+            self.frame = self.frameList[0]
+            self.logger.info(f"Using single frame (lines={self.frame.getNumberOfLines()}, samples={self.frame.getNumberOfSamples()})")
+            return self.frame
 
     def mergeFrames(self):
         """
@@ -1109,7 +1114,7 @@ class Lutan1(Sensor):
         slcImage.setImageType('slc')
         
         merged_frame.setImage(slcImage)
-        import pdb; pdb.set_trace()
+        
         # 生成头文件和VRT文件
         slcImage.renderHdr()
         slcImage.renderVRT()
