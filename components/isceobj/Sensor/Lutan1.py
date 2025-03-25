@@ -1104,30 +1104,7 @@ class Lutan1(Sensor):
         merged_frame.setNumberRangeBins(width) 
         
         # 从第一帧复制仪器参数
-        source_instrument = sorted_frames[0].getInstrument()
-        merged_instrument = isceobj.createInstrument()  # 使用createInstrument而不是createRadar
-
-        # 复制所有必要的属性
-        merged_instrument.setRadarFrequency(source_instrument.getRadarFrequency())
-        merged_instrument.setPulseRepetitionFrequency(source_instrument.getPulseRepetitionFrequency())
-        merged_instrument.setPulseLength(source_instrument.getPulseLength())
-        merged_instrument.setChirpSlope(source_instrument.getChirpSlope())
-        merged_instrument.setIncidenceAngle(source_instrument.getIncidenceAngle())
-        merged_instrument.setRangePixelSize(source_instrument.getRangePixelSize())
-        merged_instrument.setRangeSamplingRate(source_instrument.getRangeSamplingRate())
-        merged_instrument.setInPhaseValue(source_instrument.getInPhaseValue())
-        merged_instrument.setQuadratureValue(source_instrument.getQuadratureValue())
-
-        # 复制平台参数
-        source_platform = source_instrument.getPlatform()
-        merged_platform = merged_instrument.getPlatform()
-        merged_platform.setPlanet(source_platform.getPlanet())
-        merged_platform.setMission(source_platform.getMission())
-        merged_platform.setPointingDirection(source_platform.getPointingDirection())
-        merged_platform.setAntennaLength(source_platform.getAntennaLength())
-
-        # 设置合并后的仪器对象
-        merged_frame.setInstrument(merged_instrument)
+        merged_frame.setInstrument(sorted_frames[0].getInstrument())
 
         # 确保更新所有必要的属性
         merged_frame.setPassDirection(sorted_frames[0].getPassDirection())
