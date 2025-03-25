@@ -1077,41 +1077,33 @@ class Lutan1(Sensor):
             self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
             raise ValueError("Line count mismatch in merged output")
         
+        # 创建备份目录
+        backup_dir = os.path.join(os.path.dirname(output_file), 'original_frames')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # 移动原始文件到备份目录
+        for frame in sorted_frames:
+            frame_file = frame.image.getFilename()
+            if os.path.exists(frame_file):
+                backup_file = os.path.join(backup_dir, os.path.basename(frame_file))
+                os.rename(frame_file, backup_file)
+                # 同时移动相关的辅助文件
+                for ext in ['.xml', '.vrt', '.aux', '.orb']:
+                    if os.path.exists(frame_file + ext):
+                        os.rename(frame_file + ext, backup_file + ext)
+        
+        # 在生成合并文件之前，先删除可能存在的旧文件
+        for ext in ['.slc', '.slc.vrt', '.slc.xml', '.slc.aux']:
+            full_path = output_file + ext
+            if os.path.exists(full_path):
+                os.remove(full_path)
+                self.logger.info(f"Removed existing file: {full_path}")
+        
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
             merged_data.tofile(f)
         
-        # 创建合并后的帧
-        merged_frame = Frame()
-        merged_frame.configure()
-        
-        # 设置基本属性
-        start_time = sorted_frames[0].getSensingStart()
-        stop_time = sorted_frames[-1].getSensingStop()
-        merged_frame.setSensingStart(start_time)
-        merged_frame.setSensingStop(stop_time)
-        
-        # 计算中间时间点
-        diff_time = DTUtil.timeDeltaToSeconds(stop_time - start_time) / 2.0
-        sensing_mid = start_time + datetime.timedelta(microseconds=int(diff_time*1e6))
-        merged_frame.setSensingMid(sensing_mid)
-        
-        # 设置其他基本属性
-        merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
-        merged_frame.setFarRange(sorted_frames[-1].getFarRange())
-        merged_frame.setNumberOfLines(total_lines)  # 使用合并后的总行数
-        merged_frame.setNumberOfSamples(width)
-        merged_frame.setNumberRangeBins(width) 
-        
-        # 从第一帧复制仪器参数
-        merged_frame.setInstrument(sorted_frames[0].getInstrument())
-
-        # 确保更新所有必要的属性
-        merged_frame.setPassDirection(sorted_frames[0].getPassDirection())
-        merged_frame.setPolarization(sorted_frames[0].getPolarization())
-        merged_frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
-        
-        # 设置图像对象
+        # 设置图像
         slcImage = isceobj.createSlcImage()
         slcImage.setByteOrder('l')
         slcImage.setFilename(output_file)
@@ -1123,66 +1115,52 @@ class Lutan1(Sensor):
         slcImage.setDataType('CFLOAT')
         slcImage.setImageType('slc')
         
+        merged_frame = Frame()
+        merged_frame.configure()
+        
+        # 设置基本属性
+        merged_frame.setSensingStart(sorted_frames[0].getSensingStart())
+        merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
+        merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
+        merged_frame.setFarRange(sorted_frames[-1].getFarRange())
+        merged_frame.setNumberOfLines(total_lines)
+        merged_frame.setNumberOfSamples(width)
+        
+        # 设置仪器参数
+        merged_frame.setInstrument(sorted_frames[0].getInstrument())
+        
         merged_frame.setImage(slcImage)
         
-        # 确保更新轨道信息
-        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
-        if merged_orbit:
-            merged_frame.setOrbit(merged_orbit)
-        
-        # 写入合并后的数据
-        with open(output_file, 'wb') as f:
-            merged_data.tofile(f)
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
         
         # 生成辅助文件
-        self.makeFakeAux(output_file)  # 使用合并后的文件名生成辅助文件
+        self.makeFakeAux(output_file)
         
-        # 更新帧的文件路径
-        merged_frame.image.filename = output_file
-        merged_frame.auxFile = output_file + '.aux'
+        # 合并轨道信息并保存
+        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
+        merged_frame.setOrbit(merged_orbit)
         
-        # 生成必要的辅助文件
-        try:
-            slcImage.renderHdr()
-            slcImage.renderVRT()
-            
-            # 生成XML文件
-            xml_file = output_file + '.xml'
-            if os.path.exists(xml_file):
-                self.verify_xml_content(xml_file)
-        except Exception as e:
-            self.logger.warning(f"Error generating auxiliary files: {str(e)}")
+        # 保存轨道信息到单独的文件
+        orbit_file = output_file + '.orb'
+        self.saveOrbitToFile(merged_orbit, orbit_file)
         
-        # 移动中间文件
-        backup_dir = os.path.join(os.path.dirname(output_file), 'reference_backup')
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
+        # 确保所有相关文件都正确生成
+        required_files = [
+            output_file,
+            output_file + '.xml',
+            output_file + '.vrt',
+            output_file + '.aux',
+            orbit_file
+        ]
         
-        # 移动中间文件
-        for i in range(len(sorted_frames)):
-            base_name = os.path.splitext(os.path.basename(output_file))[0]
-            intermediate_base = f"{base_name}_{i}"
-            
-            for suffix in ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb']:
-                src_file = os.path.join(os.path.dirname(output_file), intermediate_base + suffix)
-                if os.path.exists(src_file):
-                    try:
-                        dst_file = os.path.join(backup_dir, os.path.basename(src_file))
-                        if os.path.exists(dst_file):
-                            os.remove(dst_file)
-                        os.rename(src_file, dst_file)
-                        self.logger.info(f"Moved {src_file} to {dst_file}")
-                    except Exception as e:
-                        self.logger.error(f"Error moving file {src_file}: {str(e)}")
-        
-        # 验证最终的帧属性
-        self.logger.info(f"Merged frame properties:")
-        self.logger.info(f"Number of lines: {merged_frame.getNumberOfLines()}")
-        self.logger.info(f"Number of samples: {merged_frame.getNumberOfSamples()}")
-        self.logger.info(f"Sensing start: {merged_frame.getSensingStart()}")
-        self.logger.info(f"Sensing stop: {merged_frame.getSensingStop()}")
-        self.logger.info(f"Sensing mid: {merged_frame.getSensingMid()}")
-        self.logger.info(f"Aux file: {merged_frame.auxFile}")
+        for file in required_files:
+            if not os.path.exists(file):
+                self.logger.error(f"Required file not generated: {file}")
+                raise RuntimeError(f"Failed to generate {file}")
+            else:
+                self.logger.info(f"Successfully generated: {file}")
         
         return merged_frame
 
@@ -1490,27 +1468,3 @@ class Lutan1(Sensor):
             orbit.addStateVector(sv)
         
         return orbit
-
-    def verify_xml_content(self, xml_file):
-        """验证并更新XML文件中的文件路径引用"""
-        try:
-            tree = ET.parse(xml_file)
-            root = tree.getroot()
-            
-            # 检查并更新文件路径引用
-            for elem in root.iter():
-                if 'file' in elem.attrib:
-                    file_path = elem.attrib['file']
-                    if '_0' in file_path or '_1' in file_path:
-                        # 更新为合并后的文件路径
-                        new_path = file_path.replace(file_path, os.path.basename(self.output))
-                        elem.attrib['file'] = new_path
-                        self.logger.info(f"Updated XML file path: {file_path} -> {new_path}")
-            
-            # 保存更新后的XML
-            tree.write(xml_file)
-            self.logger.info(f"Updated XML file: {xml_file}")
-            
-        except Exception as e:
-            self.logger.error(f"Error updating XML file {xml_file}: {str(e)}")
-            raise RuntimeError(f"Error updating XML file {xml_file}")

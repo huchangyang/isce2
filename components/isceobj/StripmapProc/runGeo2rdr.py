@@ -40,6 +40,7 @@ import logging
 import numpy as np
 import datetime
 import os
+import glob
 
 logger = logging.getLogger('isce.insar.runGeo2rdr') 
 
@@ -49,7 +50,13 @@ def runGeo2rdr(self):
 
     logger.info("Running geo2rdr")
 
-    info = self._insar.loadProduct( self._insar.secondarySlcCropProduct)
+    logger.info(f"Looking for product: {self._insar.secondarySlcCropProduct}")
+    # 添加调试信息
+    pattern = self._insar.secondarySlcCropProduct.replace('.slc', '.slc*')
+    matching_files = glob.glob(pattern)
+    logger.info(f"Found matching files: {matching_files}")
+    
+    info = self._insar.loadProduct(self._insar.secondarySlcCropProduct)
 
     offsetsDir = self.insar.offsetsDirname 
     os.makedirs(offsetsDir, exist_ok=True)
