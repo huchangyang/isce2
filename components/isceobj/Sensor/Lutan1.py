@@ -982,7 +982,14 @@ class Lutan1(Sensor):
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
-            return merged_frame 
+            
+            # 清理frameList，只保留合并后的frame
+            self.frameList = [merged_frame]
+            
+            # 更新当前frame引用
+            self.frame = merged_frame
+            
+            return merged_frame
         else:
             return self.frameList[0]
 
@@ -1109,22 +1116,44 @@ class Lutan1(Sensor):
         slcImage.setImageType('slc')
         
         merged_frame.setImage(slcImage)
-        import pdb; pdb.set_trace()
+
         # 生成头文件和VRT文件
         slcImage.renderHdr()
         slcImage.renderVRT()
-        
+
+        # 确保生成正确的文件名
+        output_base = os.path.splitext(output_file)[0]
+        if not output_base.endswith('.slc'):
+            output_base += '.slc'
+
+        # 生成XML文件
+        merged_frame.dump(output_base + '.xml')
+
         # 生成辅助文件
-        self.makeFakeAux(output_file)
-        
-        # 合并轨道信息
-        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
-        merged_frame.setOrbit(merged_orbit)
-        
-        # 确保输出文件路径正确
-        if not output_file.endswith('.slc'):
-            output_file = os.path.splitext(output_file)[0] + '.slc'
-        
+        self.makeFakeAux(output_base)
+
+        # 保存轨道信息
+        orbit_file = output_base + '.orb'
+        self.saveOrbitToFile(merged_frame.orbit, orbit_file)
+
+        # 确保所有文件权限正确
+        for ext in ['.xml', '.vrt', '.aux', '.orb']:
+            filename = output_base + ext
+            if os.path.exists(filename):
+                os.chmod(filename, 0o644)
+
+        # 删除或重命名原始frame文件（可选）
+        for frame in sorted_frames:
+            if frame.image and frame.image.filename != output_base:
+                for ext in ['.xml', '.vrt', '.aux', '.orb']:
+                    old_file = frame.image.filename + ext
+                    if os.path.exists(old_file):
+                        # 可以选择删除或重命名
+                        # os.remove(old_file)  # 删除
+                        backup = old_file + '.bak'  # 重命名为备份
+                        if os.path.exists(backup):
+                            os.remove(backup)
+                        os.rename(old_file, backup)
 
         return merged_frame
 
