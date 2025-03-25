@@ -1105,7 +1105,7 @@ class Lutan1(Sensor):
         
         # 从第一帧复制仪器参数
         source_instrument = sorted_frames[0].getInstrument()
-        merged_instrument = isceobj.createRadar()  # 创建新的Radar对象
+        merged_instrument = isceobj.createInstrument()  # 使用createInstrument而不是createRadar
 
         # 复制所有必要的属性
         merged_instrument.setRadarFrequency(source_instrument.getRadarFrequency())
