@@ -1086,16 +1086,27 @@ class Lutan1(Sensor):
         merged_frame.configure()
         
         # 设置基本属性
-        merged_frame.setSensingStart(sorted_frames[0].getSensingStart())
-        merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
+        start_time = sorted_frames[0].getSensingStart()
+        stop_time = sorted_frames[-1].getSensingStop()
+        merged_frame.setSensingStart(start_time)
+        merged_frame.setSensingStop(stop_time)
+        
+        # 计算中间时间点
+        diff_time = DTUtil.timeDeltaToSeconds(stop_time - start_time) / 2.0
+        sensing_mid = start_time + datetime.timedelta(microseconds=int(diff_time*1e6))
+        merged_frame.setSensingMid(sensing_mid)
+        
+        # 设置其他基本属性
         merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
         merged_frame.setFarRange(sorted_frames[-1].getFarRange())
-        merged_frame.setNumberOfLines(total_lines)
+        merged_frame.setNumberOfLines(total_lines)  # 使用合并后的总行数
         merged_frame.setNumberOfSamples(width)
+        merged_frame.setNumberOfRangeBins(width)  # 确保设置range bins
         
-        # 设置仪器参数
+        # 从第一帧复制仪器参数
         instrument = sorted_frames[0].getInstrument()
-        merged_frame.setInstrument(instrument)
+        merged_instrument = instrument.copy()  # 创建仪器参数的副本
+        merged_frame.setInstrument(merged_instrument)
         
         # 确保更新所有必要的属性
         merged_frame.setPassDirection(sorted_frames[0].getPassDirection())
@@ -1126,7 +1137,7 @@ class Lutan1(Sensor):
             merged_data.tofile(f)
         
         # 生成辅助文件
-        self.makeFakeAux(output_file)
+        self.makeFakeAux(output_file)  # 使用合并后的文件名生成辅助文件
         
         # 更新帧的文件路径
         merged_frame.image.filename = output_file
@@ -1144,7 +1155,7 @@ class Lutan1(Sensor):
         except Exception as e:
             self.logger.warning(f"Error generating auxiliary files: {str(e)}")
         
-        # 移动或删除中间文件
+        # 移动中间文件
         backup_dir = os.path.join(os.path.dirname(output_file), 'reference_backup')
         if not os.path.exists(backup_dir):
             os.makedirs(backup_dir)
@@ -1165,6 +1176,15 @@ class Lutan1(Sensor):
                         self.logger.info(f"Moved {src_file} to {dst_file}")
                     except Exception as e:
                         self.logger.error(f"Error moving file {src_file}: {str(e)}")
+        
+        # 验证最终的帧属性
+        self.logger.info(f"Merged frame properties:")
+        self.logger.info(f"Number of lines: {merged_frame.getNumberOfLines()}")
+        self.logger.info(f"Number of samples: {merged_frame.getNumberOfSamples()}")
+        self.logger.info(f"Sensing start: {merged_frame.getSensingStart()}")
+        self.logger.info(f"Sensing stop: {merged_frame.getSensingStop()}")
+        self.logger.info(f"Sensing mid: {merged_frame.getSensingMid()}")
+        self.logger.info(f"Aux file: {merged_frame.auxFile}")
         
         return merged_frame
 
