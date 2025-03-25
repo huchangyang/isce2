@@ -996,7 +996,31 @@ class Lutan1(Sensor):
         # 按时间排序帧
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
-        # 计算总行数
+        # 在开始处理之前，先清理所有相关文件
+        def cleanup_files(base_path):
+            # 清理所有可能的文件模式
+            patterns = [
+                '*.slc', '*.slc_[0-9]*',  # SLC文件
+                '*.slc.xml', '*.slc_[0-9]*.xml',  # XML文件
+                '*.slc.vrt', '*.slc_[0-9]*.vrt',  # VRT文件
+                '*.slc.aux', '*.slc_[0-9]*.aux',  # AUX文件
+                '*.slc.orb', '*.slc_[0-9]*.orb',  # ORB文件
+                '*.slc.iq.*', '*.slc_[0-9]*.iq.*'  # IQ文件
+            ]
+            import glob
+            for pattern in patterns:
+                files = glob.glob(os.path.join(os.path.dirname(base_path), pattern))
+                for f in files:
+                    try:
+                        os.remove(f)
+                        self.logger.info(f"Removed existing file: {f}")
+                    except OSError as e:
+                        self.logger.warning(f"Error removing {f}: {e}")
+
+        # 清理现有文件
+        cleanup_files(output_file)
+        
+        # 计算正确的总行数
         total_lines = 0
         current_line = 0
         for i, frame in enumerate(sorted_frames):
@@ -1010,21 +1034,19 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
-                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
                 else:
                     total_lines += frame.getNumberOfLines()
             else:
                 total_lines += frame.getNumberOfLines()
         
-        self.logger.info(f"Total lines in merged output: {total_lines}")
+        self.logger.info(f"Calculated total lines after merging: {total_lines}")
+        
+        # 创建输出数据数组
+        width = sorted_frames[0].getNumberOfSamples()
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
         # 创建输出文件
         output_file = self.output
-        width = sorted_frames[0].getNumberOfSamples()
-        
-        # 使用numpy进行数据处理
-        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
-        current_line = 0
         
         for i, frame in enumerate(sorted_frames):
             # 读取当前帧数据
@@ -1072,44 +1094,22 @@ class Lutan1(Sensor):
                 
                 self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
         
-        # 验证最终的行数
+        # 确保最终的行数正确
         if current_line != total_lines:
             self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
             raise ValueError("Line count mismatch in merged output")
-        
-        # 创建备份目录
-        backup_dir = os.path.join(os.path.dirname(output_file), 'original_frames')
-        os.makedirs(backup_dir, exist_ok=True)
-        
-        # 移动原始文件到备份目录
-        for frame in sorted_frames:
-            frame_file = frame.image.getFilename()
-            if os.path.exists(frame_file):
-                backup_file = os.path.join(backup_dir, os.path.basename(frame_file))
-                os.rename(frame_file, backup_file)
-                # 同时移动相关的辅助文件
-                for ext in ['.xml', '.vrt', '.aux', '.orb']:
-                    if os.path.exists(frame_file + ext):
-                        os.rename(frame_file + ext, backup_file + ext)
-        
-        # 在生成合并文件之前，先删除可能存在的旧文件
-        for ext in ['.slc', '.slc.vrt', '.slc.xml', '.slc.aux']:
-            full_path = output_file + ext
-            if os.path.exists(full_path):
-                os.remove(full_path)
-                self.logger.info(f"Removed existing file: {full_path}")
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
             merged_data.tofile(f)
         
-        # 设置图像
+        # 设置图像属性
         slcImage = isceobj.createSlcImage()
         slcImage.setByteOrder('l')
         slcImage.setFilename(output_file)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
-        slcImage.setLength(total_lines)
+        slcImage.setLength(total_lines)  # 使用正确计算的总行数
         slcImage.setXmin(0)
         slcImage.setXmax(width)
         slcImage.setDataType('CFLOAT')
@@ -1123,7 +1123,7 @@ class Lutan1(Sensor):
         merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
         merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
         merged_frame.setFarRange(sorted_frames[-1].getFarRange())
-        merged_frame.setNumberOfLines(total_lines)
+        merged_frame.setNumberOfLines(total_lines)  # 使用正确计算的总行数
         merged_frame.setNumberOfSamples(width)
         
         # 设置仪器参数
@@ -1138,21 +1138,16 @@ class Lutan1(Sensor):
         # 生成辅助文件
         self.makeFakeAux(output_file)
         
-        # 合并轨道信息并保存
+        # 保存轨道信息
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
-        # 保存轨道信息到单独的文件
-        orbit_file = output_file + '.orb'
-        self.saveOrbitToFile(merged_orbit, orbit_file)
-        
-        # 确保所有相关文件都正确生成
+        # 验证所有必需文件都已正确生成
         required_files = [
             output_file,
             output_file + '.xml',
             output_file + '.vrt',
-            output_file + '.aux',
-            orbit_file
+            output_file + '.aux'
         ]
         
         for file in required_files:
@@ -1161,6 +1156,22 @@ class Lutan1(Sensor):
                 raise RuntimeError(f"Failed to generate {file}")
             else:
                 self.logger.info(f"Successfully generated: {file}")
+        
+        # 创建备份目录并移动原始文件
+        backup_dir = os.path.join(os.path.dirname(output_file), 'original_frames')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # 移动原始文件到备份目录
+        for frame in sorted_frames:
+            frame_file = frame.image.getFilename()
+            if os.path.exists(frame_file):
+                backup_file = os.path.join(backup_dir, os.path.basename(frame_file))
+                os.rename(frame_file, backup_file)
+                # 同时移动相关的辅助文件
+                for ext in ['.xml', '.vrt', '.aux', '.orb', '.iq.xml', '.iq.vrt']:
+                    src_file = frame_file + ext
+                    if os.path.exists(src_file):
+                        os.rename(src_file, backup_file + ext)
         
         return merged_frame
 
