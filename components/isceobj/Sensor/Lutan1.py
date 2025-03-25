@@ -987,16 +987,21 @@ class Lutan1(Sensor):
             return self.frameList[0]
 
     def mergeFrames(self):
-        """
+        '''
         合并多个帧，处理重叠区域
-        """
+        '''
         if not self.frameList:
             return None
         
         # 按时间排序帧
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
-        # 在开始处理之前，先清理所有相关文件
+        # 确保输出文件路径正确
+        output_file = self.output
+        if not output_file.endswith('.slc'):
+            output_file = os.path.splitext(output_file)[0] + '.slc'
+        
+        # 定义清理函数
         def cleanup_files(base_path):
             # 清理所有可能的文件模式
             patterns = [
@@ -1016,7 +1021,7 @@ class Lutan1(Sensor):
                         self.logger.info(f"Removed existing file: {f}")
                     except OSError as e:
                         self.logger.warning(f"Error removing {f}: {e}")
-
+        
         # 清理现有文件
         cleanup_files(output_file)
         
@@ -1044,9 +1049,6 @@ class Lutan1(Sensor):
         # 创建输出数据数组
         width = sorted_frames[0].getNumberOfSamples()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
-        
-        # 创建输出文件
-        output_file = self.output
         
         for i, frame in enumerate(sorted_frames):
             # 读取当前帧数据
@@ -1109,7 +1111,7 @@ class Lutan1(Sensor):
         slcImage.setFilename(output_file)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
-        slcImage.setLength(total_lines)  # 使用正确计算的总行数
+        slcImage.setLength(total_lines)
         slcImage.setXmin(0)
         slcImage.setXmax(width)
         slcImage.setDataType('CFLOAT')
@@ -1123,7 +1125,7 @@ class Lutan1(Sensor):
         merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
         merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
         merged_frame.setFarRange(sorted_frames[-1].getFarRange())
-        merged_frame.setNumberOfLines(total_lines)  # 使用正确计算的总行数
+        merged_frame.setNumberOfLines(total_lines)
         merged_frame.setNumberOfSamples(width)
         
         # 设置仪器参数
@@ -1138,24 +1140,9 @@ class Lutan1(Sensor):
         # 生成辅助文件
         self.makeFakeAux(output_file)
         
-        # 保存轨道信息
+        # 合并轨道信息并保存
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
-        
-        # 验证所有必需文件都已正确生成
-        required_files = [
-            output_file,
-            output_file + '.xml',
-            output_file + '.vrt',
-            output_file + '.aux'
-        ]
-        
-        for file in required_files:
-            if not os.path.exists(file):
-                self.logger.error(f"Required file not generated: {file}")
-                raise RuntimeError(f"Failed to generate {file}")
-            else:
-                self.logger.info(f"Successfully generated: {file}")
         
         # 创建备份目录并移动原始文件
         backup_dir = os.path.join(os.path.dirname(output_file), 'original_frames')
@@ -1172,6 +1159,21 @@ class Lutan1(Sensor):
                     src_file = frame_file + ext
                     if os.path.exists(src_file):
                         os.rename(src_file, backup_file + ext)
+        
+        # 验证所有必需文件都已正确生成
+        required_files = [
+            output_file,
+            output_file + '.xml',
+            output_file + '.vrt',
+            output_file + '.aux'
+        ]
+        
+        for file in required_files:
+            if not os.path.exists(file):
+                self.logger.error(f"Required file not generated: {file}")
+                raise RuntimeError(f"Failed to generate {file}")
+            else:
+                self.logger.info(f"Successfully generated: {file}")
         
         return merged_frame
 
