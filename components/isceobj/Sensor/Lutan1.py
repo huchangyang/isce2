@@ -436,7 +436,7 @@ class Lutan1(Sensor):
         
         # 计算相对时间（秒）
         time_seconds = [(t - timestamps[0]).total_seconds() for t in timestamps]
-        self.filterMethod = 'position_only'
+        self.filterMethod = 'none'
         # 根据选择的方法进行滤波
         if self.filterMethod == 'none':
             # 不进行滤波，直接使用原始数据
