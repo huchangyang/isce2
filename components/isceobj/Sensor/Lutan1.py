@@ -1093,10 +1093,12 @@ class Lutan1(Sensor):
         merged_frame.setNumberOfLines(total_lines)
         merged_frame.setNumberOfSamples(width)
         
-        # 设置仪器参数
-        merged_frame.setInstrument(sorted_frames[0].getInstrument())
-        
-        # 设置图像
+        # 确保更新所有必要的属性
+        merged_frame.setPassDirection(sorted_frames[0].getPassDirection())
+        merged_frame.setPolarization(sorted_frames[0].getPolarization())
+        merged_frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
+
+        # 设置图像对象
         slcImage = isceobj.createSlcImage()
         slcImage.setByteOrder('l')
         slcImage.setFilename(output_file)
@@ -1110,6 +1112,11 @@ class Lutan1(Sensor):
         
         merged_frame.setImage(slcImage)
 
+        # 确保更新轨道信息
+        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
+        if merged_orbit:
+            merged_frame.setOrbit(merged_orbit)
+
         # 修改必需文件的后缀列表
         required_suffixes = ['']  # 空字符串表示原始文件名，不需要额外后缀
 
@@ -1120,25 +1127,42 @@ class Lutan1(Sensor):
             raise RuntimeError(f"Required merged file not found: {base_output}")
 
         # 创建备份目录
-        backup_dir = os.path.join(os.path.dirname(base_output), 'backup')
+        backup_dir = os.path.join(os.path.dirname(base_output), 'reference_backup')
         if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
+            try:
+                os.makedirs(backup_dir)
+                self.logger.info(f"Created backup directory: {backup_dir}")
+            except Exception as e:
+                self.logger.error(f"Error creating backup directory: {str(e)}")
+                raise
 
-        # 3. 移动所有中间文件到备份目录
+        # 移动中间文件到备份目录
         for i in range(len(sorted_frames)):
-            # 构建中间文件的基本名称
-            intermediate_base = f"{os.path.splitext(base_output)[0]}_{i}"
+            # 构建中间文件的基本名称（不包含.slc后缀）
+            base_name = os.path.splitext(os.path.basename(base_output))[0]
+            intermediate_base = f"{base_name}_{i}"
             
             # 检查所有可能的后缀
-            for suffix in ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb', '.slc.vrt', '.slc.xml']:
-                intermediate_file = intermediate_base + suffix
-                if os.path.exists(intermediate_file):
+            suffixes = ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb']
+            for suffix in suffixes:
+                # 构建完整的源文件路径
+                src_file = os.path.join(os.path.dirname(base_output), intermediate_base + suffix)
+                if os.path.exists(src_file):
                     try:
-                        backup_file = os.path.join(backup_dir, os.path.basename(intermediate_file))
-                        self.logger.info(f"Moving intermediate file to backup: {intermediate_file}")
-                        os.rename(intermediate_file, backup_file)
+                        # 构建目标文件路径
+                        dst_file = os.path.join(backup_dir, os.path.basename(src_file))
+                        self.logger.info(f"Moving {src_file} to {dst_file}")
+                        
+                        # 如果目标文件已存在，先删除
+                        if os.path.exists(dst_file):
+                            os.remove(dst_file)
+                            
+                        # 移动文件
+                        os.rename(src_file, dst_file)
+                        self.logger.info(f"Successfully moved {src_file}")
                     except Exception as e:
-                        self.logger.warning(f"Error backing up file {intermediate_file}: {str(e)}")
+                        self.logger.error(f"Error moving file {src_file}: {str(e)}")
+                        # 继续处理其他文件，而不是直接失败
 
         # 4. 验证合并后的文件可访问性
         try:
