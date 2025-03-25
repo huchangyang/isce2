@@ -987,21 +987,16 @@ class Lutan1(Sensor):
             return self.frameList[0]
 
     def mergeFrames(self):
-        '''
+        """
         合并多个帧，处理重叠区域
-        '''
+        """
         if not self.frameList:
             return None
         
         # 按时间排序帧
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
-        # 确保输出文件路径正确
-        output_file = self.output
-        if not output_file.endswith('.slc'):
-            output_file = os.path.splitext(output_file)[0] + '.slc'
-        
-        # 计算正确的总行数
+        # 计算总行数
         total_lines = 0
         current_line = 0
         for i, frame in enumerate(sorted_frames):
@@ -1015,78 +1010,72 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
+                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
                 else:
                     total_lines += frame.getNumberOfLines()
             else:
                 total_lines += frame.getNumberOfLines()
         
-        self.logger.info(f"Calculated total lines after merging: {total_lines}")
+        self.logger.info(f"Total lines in merged output: {total_lines}")
         
-        # 创建输出数据数组
+        # 创建输出文件
+        output_file = self.output
         width = sorted_frames[0].getNumberOfSamples()
-        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
-        # 读取和合并数据
+        # 使用numpy进行数据处理
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         current_line = 0
+        
         for i, frame in enumerate(sorted_frames):
-            try:
-                # 读取当前帧数据
-                with open(frame.image.getFilename(), 'rb') as f:
-                    frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
-                
-                self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
-                
-                if i == 0:
-                    # 第一帧直接复制
-                    self.logger.info(f"Copying first frame: shape={frame_data.shape}")
-                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                    current_line += frame.getNumberOfLines()
-                else:
-                    # 处理与前一帧的重叠
-                    prev_frame = sorted_frames[i-1]
-                    overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
-                    if overlap > 0:
-                        overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                        overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+            # 读取当前帧数据
+            with open(frame.image.getFilename(), 'rb') as f:
+                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
+            
+            self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
+            
+            if i == 0:
+                # 第一帧直接复制
+                self.logger.info(f"Copying first frame: shape={frame_data.shape}")
+                merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                current_line += frame.getNumberOfLines()
+                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
+            else:
+                # 处理与前一帧的重叠
+                prev_frame = sorted_frames[i-1]
+                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                if overlap > 0:
+                    # 重叠区域的行数
+                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    # 确保重叠行数不超过帧的行数
+                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                    
+                    self.logger.info(f"Frame {i} overlap: {overlap_lines} lines")
+                    
+                    # 直接复制非重叠区域到当前位置
+                    if overlap_lines < frame.getNumberOfLines():
+                        # 计算实际需要复制的行数
+                        copy_lines = frame.getNumberOfLines() - overlap_lines
                         
-                        if overlap_lines < frame.getNumberOfLines():
-                            copy_lines = frame.getNumberOfLines() - overlap_lines
-                            merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
-                            current_line += copy_lines
+                        # 只复制非重叠部分
+                        merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
+                        current_line += copy_lines
+                        
+                        self.logger.info(f"Copied {copy_lines} non-overlapping lines from frame {i}")
                     else:
-                        merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                        current_line += frame.getNumberOfLines()
-            except Exception as e:
-                self.logger.error(f"Error processing frame {i}: {str(e)}")
-                raise
+                        self.logger.info(f"Frame {i} completely overlaps with previous frame, skipping")
+                else:
+                    # 无重叠,直接复制整个帧
+                    target_end = current_line + frame.getNumberOfLines()
+                    self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
+                    merged_data[current_line:target_end] = frame_data
+                    current_line += frame.getNumberOfLines()
+                
+                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
         
         # 验证最终的行数
         if current_line != total_lines:
             self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
             raise ValueError("Line count mismatch in merged output")
-        
-        # 定义清理函数
-        def cleanup_files(base_path):
-            patterns = [
-                '*.slc', '*.slc_[0-9]*',
-                '*.slc.xml', '*.slc_[0-9]*.xml',
-                '*.slc.vrt', '*.slc_[0-9]*.vrt',
-                '*.slc.aux', '*.slc_[0-9]*.aux',
-                '*.slc.orb', '*.slc_[0-9]*.orb',
-                '*.slc.iq.*', '*.slc_[0-9]*.iq.*'
-            ]
-            import glob
-            for pattern in patterns:
-                files = glob.glob(os.path.join(os.path.dirname(base_path), pattern))
-                for f in files:
-                    try:
-                        os.remove(f)
-                        self.logger.info(f"Removed existing file: {f}")
-                    except OSError as e:
-                        self.logger.warning(f"Error removing {f}: {e}")
-        
-        # 现在清理旧文件（在读取完所有数据之后）
-        cleanup_files(output_file)
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
@@ -1120,7 +1109,7 @@ class Lutan1(Sensor):
         slcImage.setImageType('slc')
         
         merged_frame.setImage(slcImage)
-        
+        import pdb; pdb.set_trace()
         # 生成头文件和VRT文件
         slcImage.renderHdr()
         slcImage.renderVRT()
@@ -1128,41 +1117,15 @@ class Lutan1(Sensor):
         # 生成辅助文件
         self.makeFakeAux(output_file)
         
-        # 合并轨道信息并保存
+        # 合并轨道信息
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
-        # 创建备份目录并移动原始文件
-        backup_dir = os.path.join(os.path.dirname(output_file), 'original_frames')
-        os.makedirs(backup_dir, exist_ok=True)
+        # 确保输出文件路径正确
+        if not output_file.endswith('.slc'):
+            output_file = os.path.splitext(output_file)[0] + '.slc'
         
-        # 移动原始文件到备份目录
-        for frame in sorted_frames:
-            frame_file = frame.image.getFilename()
-            if os.path.exists(frame_file):
-                backup_file = os.path.join(backup_dir, os.path.basename(frame_file))
-                os.rename(frame_file, backup_file)
-                # 同时移动相关的辅助文件
-                for ext in ['.xml', '.vrt', '.aux', '.orb', '.iq.xml', '.iq.vrt']:
-                    src_file = frame_file + ext
-                    if os.path.exists(src_file):
-                        os.rename(src_file, backup_file + ext)
-        
-        # 验证所有必需文件都已正确生成
-        required_files = [
-            output_file,
-            output_file + '.xml',
-            output_file + '.vrt',
-            output_file + '.aux'
-        ]
-        
-        for file in required_files:
-            if not os.path.exists(file):
-                self.logger.error(f"Required file not generated: {file}")
-                raise RuntimeError(f"Failed to generate {file}")
-            else:
-                self.logger.info(f"Successfully generated: {file}")
-        
+
         return merged_frame
 
     def mergeOrbits(self, orbits):
