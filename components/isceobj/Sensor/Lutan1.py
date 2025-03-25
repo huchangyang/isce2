@@ -982,8 +982,9 @@ class Lutan1(Sensor):
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
+            return merged_frame 
         else:
-            self.frame = self.frameList[0]
+            return self.frameList[0]
 
     def mergeFrames(self):
         """
@@ -1120,9 +1121,10 @@ class Lutan1(Sensor):
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
-        # 更新实例的frame属性
-        self.frame = merged_frame
-        self.logger.info(f"Updated instance frame with merged frame (lines={total_lines}, samples={width})")
+        # 确保输出文件路径正确
+        if not output_file.endswith('.slc'):
+            output_file = os.path.splitext(output_file)[0] + '.slc'
+        
 
         return merged_frame
 
