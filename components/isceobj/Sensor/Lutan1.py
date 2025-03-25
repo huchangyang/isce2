@@ -1110,26 +1110,61 @@ class Lutan1(Sensor):
         
         merged_frame.setImage(slcImage)
 
-        # 清理中间文件
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
+
+        # 清理中间文件并确保合并后的文件正确
         base_output = os.path.splitext(output_file)[0]
-        suffixes = ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb']
-        for i in range(len(sorted_frames)):
-            for suffix in suffixes:
-                intermediate_file = f"{base_output}_{i}{suffix}"
-                if os.path.exists(intermediate_file):
-                    try:
-                        self.logger.info(f"Removing intermediate file: {intermediate_file}")
-                        os.remove(intermediate_file)
-                    except Exception as e:
-                        self.logger.warning(f"Error removing file {intermediate_file}: {str(e)}")
-                
-        # 确保所有必要的合并后文件都存在
+        suffixes = ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb', '.slc.vrt', '.slc.xml']
+        bak_suffixes = ['.bak', '.aux.bak', '.vrt.bak', '.xml.bak', '.orb.bak']
+
+        # 1. 首先备份所有中间文件（以防万一）
+        backup_dir = base_output + '_backup'
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+
+        # 2. 确保合并后的主文件存在且正确
         for suffix in suffixes:
             merged_file = base_output + suffix
             if not os.path.exists(merged_file):
-                self.logger.warning(f"Expected merged file not found: {merged_file}")
+                self.logger.error(f"Required merged file not found: {merged_file}")
+                raise RuntimeError(f"Required merged file not found: {merged_file}")
 
-        self.logger.info("Intermediate files cleanup completed")
+        # 3. 移动所有中间文件到备份目录
+        for i in range(len(sorted_frames)):
+            for suffix in suffixes + bak_suffixes:
+                intermediate_file = f"{base_output}_{i}{suffix}"
+                if os.path.exists(intermediate_file):
+                    try:
+                        backup_file = os.path.join(backup_dir, os.path.basename(intermediate_file))
+                        self.logger.info(f"Moving intermediate file to backup: {intermediate_file}")
+                        os.rename(intermediate_file, backup_file)
+                    except Exception as e:
+                        self.logger.warning(f"Error backing up file {intermediate_file}: {str(e)}")
+
+        # 4. 确保所有必要的合并后文件都存在且可访问
+        for suffix in suffixes:
+            merged_file = base_output + suffix
+            try:
+                with open(merged_file, 'rb') as f:
+                    # 尝试读取文件开头以验证可访问性
+                    f.read(1)
+                self.logger.info(f"Verified merged file: {merged_file}")
+            except Exception as e:
+                self.logger.error(f"Error accessing merged file {merged_file}: {str(e)}")
+                raise RuntimeError(f"Error accessing merged file {merged_file}")
+
+        self.logger.info("Merged files verification completed")
+
+        # 5. 更新 frame 的文件路径
+        merged_frame.image.filename = output_file
+        if hasattr(merged_frame, 'auxFile'):
+            merged_frame.auxFile = output_file + '.aux'
+
+        # 验证并更新XML文件
+        xml_file = base_output + '.xml'
+        self.verify_xml_content(xml_file)
 
         return merged_frame
 
@@ -1437,3 +1472,27 @@ class Lutan1(Sensor):
             orbit.addStateVector(sv)
         
         return orbit
+
+    def verify_xml_content(self, xml_file):
+        """验证并更新XML文件中的文件路径引用"""
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            
+            # 检查并更新文件路径引用
+            for elem in root.iter():
+                if 'file' in elem.attrib:
+                    file_path = elem.attrib['file']
+                    if '_0' in file_path or '_1' in file_path:
+                        # 更新为合并后的文件路径
+                        new_path = file_path.replace(file_path, os.path.basename(self.output))
+                        elem.attrib['file'] = new_path
+                        self.logger.info(f"Updated XML file path: {file_path} -> {new_path}")
+            
+            # 保存更新后的XML
+            tree.write(xml_file)
+            self.logger.info(f"Updated XML file: {xml_file}")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating XML file {xml_file}: {str(e)}")
+            raise RuntimeError(f"Error updating XML file {xml_file}")
