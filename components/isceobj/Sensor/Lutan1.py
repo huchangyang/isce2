@@ -1001,30 +1001,6 @@ class Lutan1(Sensor):
         if not output_file.endswith('.slc'):
             output_file = os.path.splitext(output_file)[0] + '.slc'
         
-        # 定义清理函数
-        def cleanup_files(base_path):
-            # 清理所有可能的文件模式
-            patterns = [
-                '*.slc', '*.slc_[0-9]*',  # SLC文件
-                '*.slc.xml', '*.slc_[0-9]*.xml',  # XML文件
-                '*.slc.vrt', '*.slc_[0-9]*.vrt',  # VRT文件
-                '*.slc.aux', '*.slc_[0-9]*.aux',  # AUX文件
-                '*.slc.orb', '*.slc_[0-9]*.orb',  # ORB文件
-                '*.slc.iq.*', '*.slc_[0-9]*.iq.*'  # IQ文件
-            ]
-            import glob
-            for pattern in patterns:
-                files = glob.glob(os.path.join(os.path.dirname(base_path), pattern))
-                for f in files:
-                    try:
-                        os.remove(f)
-                        self.logger.info(f"Removed existing file: {f}")
-                    except OSError as e:
-                        self.logger.warning(f"Error removing {f}: {e}")
-        
-        # 清理现有文件
-        cleanup_files(output_file)
-        
         # 计算正确的总行数
         total_lines = 0
         current_line = 0
@@ -1050,73 +1026,73 @@ class Lutan1(Sensor):
         width = sorted_frames[0].getNumberOfSamples()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
+        # 读取和合并数据
+        current_line = 0
         for i, frame in enumerate(sorted_frames):
-            # 读取当前帧数据
-            with open(frame.image.getFilename(), 'rb') as f:
-                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
-            
-            self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
-            
-            if i == 0:
-                # 第一帧直接复制
-                self.logger.info(f"Copying first frame: shape={frame_data.shape}")
-                merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                current_line += frame.getNumberOfLines()
-                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
-            else:
-                # 处理与前一帧的重叠
-                prev_frame = sorted_frames[i-1]
-                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
-                if overlap > 0:
-                    # 重叠区域的行数
-                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                    # 确保重叠行数不超过帧的行数
-                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
-                    
-                    self.logger.info(f"Frame {i} overlap: {overlap_lines} lines")
-                    
-                    # 直接复制非重叠区域到当前位置
-                    if overlap_lines < frame.getNumberOfLines():
-                        # 计算实际需要复制的行数
-                        copy_lines = frame.getNumberOfLines() - overlap_lines
-                        
-                        # 只复制非重叠部分
-                        merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
-                        current_line += copy_lines
-                        
-                        self.logger.info(f"Copied {copy_lines} non-overlapping lines from frame {i}")
-                    else:
-                        self.logger.info(f"Frame {i} completely overlaps with previous frame, skipping")
-                else:
-                    # 无重叠,直接复制整个帧
-                    target_end = current_line + frame.getNumberOfLines()
-                    self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
-                    merged_data[current_line:target_end] = frame_data
-                    current_line += frame.getNumberOfLines()
+            try:
+                # 读取当前帧数据
+                with open(frame.image.getFilename(), 'rb') as f:
+                    frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
                 
-                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
+                self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
+                
+                if i == 0:
+                    # 第一帧直接复制
+                    self.logger.info(f"Copying first frame: shape={frame_data.shape}")
+                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                    current_line += frame.getNumberOfLines()
+                else:
+                    # 处理与前一帧的重叠
+                    prev_frame = sorted_frames[i-1]
+                    overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                    if overlap > 0:
+                        overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                        overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                        
+                        if overlap_lines < frame.getNumberOfLines():
+                            copy_lines = frame.getNumberOfLines() - overlap_lines
+                            merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
+                            current_line += copy_lines
+                    else:
+                        merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                        current_line += frame.getNumberOfLines()
+            except Exception as e:
+                self.logger.error(f"Error processing frame {i}: {str(e)}")
+                raise
         
-        # 确保最终的行数正确
+        # 验证最终的行数
         if current_line != total_lines:
             self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
             raise ValueError("Line count mismatch in merged output")
+        
+        # 定义清理函数
+        def cleanup_files(base_path):
+            patterns = [
+                '*.slc', '*.slc_[0-9]*',
+                '*.slc.xml', '*.slc_[0-9]*.xml',
+                '*.slc.vrt', '*.slc_[0-9]*.vrt',
+                '*.slc.aux', '*.slc_[0-9]*.aux',
+                '*.slc.orb', '*.slc_[0-9]*.orb',
+                '*.slc.iq.*', '*.slc_[0-9]*.iq.*'
+            ]
+            import glob
+            for pattern in patterns:
+                files = glob.glob(os.path.join(os.path.dirname(base_path), pattern))
+                for f in files:
+                    try:
+                        os.remove(f)
+                        self.logger.info(f"Removed existing file: {f}")
+                    except OSError as e:
+                        self.logger.warning(f"Error removing {f}: {e}")
+        
+        # 现在清理旧文件（在读取完所有数据之后）
+        cleanup_files(output_file)
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
             merged_data.tofile(f)
         
-        # 设置图像属性
-        slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')
-        slcImage.setFilename(output_file)
-        slcImage.setAccessMode('read')
-        slcImage.setWidth(width)
-        slcImage.setLength(total_lines)
-        slcImage.setXmin(0)
-        slcImage.setXmax(width)
-        slcImage.setDataType('CFLOAT')
-        slcImage.setImageType('slc')
-        
+        # 创建合并后的帧
         merged_frame = Frame()
         merged_frame.configure()
         
@@ -1130,6 +1106,18 @@ class Lutan1(Sensor):
         
         # 设置仪器参数
         merged_frame.setInstrument(sorted_frames[0].getInstrument())
+        
+        # 设置图像
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(output_file)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(width)
+        slcImage.setLength(total_lines)
+        slcImage.setXmin(0)
+        slcImage.setXmax(width)
+        slcImage.setDataType('CFLOAT')
+        slcImage.setImageType('slc')
         
         merged_frame.setImage(slcImage)
         
