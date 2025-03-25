@@ -956,34 +956,33 @@ class Lutan1(Sensor):
                 self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
                 raise
         
-        # 在合并帧之前验证轨道信息
-        if len(self.frameList) > 1:
-            self.logger.info("Validating orbit information before merging frames...")
-            for i, frame in enumerate(self.frameList):
-                if frame.orbit is None or not frame.orbit._stateVectors:
-                    self.logger.error(f"Frame {i} has no valid orbit information")
-                    continue
-                    
-                # 打印每个帧的轨道时间范围
-                orbit_times = [sv.getTime() for sv in frame.orbit._stateVectors]
-                if orbit_times:
-                    self.logger.info(f"Frame {i} orbit time range: {min(orbit_times)} to {max(orbit_times)}")
-                    self.logger.info(f"Frame {i} sensing time range: {frame.getSensingStart()} to {frame.getSensingStop()}")
+        # 验证所有帧
+        if not self.frameList:
+            raise ValueError("No frames processed successfully")
             
+        for i, frame in enumerate(self.frameList):
+            if frame.image is None:
+                raise ValueError(f"Frame {i} has no image information")
+                
+            if not hasattr(frame, 'numberOfLines') or not hasattr(frame, 'numberOfSamples'):
+                raise ValueError(f"Frame {i} is missing required attributes")
+                
+            if i > 0:
+                prev_frame = self.frameList[i-1]
+                time_diff = (frame.getSensingStart() - prev_frame.getSensingStop()).total_seconds()
+                
+                if time_diff < 0:
+                    self.logger.warning(f"Frame {i} overlaps with previous frame by {abs(time_diff)} seconds")
+                elif time_diff > 1.0:
+                    self.logger.warning(f"Gap of {time_diff} seconds between frames {i-1} and {i}")
+        
+        # 合并所有帧
+        if len(self.frameList) > 1:
             self.logger.info("Merging multiple frames...")
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
-            
-            # 验证合并后的轨道信息
-            if merged_frame.orbit and merged_frame.orbit._stateVectors:
-                orbit_times = [sv.getTime() for sv in merged_frame.orbit._stateVectors]
-                self.logger.info(f"Merged frame orbit time range: {min(orbit_times)} to {max(orbit_times)}")
-                self.logger.info(f"Merged frame sensing time range: {merged_frame.getSensingStart()} to {merged_frame.getSensingStop()}")
-            else:
-                raise RuntimeError("Merged frame has no valid orbit information")
-            
-            return merged_frame
+            return merged_frame 
         else:
             return self.frameList[0]
 
@@ -1111,43 +1110,26 @@ class Lutan1(Sensor):
         
         merged_frame.setImage(slcImage)
 
-        # 生成头文件和VRT文件
-        slcImage.renderHdr()
-        slcImage.renderVRT()
+        # 清理中间文件
+        base_output = os.path.splitext(output_file)[0]
+        suffixes = ['.slc', '.xml', '.vrt', '.aux', '.hdr', '.orb']
+        for i in range(len(sorted_frames)):
+            for suffix in suffixes:
+                intermediate_file = f"{base_output}_{i}{suffix}"
+                if os.path.exists(intermediate_file):
+                    try:
+                        self.logger.info(f"Removing intermediate file: {intermediate_file}")
+                        os.remove(intermediate_file)
+                    except Exception as e:
+                        self.logger.warning(f"Error removing file {intermediate_file}: {str(e)}")
+                
+        # 确保所有必要的合并后文件都存在
+        for suffix in suffixes:
+            merged_file = base_output + suffix
+            if not os.path.exists(merged_file):
+                self.logger.warning(f"Expected merged file not found: {merged_file}")
 
-        # 确保生成正确的文件名
-        output_base = os.path.splitext(output_file)[0]
-        if not output_base.endswith('.slc'):
-            output_base += '.slc'
-
-        # 生成XML文件
-        merged_frame.dump(output_base + '.xml')
-
-        # 生成辅助文件
-        self.makeFakeAux(output_base)
-
-        # 保存轨道信息
-        orbit_file = output_base + '.orb'
-        self.saveOrbitToFile(merged_frame.orbit, orbit_file)
-
-        # 确保所有文件权限正确
-        for ext in ['.xml', '.vrt', '.aux', '.orb']:
-            filename = output_base + ext
-            if os.path.exists(filename):
-                os.chmod(filename, 0o644)
-
-        # 删除或重命名原始frame文件（可选）
-        for frame in sorted_frames:
-            if frame.image and frame.image.filename != output_base:
-                for ext in ['.xml', '.vrt', '.aux', '.orb']:
-                    old_file = frame.image.filename + ext
-                    if os.path.exists(old_file):
-                        # 可以选择删除或重命名
-                        # os.remove(old_file)  # 删除
-                        backup = old_file + '.bak'  # 重命名为备份
-                        if os.path.exists(backup):
-                            os.remove(backup)
-                        os.rename(old_file, backup)
+        self.logger.info("Intermediate files cleanup completed")
 
         return merged_frame
 
@@ -1167,60 +1149,26 @@ class Lutan1(Sensor):
                 all_vectors.extend(orbit._stateVectors)
         
         if not all_vectors:
-            self.logger.error("No orbit state vectors found in any frames")
+            self.logger.warning("No orbit state vectors found in any frames")
             return None
         
         # 按时间排序
-        try:
-            all_vectors.sort(key=lambda x: x.getTime())
-            
-            # 打印时间范围进行调试
-            start_time = all_vectors[0].getTime()
-            end_time = all_vectors[-1].getTime()
-            self.logger.info(f"Orbit time range: {start_time} to {end_time}")
-            
-            # 验证时间的有效性
-            for sv in all_vectors:
-                t = sv.getTime()
-                if not isinstance(t, datetime.datetime):
-                    self.logger.error(f"Invalid time type: {type(t)}")
-                    continue
-                if t.year < 1900 or t.year > 2100:  # 基本的时间有效性检查
-                    self.logger.error(f"Invalid time value: {t}")
-                    continue
-                    
-                # 验证位置和速度数据
-                pos = sv.getPosition()
-                vel = sv.getVelocity()
-                if not all(isinstance(x, (int, float)) for x in pos + vel):
-                    self.logger.error(f"Invalid position or velocity data: pos={pos}, vel={vel}")
-                    continue
-                    
-                # 添加有效的状态向量
-                merged_orbit.addStateVector(sv)
-            
-            # 确保至少有足够的状态向量用于插值
-            if len(merged_orbit._stateVectors) < 4:
-                self.logger.error(f"Insufficient valid state vectors: {len(merged_orbit._stateVectors)}")
-                return None
-            
-            # 设置轨道质量和来源信息
-            merged_orbit.setOrbitQuality(orbits[0].getOrbitQuality())
-            merged_orbit.setOrbitSource('Merged')
-            merged_orbit.setReferenceFrame(orbits[0].getReferenceFrame())
-            
-            # 验证最终轨道的时间范围
-            orbit_start = merged_orbit._stateVectors[0].getTime()
-            orbit_end = merged_orbit._stateVectors[-1].getTime()
-            self.logger.info(f"Final merged orbit time range: {orbit_start} to {orbit_end}")
-            
-            return merged_orbit
-            
-        except Exception as e:
-            self.logger.error(f"Error in mergeOrbits: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return None
+        all_vectors.sort(key=lambda x: x.getTime())
+        
+        # 移除重复的状态向量
+        unique_vectors = []
+        prev_time = None
+        for sv in all_vectors:
+            curr_time = sv.getTime()
+            if prev_time is None or curr_time != prev_time:
+                unique_vectors.append(sv)
+                prev_time = curr_time
+        
+        # 添加到合并后的轨道
+        for sv in unique_vectors:
+            merged_orbit.addStateVector(sv)
+        
+        return merged_orbit
 
     def extractDoppler(self):
         '''
