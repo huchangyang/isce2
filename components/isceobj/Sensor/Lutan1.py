@@ -982,48 +982,8 @@ class Lutan1(Sensor):
             merged_frame = self.mergeFrames()
             if merged_frame is None:
                 raise RuntimeError("Frame merging failed")
-            # 更新实例的frame属性
-            self.frame = merged_frame
-            
-            # 验证轨道信息
-            if self.frame.orbit is None or not self.frame.orbit._stateVectors:
-                self.logger.error("Merged frame has no valid orbit information")
-                raise RuntimeError("No valid orbit information in merged frame")
-            
-            # 验证轨道时间范围
-            try:
-                min_time = self.frame.orbit.minTime
-                max_time = self.frame.orbit.maxTime
-                if min_time is None or max_time is None:
-                    self.logger.error("Orbit time range is not set")
-                    raise RuntimeError("Orbit time range is not set")
-                self.logger.info(f"Orbit time range: {min_time} to {max_time}")
-            except Exception as e:
-                self.logger.error(f"Error checking orbit time range: {str(e)}")
-                raise
-            
-            return self.frame
         else:
             self.frame = self.frameList[0]
-            
-            # 同样验证单帧的轨道信息
-            if self.frame.orbit is None or not self.frame.orbit._stateVectors:
-                self.logger.error("Frame has no valid orbit information")
-                raise RuntimeError("No valid orbit information in frame")
-            
-            # 验证轨道时间范围
-            try:
-                min_time = self.frame.orbit.minTime
-                max_time = self.frame.orbit.maxTime
-                if min_time is None or max_time is None:
-                    self.logger.error("Orbit time range is not set")
-                    raise RuntimeError("Orbit time range is not set")
-                self.logger.info(f"Orbit time range: {min_time} to {max_time}")
-            except Exception as e:
-                self.logger.error(f"Error checking orbit time range: {str(e)}")
-                raise
-            
-            return self.frame
 
     def mergeFrames(self):
         """
@@ -1160,16 +1120,15 @@ class Lutan1(Sensor):
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
-        # 确保输出文件路径正确
-        if not output_file.endswith('.slc'):
-            output_file = os.path.splitext(output_file)[0] + '.slc'
-        
+        # 更新实例的frame属性
+        self.frame = merged_frame
+        self.logger.info(f"Updated instance frame with merged frame (lines={total_lines}, samples={width})")
 
         return merged_frame
 
     def mergeOrbits(self, orbits):
         """
-        合并多个轨道的状态向量，确保时间范围正确设置
+        合并多个轨道的状态向量
         """
         from isceobj.Orbit.Orbit import Orbit, StateVector
         
@@ -1183,8 +1142,8 @@ class Lutan1(Sensor):
                 all_vectors.extend(orbit._stateVectors)
         
         if not all_vectors:
-            self.logger.error("No orbit state vectors found in any frames")
-            raise RuntimeError("No orbit state vectors available")
+            self.logger.warning("No orbit state vectors found in any frames")
+            return None
         
         # 按时间排序
         all_vectors.sort(key=lambda x: x.getTime())
@@ -1198,24 +1157,9 @@ class Lutan1(Sensor):
                 unique_vectors.append(sv)
                 prev_time = curr_time
         
-        if len(unique_vectors) < 4:
-            self.logger.error(f"Insufficient orbit state vectors: {len(unique_vectors)} (minimum 4 required)")
-            raise RuntimeError("Insufficient orbit state vectors")
-        
         # 添加到合并后的轨道
         for sv in unique_vectors:
             merged_orbit.addStateVector(sv)
-        
-        # 确保时间范围被正确设置
-        merged_orbit.setOrbitSource('Merged')
-        merged_orbit.setReferenceFrame('ECR')
-        
-        # 显式设置时间范围
-        merged_orbit.minTime = unique_vectors[0].getTime()
-        merged_orbit.maxTime = unique_vectors[-1].getTime()
-        
-        self.logger.info(f"Created merged orbit with {len(unique_vectors)} state vectors")
-        self.logger.info(f"Orbit time range: {merged_orbit.minTime} to {merged_orbit.maxTime}")
         
         return merged_orbit
 
