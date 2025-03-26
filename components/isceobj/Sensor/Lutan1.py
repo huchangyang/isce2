@@ -865,32 +865,64 @@ class Lutan1(Sensor):
         # 验证用户输入
         self.validateUserInputs()
         
+        # 确保_xmlFileList和_imageFileList被正确设置
+        if not self._xmlFileList:
+            self._xmlFileList = [tiff[:-4] + "meta.xml" for tiff in self._tiffList]
+            self.logger.info(f"Generated XML file list: {self._xmlFileList}")
+        
+        if not self._imageFileList:
+            self._imageFileList = self._tiffList
+            self.logger.info(f"Using TIFF file list as image file list: {self._imageFileList}")
+        
+        # 检查文件是否存在
+        for xml_file, tiff_file in zip(self._xmlFileList, self._imageFileList):
+            if not os.path.exists(xml_file):
+                self.logger.error(f"XML file not found: {xml_file}")
+                raise RuntimeError(f"XML file not found: {xml_file}")
+            if not os.path.exists(tiff_file):
+                self.logger.error(f"TIFF file not found: {tiff_file}")
+                raise RuntimeError(f"TIFF file not found: {tiff_file}")
+        
         # 清空frameList
         self.frameList = []
         
         # 处理每个frame
         for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
+            self.logger.info(f"Processing frame {i+1}/{len(self._xmlFileList)}")
+            self.logger.info(f"XML file: {xml_file}")
+            self.logger.info(f"TIFF file: {tiff_file}")
+            
             # 创建新的frame
             frame = Frame()
             frame.configure()
             
             # 设置当前frame
             self.frame = frame
-            self._xml_root = ET.parse(xml_file).getroot()
             
-            # 解析元数据
-            self.populateMetadata()
-            
-            # 提取图像数据
-            outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
-            self.extractFrameImage(tiff_file, outputNow)
-            
-            # 添加到frameList
-            self.frameList.append(frame)
+            try:
+                # 解析XML文件
+                self._xml_root = ET.parse(xml_file).getroot()
+                
+                # 解析元数据
+                self.populateMetadata()
+                
+                # 提取图像数据
+                outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
+                self.extractFrameImage(tiff_file, outputNow)
+                
+                # 添加到frameList
+                self.frameList.append(frame)
+                self.logger.info(f"Successfully processed frame {i+1}")
+                
+            except Exception as e:
+                self.logger.error(f"Error processing frame {i+1}: {str(e)}")
+                raise
         
         # 确保frameList不为空
         if not self.frameList:
             raise RuntimeError("No frames were processed")
+        
+        self.logger.info(f"Successfully processed {len(self.frameList)} frames")
         
         # 使用tkfunc处理多frame
         merged_frame = tkfunc(self)
