@@ -1347,3 +1347,50 @@ class Lutan1(Sensor):
             orbit.addStateVector(sv)
         
         return orbit
+
+    def extractFrameImage(self, imageFile, output):
+        """
+        提取单个帧的图像数据
+        """
+        try:
+            # 使用GDAL读取TIFF文件
+            src = gdal.Open(imageFile, gdal.GA_ReadOnly)
+            if src is None:
+                raise IOError(f"Failed to open image file: {imageFile}")
+            
+            # 获取图像参数
+            width = src.RasterXSize
+            length = src.RasterYSize
+            
+            # 创建输出文件
+            with open(output, 'wb') as fid:
+                # 读取数据并写入
+                for i in range(length):
+                    data = src.GetRasterBand(1).ReadAsArray(0, i, width, 1)
+                    data.tofile(fid)
+            
+            # 创建SLC图像对象
+            slcImage = isceobj.createSlcImage()
+            slcImage.setByteOrder('l')
+            slcImage.setFilename(output)
+            slcImage.setAccessMode('read')
+            slcImage.setWidth(width)
+            slcImage.setLength(length)
+            slcImage.setXmin(0)
+            slcImage.setXmax(width)
+            slcImage.setDataType('CFLOAT')
+            slcImage.setImageType('slc')
+            
+            # 设置到frame
+            self.frame.setImage(slcImage)
+            
+            # 生成头文件和VRT文件
+            slcImage.renderHdr()
+            slcImage.renderVRT()
+            
+            # 关闭GDAL数据集
+            src = None
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting image: {str(e)}")
+            raise
