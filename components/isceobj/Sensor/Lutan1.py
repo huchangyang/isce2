@@ -876,23 +876,28 @@ class Lutan1(Sensor):
 
     def extractImage(self):
         """合并多帧并正确处理SLC数据"""
-        if len(self._imageFileList) != len(self._leaderFileList):
-            self.logger.error("Number of leader files different from number of image files.")
-            raise RuntimeError
+        # 验证输入
+        if not self._tiffList:
+            self.logger.error("No TIFF files provided")
+            raise RuntimeError("No TIFF files provided")
         
         self.frameList = []
         
         # 1. 首先处理所有帧的元数据
-        for i in range(len(self._imageFileList)):
+        for i in range(len(self._tiffList)):
             appendStr = "_" + str(i)
-            if len(self._imageFileList) == 1:
+            if len(self._tiffList) == 1:
                 appendStr = ''
             
             self.frame = Frame()
             self.frame.configure()
             
-            self._leaderFile = self._leaderFileList[i]
-            self._imageFile = self._imageFileList[i]
+            self._tiff = self._tiffList[i]
+            if self._orbitFileList and i < len(self._orbitFileList):
+                self._orbitFile = self._orbitFileList[i]
+            else:
+                self._orbitFile = None
+            
             self.parse()
             
             # 保存frame信息
@@ -909,7 +914,7 @@ class Lutan1(Sensor):
                 current_line = 0
                 
                 for i, frame in enumerate(self.frameList):
-                    src = gdal.Open(self._imageFileList[i].strip(), gdal.GA_ReadOnly)
+                    src = gdal.Open(self._tiffList[i].strip(), gdal.GA_ReadOnly)
                     band1 = src.GetRasterBand(1)
                     band2 = src.GetRasterBand(2)
                     cJ = np.complex64(1.0j)
@@ -943,14 +948,29 @@ class Lutan1(Sensor):
         slcImage.setFilename(self.output)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
-        slcImage.setLength(total_lines)
+        slcImage.setLength(total_lines if len(self.frameList) > 1 else self.frame.getNumberOfLines())
         slcImage.setXmin(0)
         slcImage.setXmax(width)
         
         # 更新主frame的信息
         self.frame = self.frameList[0]  # 使用第一帧作为主frame
-        self.frame.setNumberOfLines(total_lines)
+        if len(self.frameList) > 1:
+            self.frame.setNumberOfLines(total_lines)
         self.frame.setImage(slcImage)
+        
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
+        
+        # 生成辅助文件
+        self.makeFakeAux(self.output)
+        
+        # 如果有多帧，合并轨道信息
+        if len(self.frameList) > 1:
+            merged_orbit = self.mergeOrbits([frame.orbit for frame in self.frameList])
+            if merged_orbit:
+                self.frame.setOrbit(merged_orbit)
+                self.logger.info("Successfully merged orbits from frames")
 
     def calculateTotalLines(self):
         """计算总行数，考虑重叠区域"""
@@ -976,7 +996,7 @@ class Lutan1(Sensor):
 
     def extractSingleFrame(self):
         """处理单帧数据"""
-        src = gdal.Open(self._imageFileList[0].strip(), gdal.GA_ReadOnly)
+        src = gdal.Open(self._tiffList[0].strip(), gdal.GA_ReadOnly)
         band1 = src.GetRasterBand(1)
         band2 = src.GetRasterBand(2)
         cJ = np.complex64(1.0j)
@@ -1121,8 +1141,6 @@ class Lutan1(Sensor):
             if merged_orbit:
                 merged_frame.setOrbit(merged_orbit)
                 self.logger.info("Successfully merged orbits from frames")
-            else:
-                self.logger.warning("Failed to merge orbits from frames")
         
         return merged_frame
 
