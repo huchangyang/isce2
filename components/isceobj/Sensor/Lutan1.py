@@ -99,8 +99,12 @@ class Lutan1(Sensor):
         '''
         验证用户输入并自动查找文件
         '''
+        self.logger.info("Starting validateUserInputs")
+        self.logger.info(f"Initial state: _tiffList={self._tiffList}, _imageFileList={self._imageFileList}")
+        
         # 如果提供了XML配置文件，从中读取
         if self._xmlConfig:
+            self.logger.info(f"Loading from XML config: {self._xmlConfig}")
             self.loadFromXML()
         
         # 如果提供了SLC目录，自动查找TIFF文件
@@ -117,6 +121,7 @@ class Lutan1(Sensor):
 
         # 检查是否提供了TIFF文件
         if not self._tiffList:
+            self.logger.error("No TIFF files provided. Use TIFF, SLC_DIR or XML_CONFIG parameter.")
             raise Exception("No TIFF files provided. Use TIFF, SLC_DIR or XML_CONFIG parameter.")
         
         # 将_tiffList同步到_imageFileList
@@ -871,6 +876,9 @@ class Lutan1(Sensor):
 
     def extractImage(self):
         """合并多帧并正确处理SLC数据"""
+        # 首先验证用户输入
+        self.validateUserInputs()
+        
         # 验证输入
         if not self._imageFileList:
             self.logger.error("No image files provided")
@@ -887,7 +895,7 @@ class Lutan1(Sensor):
             self.frame = Frame()
             self.frame.configure()
             
-            self._tiff = self._imageFileList[i]
+            self._tiff = self._imageFileList[i]  # 使用_imageFileList而不是_tiffList
             if self._orbitFileList and i < len(self._orbitFileList):
                 self._orbitFile = self._orbitFileList[i]
             else:
