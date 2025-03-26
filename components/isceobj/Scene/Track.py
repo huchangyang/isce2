@@ -295,26 +295,23 @@ class Track(object):
         totalWidth = max(frame.getNumberOfSamples() for frame in self._frames)
         prf = self._frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 收集帧信息
+        # 收集帧信息并按开始时间排序
         frameInfos = []
         for frame in self._frames:
             startLine = int(round(DTU.timeDeltaToSeconds(frame.getSensingStart()-self._startTime)*prf))
             frameInfos.append({
                 'frame': frame,
-                'startLine': startLine,
-                'filename': frame.getImage().getFilename(),
-                'width': frame.getNumberOfSamples(),
-                'lines': frame.getNumberOfLines()
+                'startLine': startLine
             })
         
-        # 按开始时间排序
         frameInfos.sort(key=lambda x: x['startLine'])
         
         # 计算总行数
         if len(self._frames) == 1:
             totalLines = self._frames[0].getNumberOfLines()
         else:
-            totalLines = frameInfos[-1]['startLine'] + frameInfos[-1]['lines']
+            lastFrame = frameInfos[-1]['frame']
+            totalLines = frameInfos[-1]['startLine'] + lastFrame.getNumberOfLines()
         
         self.logger.info(f"合并后的图像尺寸: {totalWidth} x {totalLines}")
         
@@ -324,36 +321,41 @@ class Track(object):
         # 合并数据
         for i, frameInfo in enumerate(frameInfos):
             self.logger.info(f"处理第 {i+1}/{len(frameInfos)} 个帧...")
+            frame = frameInfo['frame']
             
             try:
-                # 读取帧数据
-                frame_data = np.fromfile(frameInfo['filename'], dtype=np.complex64)
-                frame_data = frame_data.reshape(frameInfo['lines'], frameInfo['width'])
+                # 直接读取数据
+                with open(frame.image.getFilename(), 'rb') as f:
+                    frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), frame.getNumberOfSamples())
                 
                 # 计算写入位置
                 start_line = frameInfo['startLine']
-                end_line = start_line + frameInfo['lines']
+                end_line = start_line + frame.getNumberOfLines()
                 
                 # 如果不是第一帧，检查是否需要处理重叠区域
                 if i > 0:
-                    prev_end = frameInfos[i-1]['startLine'] + frameInfos[i-1]['lines']
+                    prev_frame = frameInfos[i-1]['frame']
+                    prev_end = frameInfos[i-1]['startLine'] + prev_frame.getNumberOfLines()
+                    
                     if start_line < prev_end:
                         # 处理重叠区域
                         overlap = prev_end - start_line
                         self.logger.info(f"检测到与前一帧重叠 {overlap} 行")
+                        
                         # 使用渐变混合重叠区域
                         weights = np.linspace(0, 1, overlap)[:, np.newaxis]
-                        overlap_region = merged_data[start_line:prev_end, :frameInfo['width']] * (1 - weights) + \
+                        overlap_region = merged_data[start_line:prev_end, :frame.getNumberOfSamples()] * (1 - weights) + \
                                        frame_data[:overlap] * weights
-                        merged_data[start_line:prev_end, :frameInfo['width']] = overlap_region
+                        merged_data[start_line:prev_end, :frame.getNumberOfSamples()] = overlap_region
+                        
                         # 更新非重叠部分
-                        merged_data[prev_end:end_line, :frameInfo['width']] = frame_data[overlap:]
+                        merged_data[prev_end:end_line, :frame.getNumberOfSamples()] = frame_data[overlap:]
                     else:
                         # 无重叠，直接写入
-                        merged_data[start_line:end_line, :frameInfo['width']] = frame_data
+                        merged_data[start_line:end_line, :frame.getNumberOfSamples()] = frame_data
                 else:
                     # 第一帧直接写入
-                    merged_data[start_line:end_line, :frameInfo['width']] = frame_data
+                    merged_data[start_line:end_line, :frame.getNumberOfSamples()] = frame_data
                 
             except Exception as e:
                 self.logger.error(f"处理帧 {i+1} 时出错: {str(e)}")
