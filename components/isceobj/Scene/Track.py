@@ -27,6 +27,9 @@ from isceobj.Util.decorators import type_check, logged, pickled
 import isceobj
 import tempfile
 import numpy as np
+from operator import itemgetter
+from isceobj import Constants as CN
+from ctypes import cdll, c_char_p, c_int, c_ubyte,byref
 
 @pickled
 class Track(object):
@@ -268,10 +271,19 @@ class Track(object):
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
     def createTrack(self, output):
-        """直接合并多个帧的数据，不使用重采样"""
+        import os
+        from operator import itemgetter
+        from isceobj import Constants as CN
+        from ctypes import cdll, c_char_p, c_int, c_ubyte,byref
+        lib = cdll.LoadLibrary(os.path.dirname(__file__)+'/concatenate.so')
+
+        # 检查第一帧的数据类型来决定处理方式
+        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
+        point_size = 8 if is_slc else 1  # SLC用8字节(complex64)，Raw用1字节
         
-        self.logger.info("开始合并帧数据...")
-        
+        self.logger.info(f"Processing {'SLC' if is_slc else 'RAW'} data")
+        self.logger.info("Adjusting Sampling Window Start Times for all Frames")
+
         # 计算总行数和总宽度
         totalWidth = max(frame.getNumberOfSamples() for frame in self._frames)
         
@@ -361,25 +373,37 @@ class Track(object):
         self._frame.setNumberOfLines(totalLines)
         self._frame.setNumberOfSamples(totalWidth)
         
-        # 创建输出图像
-        slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')
-        slcImage.setFilename(output)
-        slcImage.setAccessMode('read')
-        slcImage.setWidth(totalWidth)
-        slcImage.setLength(totalLines)
-        slcImage.setXmin(0)
-        slcImage.setXmax(totalWidth)
-        slcImage.setDataType('CFLOAT')
-        slcImage.setImageType('slc')
+        # 根据数据类型创建不同的图像对象
+        if is_slc:
+            image = isceobj.createSlcImage()
+            image.setDataType('CFLOAT')
+            image.setImageType('slc')
+        else:
+            image = isceobj.createRawImage()
         
-        self._frame.setImage(slcImage)
+        image.setByteOrder('l')
+        image.setFilename(output)
+        image.setAccessMode('read')
+        image.setWidth(totalWidth)
+        image.setLength(totalLines)
+        image.setXmax(totalWidth)
+        image.setXmin(self._frames[0].getImage().getXmin())
+        
+        self._frame.setImage(image)
         
         # 生成头文件和VRT文件
-        slcImage.renderHdr()
-        slcImage.renderVRT()
+        image.renderHdr()
+        image.renderVRT()
         
-        self.logger.info("帧合并完成")
+        self.logger.info(f"Successfully created {'SLC' if is_slc else 'RAW'} track")
+        self.logger.info(f"Dimensions: {totalWidth} x {totalLines}")
+        self.logger.info(f"Output file: {output}")
+        
+        # 验证输出文件大小
+        expected_size = totalWidth * totalLines * point_size
+        actual_size = os.path.getsize(output)
+        if actual_size != expected_size:
+            self.logger.warning(f"Output file size mismatch: got {actual_size}, expected {expected_size}")
         
         return self._frame
 
