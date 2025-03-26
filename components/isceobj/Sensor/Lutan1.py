@@ -930,6 +930,34 @@ class Lutan1(Sensor):
                 outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
                 self.extractFrameImage(tiff_file, outputNow)
                 
+                # 处理轨道信息
+                if self._orbitFileList and i < len(self._orbitFileList):
+                    self._orbitFile = self._orbitFileList[i]
+                    self.logger.info(f"Processing orbit file for frame {i+1}: {self._orbitFile}")
+                    orb = self.extractOrbit()
+                    if orb:
+                        frame.setOrbit(orb)
+                        self.logger.info(f"Successfully set orbit for frame {i+1}")
+                    else:
+                        self.logger.warning(f"Failed to extract orbit for frame {i+1}")
+                        # 尝试从XML创建轨道
+                        orb = self.createOrbit()
+                        if orb:
+                            frame.setOrbit(orb)
+                            self.logger.info(f"Successfully created orbit from XML for frame {i+1}")
+                        else:
+                            self.logger.error(f"Failed to create orbit from XML for frame {i+1}")
+                            raise RuntimeError(f"Failed to create orbit for frame {i+1}")
+                else:
+                    self.logger.warning(f"No orbit file provided for frame {i+1}, creating from XML")
+                    orb = self.createOrbit()
+                    if orb:
+                        frame.setOrbit(orb)
+                        self.logger.info(f"Successfully created orbit from XML for frame {i+1}")
+                    else:
+                        self.logger.error(f"Failed to create orbit from XML for frame {i+1}")
+                        raise RuntimeError(f"Failed to create orbit for frame {i+1}")
+                
                 # 添加到frameList
                 self.frameList.append(frame)
                 self.logger.info(f"Successfully processed frame {i+1}")
