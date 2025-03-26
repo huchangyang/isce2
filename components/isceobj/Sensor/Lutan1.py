@@ -85,6 +85,13 @@ class Lutan1(Sensor):
 
     def __init__(self, name=''):
         super().__init__(family=self.__class__.family, name=name)
+        # 添加必要的导入
+        try:
+            from osgeo import gdal
+            self.gdal = gdal
+        except ImportError:
+            raise ImportError("GDAL python bindings not found. Need this for Lutan1.")
+        
         self.frameList = []
         self._leaderFileList = []
         self._imageFileList = []
@@ -94,6 +101,9 @@ class Lutan1(Sensor):
         self._tiff = None
         self._orbitFile = None
         self._xml = None
+
+        self.frame = Frame()
+        self.frame.configure()
 
     def validateUserInputs(self):
         '''
@@ -1353,8 +1363,8 @@ class Lutan1(Sensor):
         提取单个帧的图像数据
         """
         try:
-            # 使用GDAL读取TIFF文件
-            src = gdal.Open(imageFile, gdal.GA_ReadOnly)
+            # 使用已导入的gdal
+            src = self.gdal.Open(imageFile, self.gdal.GA_ReadOnly)
             if src is None:
                 raise IOError(f"Failed to open image file: {imageFile}")
             
@@ -1364,9 +1374,11 @@ class Lutan1(Sensor):
             
             # 创建输出文件
             with open(output, 'wb') as fid:
-                # 读取数据并写入
+                band = src.GetRasterBand(1)
                 for i in range(length):
-                    data = src.GetRasterBand(1).ReadAsArray(0, i, width, 1)
+                    if not i % 1000:
+                        self.logger.info(f"Extracting line {i} of {length}")
+                    data = band.ReadAsArray(0, i, width, 1)
                     data.tofile(fid)
             
             # 创建SLC图像对象
@@ -1378,18 +1390,16 @@ class Lutan1(Sensor):
             slcImage.setLength(length)
             slcImage.setXmin(0)
             slcImage.setXmax(width)
-            slcImage.setDataType('CFLOAT')
-            slcImage.setImageType('slc')
             
             # 设置到frame
             self.frame.setImage(slcImage)
             
-            # 生成头文件和VRT文件
-            slcImage.renderHdr()
+            # 生成VRT文件
             slcImage.renderVRT()
             
             # 关闭GDAL数据集
             src = None
+            band = None
             
         except Exception as e:
             self.logger.error(f"Error extracting image: {str(e)}")
