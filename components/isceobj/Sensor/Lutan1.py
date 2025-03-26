@@ -865,6 +865,9 @@ class Lutan1(Sensor):
         # 验证用户输入
         self.validateUserInputs()
         
+        # 清空frameList
+        self.frameList = []
+        
         # 处理每个frame
         for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
             # 创建新的frame
@@ -884,6 +887,10 @@ class Lutan1(Sensor):
             
             # 添加到frameList
             self.frameList.append(frame)
+        
+        # 确保frameList不为空
+        if not self.frameList:
+            raise RuntimeError("No frames were processed")
         
         # 使用tkfunc处理多frame
         merged_frame = tkfunc(self)
@@ -913,8 +920,12 @@ class Lutan1(Sensor):
                 # 生成头文件和VRT文件
                 slcImage.renderHdr()
                 slcImage.renderVRT()
+        else:
+            # 如果没有合并的frame，使用第一个frame
+            self.frame = self.frameList[0]
+            self.frameList = [self.frame]
         
-        return merged_frame
+        return self.frame
 
     def extractFrameImage(self, tiff_file, output):
         """
