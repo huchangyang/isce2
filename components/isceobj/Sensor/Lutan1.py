@@ -1135,44 +1135,41 @@ class Lutan1(Sensor):
         
         # 合并轨道信息
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
-        merged_frame.setOrbit(merged_orbit)
+        if merged_orbit:
+            merged_frame.setOrbit(merged_orbit)
+            self.logger.info("Successfully merged orbits")
+        else:
+            self.logger.warning("Failed to merge orbits")
         
         return merged_frame
 
     def mergeOrbits(self, orbits):
         """
-        合并多个轨道的状态向量
+        Merge multiple orbits into one.
         """
-        from isceobj.Orbit.Orbit import Orbit, StateVector
-        
-        merged_orbit = Orbit()
-        merged_orbit.configure()
-        
-        # 收集所有状态向量
-        all_vectors = []
-        for orbit in orbits:
-            if orbit and orbit._stateVectors:
-                all_vectors.extend(orbit._stateVectors)
-        
-        if not all_vectors:
-            self.logger.warning("No orbit state vectors found in any frames")
+        if not orbits:
             return None
+        
+        # 获取所有轨道的状态向量
+        all_vectors = []
+        for orb in orbits:
+            all_vectors.extend(orb._stateVectors)
         
         # 按时间排序
         all_vectors.sort(key=lambda x: x.getTime())
         
-        # 移除重复的状态向量
-        unique_vectors = []
-        prev_time = None
-        for sv in all_vectors:
-            curr_time = sv.getTime()
-            if prev_time is None or curr_time != prev_time:
-                unique_vectors.append(sv)
-                prev_time = curr_time
+        # 创建新的轨道对象
+        merged_orbit = Orbit()
+        merged_orbit.configure()
         
-        # 添加到合并后的轨道
-        for sv in unique_vectors:
-            merged_orbit.addStateVector(sv)
+        # 添加所有状态向量
+        for vec in all_vectors:
+            merged_orbit.addStateVector(vec)
+        
+        # 设置轨道的时间范围
+        if all_vectors:
+            merged_orbit.setTimeRange(all_vectors[0].getTime(), all_vectors[-1].getTime())
+            self.logger.info(f"Set merged orbit time range: {all_vectors[0].getTime()} to {all_vectors[-1].getTime()}")
         
         return merged_orbit
 
