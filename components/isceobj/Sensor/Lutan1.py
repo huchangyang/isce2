@@ -977,6 +977,34 @@ class Lutan1(Sensor):
             width = merged_frame.getNumberOfSamples()
             length = merged_frame.getNumberOfLines()
             
+            # 首先检查原始数据
+            for i, frame in enumerate(self.frameList):
+                frame_file = frame.image.getFilename()
+                file_size = os.path.getsize(frame_file)
+                self.logger.info(f"Frame {i} file: {frame_file}")
+                self.logger.info(f"Frame {i} size: {file_size} bytes")
+                self.logger.info(f"Frame {i} dimensions: {frame.getNumberOfSamples()} x {frame.getNumberOfLines()}")
+                
+                # 读取数据并检查实际大小
+                with open(frame_file, 'rb') as f:
+                    data = np.fromfile(f, dtype=np.complex64)
+                    self.logger.info(f"Frame {i} actual data size: {len(data)}")
+                    self.logger.info(f"Frame {i} expected size: {frame.getNumberOfSamples() * frame.getNumberOfLines()}")
+            
+            # 计算实际需要的大小
+            expected_size = width * length
+            self.logger.info(f"Merged frame expected size: {expected_size}")
+            self.logger.info(f"Merged frame dimensions: {width} x {length}")
+            
+            # 尝试读取tkfunc生成的文件
+            output_file = self.output
+            if os.path.exists(output_file):
+                actual_size = os.path.getsize(output_file)
+                self.logger.info(f"Current output file size: {actual_size} bytes")
+                with open(output_file, 'rb') as f:
+                    data = np.fromfile(f, dtype=np.complex64)
+                    self.logger.info(f"Current output data size: {len(data)}")
+            
             # 从原始frame中读取数据并合并
             merged_data = np.zeros((length, width), dtype=np.complex64)
             current_line = 0
