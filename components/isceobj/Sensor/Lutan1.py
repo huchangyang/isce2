@@ -259,6 +259,7 @@ class Lutan1(Sensor):
         if orb._stateVectors:
             self.frame.orbit.setTimeRange(orb._stateVectors[0].getTime(), orb._stateVectors[-1].getTime())
             self.logger.info(f"Set orbit time range: {orb._stateVectors[0].getTime()} to {orb._stateVectors[-1].getTime()}")
+            self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
         else:
             self.logger.error("No state vectors in orbit")
             raise RuntimeError("No state vectors in orbit")
@@ -520,6 +521,9 @@ class Lutan1(Sensor):
             self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
             self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
             
+            # 设置轨道的时间范围
+            orb.setTimeRange(unique_vectors[0].getTime(), unique_vectors[-1].getTime())
+            
             return orb
 
         elif file_ext == '.txt':
@@ -658,6 +662,9 @@ class Lutan1(Sensor):
                 
                 self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
                 self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
+                
+                # 设置轨道的时间范围
+                orb.setTimeRange(unique_vectors[0].getTime(), unique_vectors[-1].getTime())
                 
                 return orb
         else:
