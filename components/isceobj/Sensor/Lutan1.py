@@ -886,7 +886,86 @@ class Lutan1(Sensor):
             self.frameList.append(frame)
         
         # 使用tkfunc处理多frame
-        return tkfunc(self)
+        merged_frame = tkfunc(self)
+        
+        # 确保frame和frameList被正确设置
+        if merged_frame:
+            self.frame = merged_frame
+            self.frameList = [merged_frame]
+            
+            # 确保图像被正确设置
+            if not self.frame.image:
+                # 创建SLC图像对象
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(self.output)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(self.frame.getNumberOfSamples())
+                slcImage.setLength(self.frame.getNumberOfLines())
+                slcImage.setXmin(0)
+                slcImage.setXmax(self.frame.getNumberOfSamples())
+                slcImage.setDataType('CFLOAT')
+                slcImage.setImageType('slc')
+                
+                # 设置图像
+                self.frame.setImage(slcImage)
+                
+                # 生成头文件和VRT文件
+                slcImage.renderHdr()
+                slcImage.renderVRT()
+        
+        return merged_frame
+
+    def extractFrameImage(self, tiff_file, output):
+        """
+        提取单个帧的图像数据
+        """
+        try:
+            from osgeo import gdal
+        except ImportError:
+            raise Exception('GDAL python bindings not found.')
+        
+        # 打开TIFF文件
+        src = gdal.Open(tiff_file.strip(), gdal.GA_ReadOnly)
+        if src is None:
+            raise Exception(f"Failed to open TIFF file: {tiff_file}")
+        
+        # 获取图像信息
+        width = self.frame.getNumberOfSamples()
+        length = self.frame.getNumberOfLines()
+        
+        # 读取数据并写入输出文件
+        band = src.GetRasterBand(1)
+        with open(output, 'wb') as fid:
+            for ii in range(length):
+                data = band.ReadAsArray(0, ii, width, 1)
+                data.tofile(fid)
+        
+        # 清理资源
+        src = None
+        band = None
+        
+        # 创建SLC图像对象
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(output)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(width)
+        slcImage.setLength(length)
+        slcImage.setXmin(0)
+        slcImage.setXmax(width)
+        slcImage.setDataType('CFLOAT')
+        slcImage.setImageType('slc')
+        
+        # 设置图像
+        self.frame.setImage(slcImage)
+        
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
+        
+        # 生成辅助文件
+        self.makeFakeAux(output)
 
     def mergeFrames(self):
         """
@@ -913,8 +992,6 @@ class Lutan1(Sensor):
                     total_lines += frame.getNumberOfLines() - overlap_lines
                 else:
                     total_lines += frame.getNumberOfLines()
-            else:
-                total_lines += frame.getNumberOfLines()
         
         # 创建输出文件
         output_file = self.output
