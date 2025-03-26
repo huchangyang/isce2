@@ -30,6 +30,7 @@ import numpy as np
 from operator import itemgetter
 from isceobj import Constants as CN
 from ctypes import cdll, c_char_p, c_int, c_ubyte,byref
+import traceback
 
 @pickled
 class Track(object):
@@ -325,36 +326,59 @@ class Track(object):
             
             try:
                 filename = frame.image.getFilename()
-                file_size = os.path.getsize(filename)
-                expected_size = frame.getNumberOfLines() * frame.getNumberOfSamples() * 8
                 
-                self.logger.info(f"文件信息:")
-                self.logger.info(f"  文件名: {filename}")
-                self.logger.info(f"  文件大小: {file_size} bytes")
-                self.logger.info(f"  期望大小: {expected_size} bytes")
-                self.logger.info(f"  行数: {frame.getNumberOfLines()}")
-                self.logger.info(f"  列数: {frame.getNumberOfSamples()}")
+                # 使用frame的图像参数
+                width = frame.image.getWidth()
+                length = frame.image.getLength()
                 
-                # 读取数据并检查大小
+                self.logger.info(f"图像参数:")
+                self.logger.info(f"  宽度: {width}")
+                self.logger.info(f"  长度: {length}")
+                self.logger.info(f"  字节序: {frame.image.getByteOrder()}")
+                self.logger.info(f"  数据类型: {frame.image.getDataType()}")
+                self.logger.info(f"  存储方案: {frame.image.getScheme()}")
+                
+                # 根据XML中的配置使用小端序
+                dtype = np.dtype('<c8')  # 小端序的complex64
+                
                 with open(filename, 'rb') as f:
-                    # 先读取一小部分检查数据结构
-                    header = f.read(16)
-                    self.logger.info(f"  前16字节: {[hex(b) for b in header]}")
+                    # 计算期望的数据大小
+                    expected_points = width * length
+                    expected_bytes = expected_points * 8  # complex64 = 8 bytes
                     
-                    # 重置文件指针
-                    f.seek(0)
-                    raw_data = np.fromfile(f, dtype=np.complex64)
-                    self.logger.info(f"  读取到的数据点数: {len(raw_data)}")
+                    # 获取实际文件大小
+                    f.seek(0, 2)  # 移到文件末尾
+                    file_size = f.tell()
+                    f.seek(0)  # 回到文件开头
                     
-                    # 检查是否需要跳过头部
-                    points_needed = frame.getNumberOfLines() * frame.getNumberOfSamples()
-                    if len(raw_data) > points_needed:
-                        extra_points = len(raw_data) - points_needed
-                        self.logger.info(f"  检测到额外数据点: {extra_points}")
-                        # 跳过额外的点
-                        frame_data = raw_data[extra_points:].reshape(frame.getNumberOfLines(), frame.getNumberOfSamples())
-                    else:
-                        frame_data = raw_data.reshape(frame.getNumberOfLines(), frame.getNumberOfSamples())
+                    self.logger.info(f"文件信息:")
+                    self.logger.info(f"  实际大小: {file_size} bytes")
+                    self.logger.info(f"  期望大小: {expected_bytes} bytes")
+                    
+                    if file_size != expected_bytes:
+                        self.logger.warning(f"文件大小不匹配! 可能存在问题。")
+                    
+                    # 读取数据
+                    raw_data = np.fromfile(f, dtype=dtype)
+                    self.logger.info(f"读取到的数据点数: {len(raw_data)}")
+                    
+                    if len(raw_data) != expected_points:
+                        raise ValueError(f"读取到的数据点数 ({len(raw_data)}) 与期望值 ({expected_points}) 不匹配")
+                    
+                    # 重塑数组
+                    frame_data = raw_data.reshape(length, width)
+                    
+                    # 验证数据
+                    self.logger.info(f"数据统计:")
+                    self.logger.info(f"  数据形状: {frame_data.shape}")
+                    self.logger.info(f"  非零元素数: {np.count_nonzero(frame_data)}")
+                    self.logger.info(f"  最小幅值: {np.min(np.abs(frame_data))}")
+                    self.logger.info(f"  最大幅值: {np.max(np.abs(frame_data))}")
+                    self.logger.info(f"  均值幅值: {np.mean(np.abs(frame_data))}")
+                    
+                    # 检查数据有效性
+                    if np.any(np.isnan(frame_data)) or np.any(np.isinf(frame_data)):
+                        self.logger.warning("警告：数据中包含NaN或Inf值!")
                 
                 # 计算写入位置
                 start_line = frameInfo['startLine']
@@ -387,6 +411,7 @@ class Track(object):
                 
             except Exception as e:
                 self.logger.error(f"处理帧 {i+1} 时出错: {str(e)}")
+                self.logger.error(traceback.format_exc())
                 raise
         
         # 写入合并后的数据
