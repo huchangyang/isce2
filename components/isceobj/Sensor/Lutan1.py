@@ -875,7 +875,9 @@ class Lutan1(Sensor):
         return orbit
 
     def extractImage(self):
-        """提取图像数据"""
+        """
+        提取图像数据
+        """
         # 验证用户输入
         self.validateUserInputs()
         
@@ -969,83 +971,31 @@ class Lutan1(Sensor):
         # 使用tkfunc处理多frame
         merged_frame = tkfunc(self)
         
+        # 确保frame和frameList被正确设置
         if merged_frame:
             self.frame = merged_frame
             self.frameList = [merged_frame]
             
-            # 在这里重新写入合并后的SLC数据
-            width = merged_frame.getNumberOfSamples()
-            length = merged_frame.getNumberOfLines()
-            
-            # 首先检查原始数据
-            for i, frame in enumerate(self.frameList):
-                frame_file = frame.image.getFilename()
-                file_size = os.path.getsize(frame_file)
-                self.logger.info(f"Frame {i} file: {frame_file}")
-                self.logger.info(f"Frame {i} size: {file_size} bytes")
-                self.logger.info(f"Frame {i} dimensions: {frame.getNumberOfSamples()} x {frame.getNumberOfLines()}")
+            # 确保图像被正确设置
+            if not self.frame.image:
+                # 创建SLC图像对象
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(self.output)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(self.frame.getNumberOfSamples())
+                slcImage.setLength(self.frame.getNumberOfLines())
+                slcImage.setXmin(0)
+                slcImage.setXmax(self.frame.getNumberOfSamples())
+                slcImage.setDataType('CFLOAT')
+                slcImage.setImageType('slc')
                 
-                # 读取数据并检查实际大小
-                with open(frame_file, 'rb') as f:
-                    data = np.fromfile(f, dtype=np.complex64)
-                    self.logger.info(f"Frame {i} actual data size: {len(data)}")
-                    self.logger.info(f"Frame {i} expected size: {frame.getNumberOfSamples() * frame.getNumberOfLines()}")
-            
-            # 计算实际需要的大小
-            expected_size = width * length
-            self.logger.info(f"Merged frame expected size: {expected_size}")
-            self.logger.info(f"Merged frame dimensions: {width} x {length}")
-            
-            # 尝试读取tkfunc生成的文件
-            output_file = self.output
-            if os.path.exists(output_file):
-                actual_size = os.path.getsize(output_file)
-                self.logger.info(f"Current output file size: {actual_size} bytes")
-                with open(output_file, 'rb') as f:
-                    data = np.fromfile(f, dtype=np.complex64)
-                    self.logger.info(f"Current output data size: {len(data)}")
-            
-            # 从原始frame中读取数据并合并
-            merged_data = np.zeros((length, width), dtype=np.complex64)
-            current_line = 0
-            
-            self.logger.info(f"Rewriting merged SLC with dimensions: {width} x {length}")
-            
-            for frame in self.frameList:
-                frame_lines = frame.getNumberOfLines()
-                with open(frame.image.getFilename(), 'rb') as f:
-                    data = np.fromfile(f, dtype=np.complex64).reshape(frame_lines, width)
-                    merged_data[current_line:current_line+frame_lines] = data
-                    current_line += frame_lines
-            
-            # 写入新的SLC文件
-            output_file = self.output
-            with open(output_file, 'wb') as f:
-                merged_data.tofile(f)
-            
-            # 创建新的SLC图像对象
-            slcImage = isceobj.createSlcImage()
-            slcImage.setByteOrder('l')
-            slcImage.setFilename(output_file)
-            slcImage.setAccessMode('read')
-            slcImage.setWidth(width)
-            slcImage.setLength(length)
-            slcImage.setXmin(0)
-            slcImage.setXmax(width)
-            slcImage.setDataType('CFLOAT')
-            slcImage.setImageType('slc')
-            
-            # 设置到合并后的frame
-            self.frame.setImage(slcImage)
-            
-            # 生成头文件和VRT文件
-            slcImage.renderHdr()
-            slcImage.renderVRT()
-            
-            # 生成辅助文件
-            self.makeFakeAux(output_file)
-            
-            self.logger.info("Successfully rewrote merged SLC file")
+                # 设置图像
+                self.frame.setImage(slcImage)
+                
+                # 生成头文件和VRT文件
+                slcImage.renderHdr()
+                slcImage.renderVRT()
         else:
             # 如果没有合并的frame，使用第一个frame
             self.frame = self.frameList[0]
