@@ -321,34 +321,54 @@ class Track(object):
             self.logger.info(f"处理第 {i+1}/{len(frameInfos)} 个帧...")
             
             try:
-                # 读取帧数据
-                frame_data = np.fromfile(frameInfo['filename'], dtype=np.complex64)
-                frame_data = frame_data.reshape(frameInfo['lines'], frameInfo['width'])
+                # 验证文件大小
+                file_size = os.path.getsize(frameInfo['filename'])
+                expected_size = frameInfo['lines'] * frameInfo['width'] * 8  # 8 bytes per complex64
+                if file_size != expected_size:
+                    self.logger.error(f"文件大小不匹配: 期望 {expected_size}, 实际 {file_size}")
+                    self.logger.error(f"帧信息: lines={frameInfo['lines']}, width={frameInfo['width']}")
+                    raise ValueError(f"输入文件大小不正确")
                 
-                # 计算写入位置
-                start_line = frameInfo['startLine']
-                end_line = start_line + frameInfo['lines']
-                
-                # 如果不是第一帧，检查是否需要处理重叠区域
-                if i > 0:
-                    prev_end = frameInfos[i-1]['startLine'] + frameInfos[i-1]['lines']
-                    if start_line < prev_end:
-                        # 处理重叠区域
-                        overlap = prev_end - start_line
-                        self.logger.info(f"检测到与前一帧重叠 {overlap} 行")
-                        # 使用渐变混合重叠区域
-                        weights = np.linspace(0, 1, overlap)[:, np.newaxis]
-                        overlap_region = merged_data[start_line:prev_end, :frameInfo['width']] * (1 - weights) + \
-                                       frame_data[:overlap] * weights
-                        merged_data[start_line:prev_end, :frameInfo['width']] = overlap_region
-                        # 更新非重叠部分
-                        merged_data[prev_end:end_line, :frameInfo['width']] = frame_data[overlap:]
+                # 修改：正确读取complex64数据
+                with open(frameInfo['filename'], 'rb') as f:
+                    # 直接指定dtype为complex64
+                    frame_data = np.fromfile(f, dtype=np.complex64)
+                    
+                    # 验证读取的数据大小
+                    expected_points = frameInfo['lines'] * frameInfo['width']
+                    if len(frame_data) != expected_points:
+                        self.logger.error(f"数据点数不匹配: 期望 {expected_points}, 实际 {len(frame_data)}")
+                        self.logger.error(f"文件大小: {os.path.getsize(frameInfo['filename'])} bytes")
+                        self.logger.error(f"每个点大小: {np.dtype(np.complex64).itemsize} bytes")
+                        raise ValueError(f"数据大小不匹配")
+                    
+                    # reshape数据
+                    frame_data = frame_data.reshape(frameInfo['lines'], frameInfo['width'])
+                    
+                    # 计算写入位置
+                    start_line = frameInfo['startLine']
+                    end_line = start_line + frameInfo['lines']
+                    
+                    # 写入数据
+                    if i > 0:
+                        prev_end = frameInfos[i-1]['startLine'] + frameInfos[i-1]['lines']
+                        if start_line < prev_end:
+                            # 处理重叠区域
+                            overlap = prev_end - start_line
+                            self.logger.info(f"检测到与前一帧重叠 {overlap} 行")
+                            # 使用渐变混合重叠区域
+                            weights = np.linspace(0, 1, overlap)[:, np.newaxis]
+                            overlap_region = merged_data[start_line:prev_end, :] * (1 - weights) + \
+                                           frame_data[:overlap] * weights
+                            merged_data[start_line:prev_end, :] = overlap_region
+                            # 更新非重叠部分
+                            merged_data[prev_end:end_line, :] = frame_data[overlap:]
+                        else:
+                            # 无重叠，直接写入
+                            merged_data[start_line:end_line, :] = frame_data
                     else:
-                        # 无重叠，直接写入
-                        merged_data[start_line:end_line, :frameInfo['width']] = frame_data
-                else:
-                    # 第一帧直接写入
-                    merged_data[start_line:end_line, :frameInfo['width']] = frame_data
+                        # 第一帧直接写入
+                        merged_data[start_line:end_line, :] = frame_data
                 
             except Exception as e:
                 self.logger.error(f"处理帧 {i+1} 时出错: {str(e)}")
