@@ -351,14 +351,33 @@ class Track(object):
             totalLines = self._frames[0].getNumberOfLines()
         else:
             # 计算总行数，考虑重叠
-            totalLines = startLines[-1] + self._frames[-1].getNumberOfLines()
+            totalLines = 0
+            for i in range(len(self._frames)):
+                if i == 0:
+                    # 第一帧全部使用
+                    totalLines += self._frames[i].getNumberOfLines()
+                else:
+                    # 计算与前一帧的重叠
+                    overlap = (self._frames[i-1].getSensingStop() - self._frames[i].getSensingStart()).total_seconds()
+                    if overlap > 0:
+                        # 重叠区域的行数
+                        overlap_lines = int(round(overlap * self._frames[i].getInstrument().getPulseRepetitionFrequency()))
+                        # 确保重叠行数不超过帧的行数
+                        overlap_lines = min(overlap_lines, self._frames[i].getNumberOfLines())
+                        # 添加非重叠部分
+                        totalLines += self._frames[i].getNumberOfLines() - overlap_lines
+                        self.logger.info(f"Frame {i} overlaps with previous frame by {overlap_lines} lines")
+                    else:
+                        # 无重叠，全部添加
+                        totalLines += self._frames[i].getNumberOfLines()
+                        self.logger.info(f"No overlap between frames {i-1} and {i}")
             
             # 验证计算结果
             sumFrameLines = sum(frame.getNumberOfLines() for frame in self._frames)
-            maxReasonableLines = sumFrameLines + (len(self._frames) - 1) * 100  # 允许少量额外行
+            maxReasonableLines = sumFrameLines  # 不应超过所有帧的总行数
             
             if totalLines > maxReasonableLines:
-                self.logger.warning(f"Calculated total lines ({totalLines}) exceeds reasonable maximum ({maxReasonableLines})")
+                self.logger.warning(f"Calculated total lines ({totalLines}) exceeds sum of frame lines ({maxReasonableLines})")
                 totalLines = maxReasonableLines
                 
             # 验证帧间距

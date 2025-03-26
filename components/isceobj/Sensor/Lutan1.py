@@ -1065,20 +1065,23 @@ class Lutan1(Sensor):
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
         # 计算总行数
-        total_lines = 0
-        for i, frame in enumerate(sorted_frames):
-            if i > 0:
-                # 计算与前一帧的重叠
-                prev_frame = sorted_frames[i-1]
-                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
-                if overlap > 0:
-                    # 重叠区域的行数
-                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                    # 确保重叠行数不超过帧的行数
-                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
-                    total_lines += frame.getNumberOfLines() - overlap_lines
-                else:
-                    total_lines += frame.getNumberOfLines()
+        total_lines = sorted_frames[0].getNumberOfLines()
+        for i, frame in enumerate(sorted_frames[1:], 1):
+            # 计算与前一帧的重叠
+            prev_frame = sorted_frames[i-1]
+            overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+            if overlap > 0:
+                # 重叠区域的行数
+                overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                # 确保重叠行数不超过帧的行数
+                overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                self.logger.info(f"Frame {i} overlaps with previous frame by {overlap_lines} lines")
+                total_lines += frame.getNumberOfLines() - overlap_lines
+            else:
+                total_lines += frame.getNumberOfLines()
+                self.logger.info(f"No overlap for frame {i}")
+        
+        self.logger.info(f"Total lines after merging: {total_lines}")
         
         # 创建输出文件
         output_file = self.output
@@ -1089,14 +1092,19 @@ class Lutan1(Sensor):
         current_line = 0
         
         for i, frame in enumerate(sorted_frames):
+            self.logger.info(f"Processing frame {i+1}")
+            self.logger.info(f"Frame size: {frame.getNumberOfLines()} x {frame.getNumberOfSamples()}")
+            
             # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
-                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
+                frame_data = np.fromfile(f, dtype=np.complex64)
+                frame_data = frame_data.reshape(frame.getNumberOfLines(), width)
             
             if i == 0:
                 # 第一帧直接复制
                 merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                 current_line += frame.getNumberOfLines()
+                self.logger.info(f"Copied first frame, current_line = {current_line}")
             else:
                 # 处理与前一帧的重叠
                 prev_frame = sorted_frames[i-1]
@@ -1107,15 +1115,21 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     
+                    self.logger.info(f"Frame {i+1} overlaps with previous frame by {overlap_lines} lines")
+                    
                     # 直接复制非重叠区域到当前位置
                     if overlap_lines < frame.getNumberOfLines():
                         copy_lines = frame.getNumberOfLines() - overlap_lines
                         merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
                         current_line += copy_lines
+                        self.logger.info(f"Copied non-overlapping part, current_line = {current_line}")
                 else:
                     # 无重叠,直接复制整个帧
                     merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                     current_line += frame.getNumberOfLines()
+                    self.logger.info(f"Copied entire frame, current_line = {current_line}")
+        
+        self.logger.info(f"Final merged data shape: {merged_data.shape}")
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
