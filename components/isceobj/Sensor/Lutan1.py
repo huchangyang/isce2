@@ -1169,10 +1169,9 @@ class Lutan1(Sensor):
         for vec in all_vectors:
             merged_orbit.addStateVector(vec)
         
-        # 设置轨道的时间范围
+        # 记录轨道的时间范围（仅用于日志）
         if all_vectors:
-            merged_orbit.setTimeRange(all_vectors[0].getTime(), all_vectors[-1].getTime())
-            self.logger.info(f"Set merged orbit time range: {all_vectors[0].getTime()} to {all_vectors[-1].getTime()}")
+            self.logger.info(f"Merged orbit time range: {all_vectors[0].getTime()} to {all_vectors[-1].getTime()}")
         
         return merged_orbit
 
