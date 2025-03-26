@@ -252,13 +252,14 @@ class Lutan1(Sensor):
             raise RuntimeError("Failed to extract orbit information.")
         
         # 添加状态向量到轨道
-        for sv in orb._stateVectors:
+        for sv in orb:
             self.frame.orbit.addStateVector(sv)
         
         # 设置轨道的时间范围
-        if orb._stateVectors:
-            self.frame.orbit.setTimeRange(orb._stateVectors[0].getTime(), orb._stateVectors[-1].getTime())
-            self.logger.info(f"Set orbit time range: {orb._stateVectors[0].getTime()} to {orb._stateVectors[-1].getTime()}")
+        state_vectors = list(orb)  # 将迭代器转换为列表以便多次访问
+        if state_vectors:
+            self.frame.orbit.setTimeRange(state_vectors[0].getTime(), state_vectors[-1].getTime())
+            self.logger.info(f"Set orbit time range: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
             self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
         else:
             self.logger.error("No state vectors in orbit")
@@ -521,7 +522,6 @@ class Lutan1(Sensor):
             self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
             self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
             
-            # 不再需要显式设置时间范围,因为addStateVector会自动维护
             return orb
 
         elif file_ext == '.txt':
@@ -661,7 +661,6 @@ class Lutan1(Sensor):
                 self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
                 self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
                 
-                # 不再需要显式设置时间范围,因为addStateVector会自动维护
                 return orb
         else:
             self.logger.error(f"Unsupported orbit file extension: {file_ext}")
@@ -996,6 +995,10 @@ class Lutan1(Sensor):
                 # 生成头文件和VRT文件
                 slcImage.renderHdr()
                 slcImage.renderVRT()
+                
+                # 保存轨道信息到单独文件
+                orbit_file = self.output + '.orb'
+                self.saveOrbitToFile(self.frame.orbit, orbit_file)
         else:
             # 如果没有合并的frame，使用第一个frame
             self.frame = self.frameList[0]
@@ -1211,32 +1214,37 @@ class Lutan1(Sensor):
         return merged_frame
 
     def mergeOrbits(self, orbits):
-        """
-        Merge multiple orbits into one.
-        """
-        if not orbits:
-            return None
+        """合并多个轨道的状态向量"""
+        from isceobj.Orbit.Orbit import Orbit, StateVector
         
-        # 获取所有轨道的状态向量
+        merged_orbit = Orbit()
+        merged_orbit.configure()
+        
+        # 收集所有状态向量
         all_vectors = []
-        for orb in orbits:
-            all_vectors.extend(orb._stateVectors)
+        for orbit in orbits:
+            if orbit and orbit._stateVectors:
+                all_vectors.extend(orbit._stateVectors)
+        
+        if not all_vectors:
+            self.logger.warning("No orbit state vectors found in any frames")
+            return None
         
         # 按时间排序
         all_vectors.sort(key=lambda x: x.getTime())
         
-        # 创建新的轨道对象
-        merged_orbit = Orbit()
-        merged_orbit.configure()
+        # 移除重复的状态向量
+        unique_vectors = []
+        prev_time = None
+        for sv in all_vectors:
+            curr_time = sv.getTime()
+            if prev_time is None or curr_time != prev_time:
+                unique_vectors.append(sv)
+                prev_time = curr_time
         
-        # 添加所有状态向量
-        for vec in all_vectors:
-            merged_orbit.addStateVector(vec)
-        
-        # 设置轨道的时间范围
-        if all_vectors:
-            merged_orbit.setTimeRange(all_vectors[0].getTime(), all_vectors[-1].getTime())
-            self.logger.info(f"Set merged orbit time range: {all_vectors[0].getTime()} to {all_vectors[-1].getTime()}")
+        # 添加到合并后的轨道
+        for sv in unique_vectors:
+            merged_orbit.addStateVector(sv)
         
         return merged_orbit
 
@@ -1460,9 +1468,7 @@ class Lutan1(Sensor):
             return False
 
     def saveOrbitToFile(self, orbit, filename):
-        """
-        将轨道信息保存到单独的文件中
-        """
+        """将轨道信息保存到单独的文件中"""
         import pickle
         state_vectors_data = []
         for sv in orbit._stateVectors:
@@ -1481,9 +1487,7 @@ class Lutan1(Sensor):
             }, f)
 
     def loadOrbitFromFile(self, filename):
-        """
-        从文件中恢复轨道信息
-        """
+        """从文件中恢复轨道信息"""
         import pickle
         from isceobj.Orbit.Orbit import Orbit, StateVector
         
