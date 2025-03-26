@@ -231,6 +231,9 @@ class Lutan1(Sensor):
             # Check if orbit file exists or not
             if os.path.isfile(self._orbitFile) == True:
                 orb = self.extractOrbit()
+                if orb is None:
+                    self.logger.error("Failed to extract orbit from file")
+                    raise RuntimeError("Failed to extract orbit from file")
                 self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
                 self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
@@ -247,8 +250,18 @@ class Lutan1(Sensor):
         if orb is None:
             self.logger.error("Failed to extract orbit information.")
             raise RuntimeError("Failed to extract orbit information.")
-        for sv in orb:
+        
+        # 添加状态向量到轨道
+        for sv in orb._stateVectors:
             self.frame.orbit.addStateVector(sv)
+        
+        # 设置轨道的时间范围
+        if orb._stateVectors:
+            self.frame.orbit.setTimeRange(orb._stateVectors[0].getTime(), orb._stateVectors[-1].getTime())
+            self.logger.info(f"Set orbit time range: {orb._stateVectors[0].getTime()} to {orb._stateVectors[-1].getTime()}")
+        else:
+            self.logger.error("No state vectors in orbit")
+            raise RuntimeError("No state vectors in orbit")
 
     def convertToDateTime(self,string):
         dt = datetime.datetime.strptime(string,"%Y-%m-%dT%H:%M:%S.%f")
