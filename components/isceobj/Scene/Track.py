@@ -324,9 +324,37 @@ class Track(object):
             frame = frameInfo['frame']
             
             try:
-                # 直接读取数据
-                with open(frame.image.getFilename(), 'rb') as f:
-                    frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), frame.getNumberOfSamples())
+                filename = frame.image.getFilename()
+                file_size = os.path.getsize(filename)
+                expected_size = frame.getNumberOfLines() * frame.getNumberOfSamples() * 8
+                
+                self.logger.info(f"文件信息:")
+                self.logger.info(f"  文件名: {filename}")
+                self.logger.info(f"  文件大小: {file_size} bytes")
+                self.logger.info(f"  期望大小: {expected_size} bytes")
+                self.logger.info(f"  行数: {frame.getNumberOfLines()}")
+                self.logger.info(f"  列数: {frame.getNumberOfSamples()}")
+                
+                # 读取数据并检查大小
+                with open(filename, 'rb') as f:
+                    # 先读取一小部分检查数据结构
+                    header = f.read(16)
+                    self.logger.info(f"  前16字节: {[hex(b) for b in header]}")
+                    
+                    # 重置文件指针
+                    f.seek(0)
+                    raw_data = np.fromfile(f, dtype=np.complex64)
+                    self.logger.info(f"  读取到的数据点数: {len(raw_data)}")
+                    
+                    # 检查是否需要跳过头部
+                    points_needed = frame.getNumberOfLines() * frame.getNumberOfSamples()
+                    if len(raw_data) > points_needed:
+                        extra_points = len(raw_data) - points_needed
+                        self.logger.info(f"  检测到额外数据点: {extra_points}")
+                        # 跳过额外的点
+                        frame_data = raw_data[extra_points:].reshape(frame.getNumberOfLines(), frame.getNumberOfSamples())
+                    else:
+                        frame_data = raw_data.reshape(frame.getNumberOfLines(), frame.getNumberOfSamples())
                 
                 # 计算写入位置
                 start_line = frameInfo['startLine']
