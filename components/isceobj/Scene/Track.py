@@ -327,13 +327,25 @@ class Track(object):
                 self.logger.info(f"  行数: {frame_lines}")
                 self.logger.info(f"  列数: {frame_width}")
                 
-                # 读取数据 - 先以float32读取，然后转换为complex64
+                # 读取数据
                 with open(filename, 'rb') as f:
+                    # 计算需要读取的float32数量
+                    expected_floats = frame_lines * frame_width * 2  # 每个复数需要2个float32
+                    
                     # 读取为float32数组
                     raw_float = np.fromfile(f, dtype=np.float32)
-                    # 将相邻的两个float32转换为一个complex64
-                    frame_data = raw_float[::2] + 1j * raw_float[1::2]
-                    # 重塑数组
+                    
+                    # 确保数据长度是偶数
+                    if len(raw_float) % 2 != 0:
+                        self.logger.warning(f"数据长度为奇数 ({len(raw_float)})，截断最后一个元素")
+                        raw_float = raw_float[:-1]
+                    
+                    # 重塑数组以配对实部和虚部
+                    raw_float = raw_float[:expected_floats]  # 确保不超过预期大小
+                    raw_complex = raw_float.reshape(-1, 2)
+                    frame_data = raw_complex[:, 0] + 1j * raw_complex[:, 1]
+                    
+                    # 重塑为最终形状
                     frame_data = frame_data.reshape(frame_lines, frame_width)
                 
                 self.logger.info(f"  数据形状: {frame_data.shape}")
