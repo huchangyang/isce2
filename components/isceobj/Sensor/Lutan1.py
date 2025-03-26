@@ -1133,13 +1133,24 @@ class Lutan1(Sensor):
         # 生成辅助文件
         self.makeFakeAux(output_file)
         
-        # 合并轨道信息
-        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
-        if merged_orbit:
-            merged_frame.setOrbit(merged_orbit)
-            self.logger.info("Successfully merged orbits")
+        # 处理轨道信息
+        if self._orbitFile:
+            # 如果提供了轨道文件，使用完整的轨道文件
+            self.logger.info(f"Using provided orbit file: {self._orbitFile}")
+            orb = self.extractOrbit()
+            if orb:
+                merged_frame.setOrbit(orb)
+                self.logger.info("Successfully set orbit from file")
+            else:
+                self.logger.warning("Failed to extract orbit from file")
         else:
-            self.logger.warning("Failed to merge orbits")
+            # 如果没有提供轨道文件，合并各个帧的轨道
+            merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
+            if merged_orbit:
+                merged_frame.setOrbit(merged_orbit)
+                self.logger.info("Successfully merged orbits from frames")
+            else:
+                self.logger.warning("Failed to merge orbits from frames")
         
         return merged_frame
 
