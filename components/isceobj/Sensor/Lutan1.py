@@ -234,15 +234,24 @@ class Lutan1(Sensor):
                 if orb is None:
                     self.logger.error("Failed to extract orbit from file")
                     raise RuntimeError("Failed to extract orbit from file")
+                
+                # 验证轨道数据
+                if not self.validate_orbit(orb):
+                    raise RuntimeError("Invalid orbit data")
+                
                 self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
                 self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
                 orb = self.createOrbit()
+                if not self.validate_orbit(orb):
+                    raise RuntimeError("Invalid orbit data from annotation file")
                 self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
                 self.frame.orbit.setOrbitSource('Annotation')
         else:
             self.logger.warning("No orbit file provided. Using orbit from annotation file.")
             orb = self.createOrbit()
+            if not self.validate_orbit(orb):
+                raise RuntimeError("Invalid orbit data from annotation file")
             self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
             self.frame.orbit.setOrbitSource('Annotation')
 
@@ -252,11 +261,11 @@ class Lutan1(Sensor):
             raise RuntimeError("Failed to extract orbit information.")
         
         # 添加状态向量到轨道
-        for sv in orb:
+        state_vectors = list(orb._stateVectors)  # 转换为列表
+        for sv in state_vectors:
             self.frame.orbit.addStateVector(sv)
         
         # 设置轨道的时间范围
-        state_vectors = list(orb)  # 将迭代器转换为列表以便多次访问
         if state_vectors:
             self.frame.orbit.setTimeRange(state_vectors[0].getTime(), state_vectors[-1].getTime())
             self.logger.info(f"Set orbit time range: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
@@ -264,6 +273,38 @@ class Lutan1(Sensor):
         else:
             self.logger.error("No state vectors in orbit")
             raise RuntimeError("No state vectors in orbit")
+
+    def validate_orbit(self, orbit):
+        """验证轨道数据的有效性"""
+        if not orbit._stateVectors:
+            self.logger.error("No state vectors found in orbit")
+            return False
+        
+        # 转换为列表进行操作
+        state_vectors = list(orbit._stateVectors)
+        if len(state_vectors) < 4:
+            self.logger.error(f"Insufficient state vectors: {len(state_vectors)}")
+            return False
+        
+        # 验证时间范围
+        times = [sv.getTime() for sv in state_vectors]
+        min_time = min(times)
+        max_time = max(times)
+        
+        if self.frame.getSensingStart() < min_time or self.frame.getSensingStop() > max_time:
+            self.logger.error("Frame sensing time outside orbit data range")
+            self.logger.error(f"Orbit time range: {min_time} to {max_time}")
+            self.logger.error(f"Frame time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
+            return False
+        
+        # 验证数据连续性
+        times.sort()
+        for i in range(1, len(times)):
+            dt = (times[i] - times[i-1]).total_seconds()
+            if dt > 2.0:  # 假设正常采样间隔为1秒
+                self.logger.warning(f"Large gap ({dt} seconds) in orbit data between {times[i-1]} and {times[i]}")
+        
+        return True
 
     def convertToDateTime(self,string):
         dt = datetime.datetime.strptime(string,"%Y-%m-%dT%H:%M:%S.%f")
@@ -1224,7 +1265,8 @@ class Lutan1(Sensor):
         all_vectors = []
         for orbit in orbits:
             if orbit and orbit._stateVectors:
-                all_vectors.extend(orbit._stateVectors)
+                # 转换为列表后再扩展
+                all_vectors.extend(list(orbit._stateVectors))
         
         if not all_vectors:
             self.logger.warning("No orbit state vectors found in any frames")

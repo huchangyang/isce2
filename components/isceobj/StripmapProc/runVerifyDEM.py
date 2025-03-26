@@ -53,7 +53,7 @@ def getBbox(frame, zrange=[-500., 9000.],geom='zero doppler', margin=0.05):
         doppler.initPoly(azimuthOrder=0, rangeOrder=0, coeffs=[[0.]])
 
     llh = []
-    import pdb; pdb.set_trace()
+
     for z in zrange:
         for taz in tarr:
             for rng in [r0, rmax]:
@@ -110,7 +110,7 @@ def runVerifyDEM(self):
         
         reference = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
         secondary  = self._insar.loadProduct(self._insar.secondarySlcCropProduct)
-        import pdb; pdb.set_trace()
+
         bboxes = []
 
         ###Add region of interest for good measure
