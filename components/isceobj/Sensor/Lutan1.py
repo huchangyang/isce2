@@ -968,7 +968,20 @@ class Lutan1(Sensor):
         
         self.logger.info(f"Successfully processed {len(self.frameList)} frames")
         
+        # 在调用tkfunc之前对frameList排序
+        self.logger.info("Sorting frames by sensing start time...")
+        self.logger.info("Before sorting:")
+        for i, frame in enumerate(self.frameList):
+            self.logger.info(f"Frame {i}: Start time = {frame.getSensingStart()}, Lines = {frame.getNumberOfLines()}")
+        
+        self.frameList.sort(key=lambda x: x.getSensingStart())
+        
+        self.logger.info("After sorting:")
+        for i, frame in enumerate(self.frameList):
+            self.logger.info(f"Frame {i}: Start time = {frame.getSensingStart()}, Lines = {frame.getNumberOfLines()}")
+        
         # 使用tkfunc处理多frame
+        self.logger.info("Calling tkfunc to merge frames...")
         merged_frame = tkfunc(self)
         
         # 确保frame和frameList被正确设置
