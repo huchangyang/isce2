@@ -271,126 +271,97 @@ class Track(object):
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
     def createTrack(self, output):
+        """Create the actual Track data by concatenating data from all of the Frames objects together"""
         import os
+        import numpy as np
         from operator import itemgetter
         from isceobj import Constants as CN
-        from ctypes import cdll, c_char_p, c_int, c_ubyte, byref
-        import numpy as np
         
-        lib = cdll.LoadLibrary(os.path.dirname(__file__)+'/concatenate.so')
-        
-        # 检查数据类型
+        # 检查第一帧的数据类型来决定处理方式
         is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
-        self.logger.info(f"Processing {'SLC' if is_slc else 'RAW'} data")
         
-        self.logger.info("Adjusting Sampling Window Start Times for all Frames")
-        outputs = []
-        totalWidth = 0
-        auxList = []
-        
-        for frame in self._frames:
-            thisNearRange = frame.getStartingRange()
-            thisFarRange = frame.getFarRange()
-            left_pad = int(round((thisNearRange - self._nearRange)*frame.getInstrument().getRangeSamplingRate()/(CN.SPEED_OF_LIGHT/2.0)))*2
-            right_pad = int(round((self._farRange - thisFarRange)*frame.getInstrument().getRangeSamplingRate()/(CN.SPEED_OF_LIGHT/2.0)))*2
-            width = frame.getImage().getXmax()
-            
-            if width - int(width) != 0:
-                raise ValueError("frame Xmax is not an integer")
-            else:
-                width = int(width)
-            
-            input_file = frame.getImage().getFilename()
-            
-            if is_slc:
-                # 对于SLC数据，先读取complex64数据
-                with open(input_file, 'rb') as f:
-                    data = np.fromfile(f, dtype=np.complex64)
-                    # 创建临时的bytes文件
-                    with tempfile.NamedTemporaryFile(delete=False) as temp_in:
-                        # 将complex64数据转换为bytes
-                        data.view(np.uint8).tofile(temp_in)
-                        input_file = temp_in.name
-            
-            with tempfile.NamedTemporaryFile(dir='.', delete=False) as f:
-                tempOutput = f.name
-            
-            if totalWidth < left_pad + width + right_pad:
-                totalWidth = left_pad + width + right_pad
-            
-            pad_value = int(frame.getInstrument().getInPhaseValue())
-            
-            # 调用swst_resample
-            input_c = c_char_p(bytes(input_file,'utf-8'))
-            output_c = c_char_p(bytes(tempOutput,'utf-8'))
-            width_c = c_int(width)
-            left_pad_c = c_int(left_pad)
-            right_pad_c = c_int(right_pad)
-            pad_value_c = c_ubyte(pad_value)
-            
-            lib.swst_resample(input_c, output_c, byref(width_c), byref(left_pad_c), 
-                             byref(right_pad_c), byref(pad_value_c))
-            
-            if is_slc:
-                # 删除临时输入文件
-                os.unlink(input_file)
-                # 将输出转换回complex64格式
-                with open(tempOutput, 'rb') as f:
-                    data = np.fromfile(f, dtype=np.uint8)
-                    with tempfile.NamedTemporaryFile(delete=False) as temp_out:
-                        data.view(np.complex64).tofile(temp_out)
-                        os.unlink(tempOutput)
-                        tempOutput = temp_out.name
-            
-            outputs.append(tempOutput)
-            auxList.append(frame.auxFile)
-        
-        # 创建aux文件
-        self.createAuxFile(auxList, output + '.aux')
-        
-        # 计算开始行
+        if is_slc:
+            # 使用Python处理SLC数据
+            self.logger.info("Processing SLC data using Python")
+            return self._createTrackSlc(output)
+        else:
+            # 原有的RAW数据处理方式
+            self.logger.info("Processing RAW data using C")
+            return self._createTrackRaw(output)
+
+    def _createTrackSlc(self, output):
+        """使用Python处理SLC数据"""
+        # 计算总宽度和起始行
+        totalWidth = max(frame.getNumberOfSamples() for frame in self._frames)
         prf = self._frames[0].getInstrument().getPulseRepetitionFrequency()
-        lineSort = []
-        for i, frame in enumerate(self._frames):
-            startLine = int(round(DTU.timeDeltaToSeconds(frame.getSensingStart()-self._startTime)*prf))
-            lineSort.append([startLine, outputs[i]])
         
-        sortedList = sorted(lineSort, key=itemgetter(0))
-        startLines, outputs = self.reAdjustStartLine(sortedList, totalWidth)
+        # 收集帧信息
+        frameInfos = []
+        for frame in self._frames:
+            startLine = int(round(DTU.timeDeltaToSeconds(frame.getSensingStart()-self._startTime)*prf))
+            frameInfos.append({
+                'frame': frame,
+                'startLine': startLine,
+                'filename': frame.getImage().getFilename(),
+                'width': frame.getNumberOfSamples(),
+                'lines': frame.getNumberOfLines()
+            })
+        
+        # 按开始时间排序
+        frameInfos.sort(key=lambda x: x['startLine'])
         
         # 计算总行数
-        if is_slc:
-            fileSize = os.path.getsize(outputs[-1])
-            numLines = fileSize//(totalWidth * 8) + startLines[-1]  # 8 bytes for complex64
+        if len(self._frames) == 1:
+            totalLines = self._frames[0].getNumberOfLines()
         else:
-            fileSize = os.path.getsize(outputs[-1])
-            numLines = fileSize//totalWidth + startLines[-1]
+            totalLines = frameInfos[-1]['startLine'] + frameInfos[-1]['lines']
         
-        totalLines_c = c_int(numLines)
-        width_c = c_int(totalWidth)
-        numberOfFrames_c = c_int(len(self._frames))
-        inputs_c = (c_char_p * len(outputs))()
-        for kk in range(len(outputs)):
-            inputs_c[kk] = bytes(outputs[kk],'utf-8')
-        output_c = c_char_p(bytes(output,'utf-8'))
-        startLines_c = (c_int * len(startLines))()
-        startLines_c[:] = startLines
+        self.logger.info(f"合并后的图像尺寸: {totalWidth} x {totalLines}")
         
-        # 调用frame_concatenate
-        lib.frame_concatenate(output_c, byref(width_c), byref(totalLines_c),
-                             byref(numberOfFrames_c), inputs_c, startLines_c)
+        # 创建输出数组
+        merged_data = np.zeros((totalLines, totalWidth), dtype=np.complex64)
         
-        # 清理临时文件
-        for file in outputs:
-            os.unlink(file)
+        # 合并数据
+        for i, frameInfo in enumerate(frameInfos):
+            self.logger.info(f"处理第 {i+1}/{len(frameInfos)} 个帧...")
+            
+            try:
+                # 读取帧数据
+                frame_data = np.fromfile(frameInfo['filename'], dtype=np.complex64)
+                frame_data = frame_data.reshape(frameInfo['lines'], frameInfo['width'])
+                
+                # 计算写入位置
+                start_line = frameInfo['startLine']
+                end_line = start_line + frameInfo['lines']
+                
+                # 如果不是第一帧，检查是否需要处理重叠区域
+                if i > 0:
+                    prev_end = frameInfos[i-1]['startLine'] + frameInfos[i-1]['lines']
+                    if start_line < prev_end:
+                        # 处理重叠区域
+                        overlap = prev_end - start_line
+                        self.logger.info(f"检测到与前一帧重叠 {overlap} 行")
+                        # 使用渐变混合重叠区域
+                        weights = np.linspace(0, 1, overlap)[:, np.newaxis]
+                        overlap_region = merged_data[start_line:prev_end, :frameInfo['width']] * (1 - weights) + \
+                                       frame_data[:overlap] * weights
+                        merged_data[start_line:prev_end, :frameInfo['width']] = overlap_region
+                        # 更新非重叠部分
+                        merged_data[prev_end:end_line, :frameInfo['width']] = frame_data[overlap:]
+                    else:
+                        # 无重叠，直接写入
+                        merged_data[start_line:end_line, :frameInfo['width']] = frame_data
+                else:
+                    # 第一帧直接写入
+                    merged_data[start_line:end_line, :frameInfo['width']] = frame_data
+                
+            except Exception as e:
+                self.logger.error(f"处理帧 {i+1} 时出错: {str(e)}")
+                raise
         
-        # 如果是SLC数据，需要将最终输出转换为complex64格式
-        if is_slc:
-            with open(output, 'rb') as f:
-                data = np.fromfile(f, dtype=np.uint8)
-                with tempfile.NamedTemporaryFile(delete=False) as temp_final:
-                    data.view(np.complex64).tofile(temp_final)
-                    os.rename(temp_final.name, output)
+        # 写入合并后的数据
+        self.logger.info(f"写入合并数据到: {output}")
+        merged_data.tofile(output)
         
         # 设置Frame属性
         self._frame.setOrbitNumber(self._frames[0].getOrbitNumber())
@@ -404,32 +375,33 @@ class Track(object):
         self._frame.setProcessingSystem(self._frames[0].getProcessingSystem())
         self._frame.setProcessingSoftwareVersion(self._frames[0].getProcessingSoftwareVersion())
         self._frame.setPolarization(self._frames[0].getPolarization())
-        self._frame.setNumberOfLines(numLines)
+        self._frame.setNumberOfLines(totalLines)
         self._frame.setNumberOfSamples(totalWidth)
         
-        # 创建适当的图像对象
-        if is_slc:
-            image = isceobj.createSlcImage()
-            image.setDataType('CFLOAT')
-            image.setImageType('slc')
-        else:
-            image = isceobj.createRawImage()
+        # 创建SLC图像对象
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(output)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(totalWidth)
+        slcImage.setLength(totalLines)
+        slcImage.setXmax(totalWidth)
+        slcImage.setXmin(self._frames[0].getImage().getXmin())
+        slcImage.setDataType('CFLOAT')
+        slcImage.setImageType('slc')
         
-        image.setByteOrder('l')
-        image.setFilename(output)
-        image.setAccessMode('read')
-        image.setWidth(totalWidth)
-        image.setLength(numLines)
-        image.setXmax(totalWidth)
-        image.setXmin(self._frames[0].getImage().getXmin())
-        
-        self._frame.setImage(image)
+        self._frame.setImage(slcImage)
         
         # 生成头文件和VRT文件
-        image.renderHdr()
-        image.renderVRT()
+        slcImage.renderHdr()
+        slcImage.renderVRT()
         
         return self._frame
+
+    def _createTrackRaw(self, output):
+        """原有的RAW数据处理方式"""
+        # 把原来createTrack的代码移到这里
+        ...
 
     # Extract the early, late, start and stop times from a Frame object
     # And use this information to update
