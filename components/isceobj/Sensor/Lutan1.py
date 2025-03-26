@@ -85,25 +85,15 @@ class Lutan1(Sensor):
 
     def __init__(self, name=''):
         super().__init__(family=self.__class__.family, name=name)
-        # 添加必要的导入
-        try:
-            from osgeo import gdal
-            self.gdal = gdal
-        except ImportError:
-            raise ImportError("GDAL python bindings not found. Need this for Lutan1.")
-        
         self.frameList = []
-        self._leaderFileList = []
         self._imageFileList = []
-        self._xml_root = None
+        self._xmlFileList = []
+        self.frame = None
         self.doppler_coeff = None
         self.filterMethod = 'weighted'
         self._tiff = None
         self._orbitFile = None
         self._xml = None
-
-        self.frame = Frame()
-        self.frame.configure()
 
     def validateUserInputs(self):
         '''
@@ -872,43 +862,29 @@ class Lutan1(Sensor):
         """
         提取图像数据
         """
-        # 验证用户输入并自动查找文件
+        # 验证用户输入
         self.validateUserInputs()
         
-        if len(self._imageFileList) != len(self._leaderFileList):
-            self.logger.error("Number of leader files different from number of image files.")
-            raise RuntimeError
+        # 处理每个frame
+        for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
+            # 创建新的frame
+            frame = Frame()
+            frame.configure()
+            
+            # 设置当前frame
+            self.frame = frame
+            self._xml_root = ET.parse(xml_file).getroot()
+            
+            # 解析元数据
+            self.populateMetadata()
+            
+            # 提取图像数据
+            outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
+            self.extractFrameImage(tiff_file, outputNow)
+            
+            # 添加到frameList
+            self.frameList.append(frame)
         
-        self.frameList = []
-        for i in range(len(self._imageFileList)):
-            appendStr = "_" + str(i)
-            if len(self._imageFileList) == 1:
-                appendStr = ''
-
-            self.frame = Frame()
-            self.frame.configure()
-
-            self._leaderFile = self._leaderFileList[i]
-            self._imageFile = self._imageFileList[i]
-            
-            try:
-                # 解析元数据
-                self.parse()
-                
-                # 提取图像数据
-                outputNow = self.output + appendStr
-                self.extractFrameImage(self._imageFile, outputNow)
-                
-                # 生成辅助文件
-                self.makeFakeAux(outputNow)
-                
-                # 添加到frameList
-                self.frameList.append(self.frame)
-                
-            except IOError as e:
-                self.logger.error(f"Error processing frame {i}: {str(e)}")
-                raise
-            
         # 使用tkfunc处理多frame
         return tkfunc(self)
 
@@ -924,7 +900,6 @@ class Lutan1(Sensor):
         
         # 计算总行数
         total_lines = 0
-        current_line = 0
         for i, frame in enumerate(sorted_frames):
             if i > 0:
                 # 计算与前一帧的重叠
@@ -936,13 +911,10 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
-                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
                 else:
                     total_lines += frame.getNumberOfLines()
             else:
                 total_lines += frame.getNumberOfLines()
-        
-        self.logger.info(f"Total lines in merged output: {total_lines}")
         
         # 创建输出文件
         output_file = self.output
@@ -957,14 +929,10 @@ class Lutan1(Sensor):
             with open(frame.image.getFilename(), 'rb') as f:
                 frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
             
-            self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
-            
             if i == 0:
                 # 第一帧直接复制
-                self.logger.info(f"Copying first frame: shape={frame_data.shape}")
                 merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                 current_line += frame.getNumberOfLines()
-                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
             else:
                 # 处理与前一帧的重叠
                 prev_frame = sorted_frames[i-1]
@@ -975,33 +943,15 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     
-                    self.logger.info(f"Frame {i} overlap: {overlap_lines} lines")
-                    
                     # 直接复制非重叠区域到当前位置
                     if overlap_lines < frame.getNumberOfLines():
-                        # 计算实际需要复制的行数
                         copy_lines = frame.getNumberOfLines() - overlap_lines
-                        
-                        # 只复制非重叠部分
                         merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
                         current_line += copy_lines
-                        
-                        self.logger.info(f"Copied {copy_lines} non-overlapping lines from frame {i}")
-                    else:
-                        self.logger.info(f"Frame {i} completely overlaps with previous frame, skipping")
                 else:
                     # 无重叠,直接复制整个帧
-                    target_end = current_line + frame.getNumberOfLines()
-                    self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
-                    merged_data[current_line:target_end] = frame_data
+                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                     current_line += frame.getNumberOfLines()
-                
-                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
-        
-        # 验证最终的行数
-        if current_line != total_lines:
-            self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
-            raise ValueError("Line count mismatch in merged output")
         
         # 写入合并后的数据
         with open(output_file, 'wb') as f:
@@ -1046,10 +996,6 @@ class Lutan1(Sensor):
         # 合并轨道信息
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
-        
-        # 更新类的状态
-        self.frameList = [merged_frame]
-        self.frame = merged_frame
         
         return merged_frame
 
@@ -1172,14 +1118,14 @@ class Lutan1(Sensor):
             if slc_dir_element is not None:
                 slc_dir = slc_dir_element.text
                 # 检索所有TIFF文件
-                self._tiffList = sorted(glob.glob(os.path.join(slc_dir, "*.tiff")))
-                if not self._tiffList:
+                self._imageFileList = sorted(glob.glob(os.path.join(slc_dir, "*.tiff")))
+                if not self._imageFileList:
                     self.logger.warning(f"No TIFF files found in {slc_dir}")
             else:
                 # 格式2: <tiff>./SLC/file.tiff</tiff>
                 tiff_element = root.find(".//tiff")
                 if tiff_element is not None:
-                    self._tiffList = [tiff_element.text]
+                    self._imageFileList = [tiff_element.text]
                 else:
                     self.logger.error("No SLC_DIR or tiff element found in XML configuration")
                     return False
@@ -1189,10 +1135,10 @@ class Lutan1(Sensor):
             if orbit_dir_element is not None:
                 orbit_dir = orbit_dir_element.text
                 # 检索所有XML轨道文件
-                self._orbitFileList = sorted(glob.glob(os.path.join(orbit_dir, "*.xml")))
-                if not self._orbitFileList:
+                self._xmlFileList = sorted(glob.glob(os.path.join(orbit_dir, "*.xml")))
+                if not self._xmlFileList:
                     self.logger.warning(f"No orbit XML files found in {orbit_dir}")
-                    self._orbitFileList = []
+                    self._xmlFileList = []
             else:
                 # 格式2: <orbitFile>./orbits/file.xml</orbitFile> 或 <ORBITFILE>./orbits/file.xml</ORBITFILE>
                 # 尝试不同大小写的轨道文件标签
@@ -1205,11 +1151,11 @@ class Lutan1(Sensor):
                         orbit_element = orbit_property
                 
                 if orbit_element is not None and orbit_element.text:
-                    self._orbitFileList = [orbit_element.text]
+                    self._xmlFileList = [orbit_element.text]
                     self.logger.info(f"Using orbit file: {orbit_element.text}")
                 else:
                     self.logger.warning("No ORBIT_DIR or orbitFile element found in XML configuration, proceeding without orbit files")
-                    self._orbitFileList = []
+                    self._xmlFileList = []
                 
             # 获取输出文件名
             output_element = root.find(".//property[@name='OUTPUT']/value")
@@ -1225,27 +1171,27 @@ class Lutan1(Sensor):
                     return False
                 
             # 打印找到的文件信息
-            self.logger.info(f"Found {len(self._tiffList)} TIFF files and {len(self._orbitFileList)} orbit files")
-            for i, tiff in enumerate(self._tiffList):
+            self.logger.info(f"Found {len(self._imageFileList)} TIFF files and {len(self._xmlFileList)} orbit files")
+            for i, tiff in enumerate(self._imageFileList):
                 self.logger.info(f"TIFF {i+1}: {tiff}")
-            for i, orbit in enumerate(self._orbitFileList):
+            for i, orbit in enumerate(self._xmlFileList):
                 self.logger.info(f"Orbit {i+1}: {orbit}")
                 
             # 如果轨道文件数量与TIFF文件数量不匹配，尝试自动匹配
-            if len(self._orbitFileList) > 0 and len(self._orbitFileList) != len(self._tiffList):
+            if len(self._xmlFileList) > 0 and len(self._xmlFileList) != len(self._imageFileList):
                 self.logger.warning("Number of orbit files does not match number of TIFF files")
                 self.logger.info("Attempting to match orbit files with TIFF files...")
                 
                 # 如果只有一个轨道文件，假设它适用于所有TIFF文件
-                if len(self._orbitFileList) == 1:
+                if len(self._xmlFileList) == 1:
                     self.logger.info("Using the single orbit file for all TIFF files")
-                    self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
+                    self._xmlFileList = [self._xmlFileList[0]] * len(self._imageFileList)
                 else:
                     # 尝试根据日期匹配轨道文件
                     try:
                         # 提取每个TIFF文件名中的日期信息
                         tiff_dates = []
-                        for tiff in self._tiffList:
+                        for tiff in self._imageFileList:
                             # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
                             basename = os.path.basename(tiff)
                             parts = basename.split('_')
@@ -1260,7 +1206,7 @@ class Lutan1(Sensor):
                         
                         # 提取每个轨道文件名中的日期信息
                         orbit_dates = []
-                        for orbit in self._orbitFileList:
+                        for orbit in self._xmlFileList:
                             # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
                             basename = os.path.basename(orbit)
                             parts = basename.split('_')
@@ -1284,7 +1230,7 @@ class Lutan1(Sensor):
                             matched = False
                             for j, orbit_date in enumerate(orbit_dates):
                                 if orbit_date is not None and orbit_date == tiff_date:
-                                    matched_orbit_files.append(self._orbitFileList[j])
+                                    matched_orbit_files.append(self._xmlFileList[j])
                                     matched = True
                                     break
                             
@@ -1294,14 +1240,14 @@ class Lutan1(Sensor):
                         # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
                         if all(orbit is not None for orbit in matched_orbit_files):
                             self.logger.info("Successfully matched orbit files based on date")
-                            self._orbitFileList = matched_orbit_files
+                            self._xmlFileList = matched_orbit_files
                         else:
                             self.logger.warning("Could not match all orbit files based on date, proceeding without orbit files")
-                            self._orbitFileList = []
+                            self._xmlFileList = []
                     except Exception as e:
                         self.logger.warning(f"Error matching orbit files: {str(e)}")
                         self.logger.warning("Proceeding without orbit files")
-                        self._orbitFileList = []
+                        self._xmlFileList = []
                 
             return True
             
@@ -1357,50 +1303,3 @@ class Lutan1(Sensor):
             orbit.addStateVector(sv)
         
         return orbit
-
-    def extractFrameImage(self, imageFile, output):
-        """
-        提取单个帧的图像数据
-        """
-        try:
-            # 使用已导入的gdal
-            src = self.gdal.Open(imageFile, self.gdal.GA_ReadOnly)
-            if src is None:
-                raise IOError(f"Failed to open image file: {imageFile}")
-            
-            # 获取图像参数
-            width = src.RasterXSize
-            length = src.RasterYSize
-            
-            # 创建输出文件
-            with open(output, 'wb') as fid:
-                band = src.GetRasterBand(1)
-                for i in range(length):
-                    if not i % 1000:
-                        self.logger.info(f"Extracting line {i} of {length}")
-                    data = band.ReadAsArray(0, i, width, 1)
-                    data.tofile(fid)
-            
-            # 创建SLC图像对象
-            slcImage = isceobj.createSlcImage()
-            slcImage.setByteOrder('l')
-            slcImage.setFilename(output)
-            slcImage.setAccessMode('read')
-            slcImage.setWidth(width)
-            slcImage.setLength(length)
-            slcImage.setXmin(0)
-            slcImage.setXmax(width)
-            
-            # 设置到frame
-            self.frame.setImage(slcImage)
-            
-            # 生成VRT文件
-            slcImage.renderVRT()
-            
-            # 关闭GDAL数据集
-            src = None
-            band = None
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting image: {str(e)}")
-            raise
