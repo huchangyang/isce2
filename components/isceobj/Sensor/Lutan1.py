@@ -1005,7 +1005,7 @@ class Lutan1(Sensor):
 
     def extractFrameImage(self, tiff_file, output):
         """
-        提取单个帧的图像数据
+        提取单个帧的图像数据，正确处理复数SLC数据
         """
         try:
             from osgeo import gdal
@@ -1017,42 +1017,90 @@ class Lutan1(Sensor):
         if src is None:
             raise Exception(f"Failed to open TIFF file: {tiff_file}")
         
-        # 获取图像信息
-        width = self.frame.getNumberOfSamples()
-        length = self.frame.getNumberOfLines()
-        
-        # 读取数据并写入输出文件
-        band = src.GetRasterBand(1)
-        with open(output, 'wb') as fid:
-            for ii in range(length):
-                data = band.ReadAsArray(0, ii, width, 1)
+        try:
+            # 获取图像信息
+            width = self.frame.getNumberOfSamples()
+            length = self.frame.getNumberOfLines()
+            
+            # 确保TIFF文件有两个波段（实部和虚部）
+            if src.RasterCount != 2:
+                raise Exception(f"Expected 2 bands for complex data, found {src.RasterCount} bands")
+            
+            # 获取实部和虚部波段
+            band1 = src.GetRasterBand(1)  # 实部
+            band2 = src.GetRasterBand(2)  # 虚部
+            
+            self.logger.info(f"Reading complex data from {tiff_file}")
+            self.logger.info(f"Image dimensions: {width} x {length}")
+            
+            # 一次性读取所有数据
+            real = band1.ReadAsArray(0, 0, width, length).astype(np.float32)
+            imag = band2.ReadAsArray(0, 0, width, length).astype(np.float32)
+            
+            # 验证数据形状
+            if real.shape != (length, width) or imag.shape != (length, width):
+                raise ValueError(f"数据形状不匹配: real {real.shape}, imag {imag.shape}, 期望 ({length}, {width})")
+            
+            # 创建复数数组
+            data = np.empty((length, width), dtype=np.complex64)
+            data.real = real
+            data.imag = imag
+            
+            # 检查数据有效性
+            if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+                self.logger.warning("检测到无效值（NaN或Inf）在复数数据中")
+            
+            # 记录数据统计信息
+            self.logger.info(f"数据统计: 最小幅度={np.min(np.abs(data)):.2f}, "
+                            f"最大幅度={np.max(np.abs(data)):.2f}, "
+                            f"均值幅度={np.mean(np.abs(data)):.2f}")
+            
+            # 写入SLC文件
+            self.logger.info(f"Writing complex data to {output}")
+            with open(output, 'wb') as fid:
                 data.tofile(fid)
-        
-        # 清理资源
-        src = None
-        band = None
-        
-        # 创建SLC图像对象
-        slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')
-        slcImage.setFilename(output)
-        slcImage.setAccessMode('read')
-        slcImage.setWidth(width)
-        slcImage.setLength(length)
-        slcImage.setXmin(0)
-        slcImage.setXmax(width)
-        slcImage.setDataType('CFLOAT')
-        slcImage.setImageType('slc')
-        
-        # 设置图像
-        self.frame.setImage(slcImage)
-        
-        # 生成头文件和VRT文件
-        slcImage.renderHdr()
-        slcImage.renderVRT()
-        
-        # 生成辅助文件
-        self.makeFakeAux(output)
+            
+            # 验证输出文件大小
+            expected_size = length * width * 8  # complex64 = 8 bytes
+            actual_size = os.path.getsize(output)
+            if actual_size != expected_size:
+                raise ValueError(f"输出文件大小不匹配: 实际={actual_size}, 期望={expected_size}")
+            
+            # 创建SLC图像对象
+            slcImage = isceobj.createSlcImage()
+            slcImage.setByteOrder('l')
+            slcImage.setFilename(output)
+            slcImage.setAccessMode('read')
+            slcImage.setWidth(width)
+            slcImage.setLength(length)
+            slcImage.setXmin(0)
+            slcImage.setXmax(width)
+            slcImage.setDataType('CFLOAT')
+            slcImage.setImageType('slc')
+            
+            # 设置图像
+            self.frame.setImage(slcImage)
+            
+            # 生成头文件和VRT文件
+            slcImage.renderHdr()
+            slcImage.renderVRT()
+            
+            # 清理资源
+            del real, imag, data
+            src = None
+            band1 = None
+            band2 = None
+            
+            self.logger.info(f"Successfully extracted frame image to {output}")
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting frame image: {str(e)}")
+            raise
+        finally:
+            # 确保GDAL资源被释放
+            if src is not None:
+                src = None
+
 
     def mergeFrames(self):
         """
