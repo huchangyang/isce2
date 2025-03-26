@@ -521,9 +521,7 @@ class Lutan1(Sensor):
             self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
             self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
             
-            # 设置轨道的时间范围
-            orb.setTimeRange(unique_vectors[0].getTime(), unique_vectors[-1].getTime())
-            
+            # 不再需要显式设置时间范围,因为addStateVector会自动维护
             return orb
 
         elif file_ext == '.txt':
@@ -663,9 +661,7 @@ class Lutan1(Sensor):
                 self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
                 self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
                 
-                # 设置轨道的时间范围
-                orb.setTimeRange(unique_vectors[0].getTime(), unique_vectors[-1].getTime())
-                
+                # 不再需要显式设置时间范围,因为addStateVector会自动维护
                 return orb
         else:
             self.logger.error(f"Unsupported orbit file extension: {file_ext}")
