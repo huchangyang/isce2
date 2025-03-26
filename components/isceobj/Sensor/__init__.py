@@ -273,7 +273,6 @@ def tkfunc(self):
     tk = Track()
     if(len(self._imageFileList) > 1):
         self.frame = tk.combineFrames(self.output, self.frameList)
-        import pdb; pdb.set_trace()
         for i in range(len(self._imageFileList)):
             try:
                 print (self.output + "_" + str(i))
