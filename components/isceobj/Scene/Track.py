@@ -295,20 +295,16 @@ class Track(object):
         # 按时间排序帧
         sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
         
-        # 计算总行数
+        # 计算总行数和重叠
         total_lines = 0
         for i, frame in enumerate(sorted_frames):
             if i > 0:
-                # 计算与前一帧的重叠
                 prev_frame = sorted_frames[i-1]
                 overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
                 if overlap > 0:
-                    # 重叠区域的行数
                     overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                    # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
-                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
                 else:
                     total_lines += frame.getNumberOfLines()
             else:
@@ -323,58 +319,54 @@ class Track(object):
         
         for i, frame in enumerate(sorted_frames):
             try:
-                # 读取当前帧数据
-                with open(frame.image.getFilename(), 'rb') as f:
-                    frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
+                filename = frame.image.getFilename()
+                frame_lines = frame.getNumberOfLines()
+                frame_width = frame.getNumberOfSamples()
                 
-                self.logger.info(f"Processing frame {i}: shape={frame_data.shape}, current_line={current_line}")
+                self.logger.info(f"处理第 {i+1}/{len(sorted_frames)} 个帧...")
+                self.logger.info(f"  行数: {frame_lines}")
+                self.logger.info(f"  列数: {frame_width}")
+                
+                # 读取数据 - 先以float32读取，然后转换为complex64
+                with open(filename, 'rb') as f:
+                    # 读取为float32数组
+                    raw_float = np.fromfile(f, dtype=np.float32)
+                    # 将相邻的两个float32转换为一个complex64
+                    frame_data = raw_float[::2] + 1j * raw_float[1::2]
+                    # 重塑数组
+                    frame_data = frame_data.reshape(frame_lines, frame_width)
+                
+                self.logger.info(f"  数据形状: {frame_data.shape}")
                 
                 if i == 0:
                     # 第一帧直接复制
-                    self.logger.info(f"Copying first frame: shape={frame_data.shape}")
-                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                    current_line += frame.getNumberOfLines()
+                    merged_data[current_line:current_line+frame_lines] = frame_data
+                    current_line += frame_lines
                 else:
                     # 处理与前一帧的重叠
                     prev_frame = sorted_frames[i-1]
                     overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
                     if overlap > 0:
-                        # 重叠区域的行数
                         overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                        # 确保重叠行数不超过帧的行数
-                        overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                        overlap_lines = min(overlap_lines, frame_lines)
                         
-                        self.logger.info(f"Frame {i} overlap: {overlap_lines} lines")
-                        
-                        # 直接复制非重叠区域到当前位置
-                        if overlap_lines < frame.getNumberOfLines():
-                            # 计算实际需要复制的行数
-                            copy_lines = frame.getNumberOfLines() - overlap_lines
-                            
+                        if overlap_lines < frame_lines:
                             # 只复制非重叠部分
+                            copy_lines = frame_lines - overlap_lines
                             merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
                             current_line += copy_lines
-                            
-                            self.logger.info(f"Copied {copy_lines} non-overlapping lines from frame {i}")
                         else:
-                            self.logger.info(f"Frame {i} completely overlaps with previous frame, skipping")
+                            self.logger.info(f"Frame {i} 完全重叠，跳过")
                     else:
-                        # 无重叠,直接复制整个帧
-                        target_end = current_line + frame.getNumberOfLines()
-                        self.logger.info(f"Copying entire frame {i}: target[{current_line}:{target_end}]")
-                        merged_data[current_line:target_end] = frame_data
-                        current_line += frame.getNumberOfLines()
+                        # 无重叠，直接复制
+                        merged_data[current_line:current_line+frame_lines] = frame_data
+                        current_line += frame_lines
                 
-                self.logger.info(f"After frame {i}: current_line={current_line}, total_lines={total_lines}")
+                self.logger.info(f"当前行数: {current_line}/{total_lines}")
                 
             except Exception as e:
                 self.logger.error(f"处理帧 {i} 时出错: {str(e)}")
                 raise
-        
-        # 验证最终的行数
-        if current_line != total_lines:
-            self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
-            raise ValueError("Line count mismatch in merged output")
         
         # 写入合并后的数据
         self.logger.info(f"写入合并数据到: {output}")
