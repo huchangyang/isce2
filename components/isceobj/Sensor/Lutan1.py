@@ -1065,9 +1065,9 @@ class Lutan1(Sensor):
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
         # 计算总行数
-        total_lines = sorted_frames[0].getNumberOfLines()
-        for i, frame in enumerate(sorted_frames[1:], 1):
-            # 计算与前一帧的重叠
+        total_lines = sorted_frames[0].getNumberOfLines()  # 第一帧的行数
+        for i in range(1, len(sorted_frames)):
+            frame = sorted_frames[i]
             prev_frame = sorted_frames[i-1]
             overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
             if overlap > 0:
@@ -1075,13 +1075,12 @@ class Lutan1(Sensor):
                 overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
                 # 确保重叠行数不超过帧的行数
                 overlap_lines = min(overlap_lines, frame.getNumberOfLines())
-                self.logger.info(f"Frame {i} overlaps with previous frame by {overlap_lines} lines")
-                total_lines += frame.getNumberOfLines() - overlap_lines
+                total_lines += (frame.getNumberOfLines() - overlap_lines)
             else:
                 total_lines += frame.getNumberOfLines()
-                self.logger.info(f"No overlap for frame {i}")
-        
-        self.logger.info(f"Total lines after merging: {total_lines}")
+
+        self.logger.info(f"Calculated total lines after merging: {total_lines}")
+        self.logger.info(f"Frame sizes: {[f.getNumberOfLines() for f in sorted_frames]}")
         
         # 创建输出文件
         output_file = self.output
@@ -1092,8 +1091,9 @@ class Lutan1(Sensor):
         current_line = 0
         
         for i, frame in enumerate(sorted_frames):
-            self.logger.info(f"Processing frame {i+1}")
-            self.logger.info(f"Frame size: {frame.getNumberOfLines()} x {frame.getNumberOfSamples()}")
+            self.logger.info(f"Processing frame {i+1}/{len(sorted_frames)}")
+            self.logger.info(f"Current frame lines: {frame.getNumberOfLines()}")
+            self.logger.info(f"Current position in output: {current_line}")
             
             # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
@@ -1104,7 +1104,6 @@ class Lutan1(Sensor):
                 # 第一帧直接复制
                 merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                 current_line += frame.getNumberOfLines()
-                self.logger.info(f"Copied first frame, current_line = {current_line}")
             else:
                 # 处理与前一帧的重叠
                 prev_frame = sorted_frames[i-1]
@@ -1115,19 +1114,17 @@ class Lutan1(Sensor):
                     # 确保重叠行数不超过帧的行数
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     
-                    self.logger.info(f"Frame {i+1} overlaps with previous frame by {overlap_lines} lines")
-                    
-                    # 直接复制非重叠区域到当前位置
+                    # 复制非重叠区域
                     if overlap_lines < frame.getNumberOfLines():
                         copy_lines = frame.getNumberOfLines() - overlap_lines
                         merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
                         current_line += copy_lines
-                        self.logger.info(f"Copied non-overlapping part, current_line = {current_line}")
                 else:
                     # 无重叠,直接复制整个帧
                     merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                     current_line += frame.getNumberOfLines()
-                    self.logger.info(f"Copied entire frame, current_line = {current_line}")
+            
+            self.logger.info(f"After frame {i+1}, current_line = {current_line}")
         
         self.logger.info(f"Final merged data shape: {merged_data.shape}")
         

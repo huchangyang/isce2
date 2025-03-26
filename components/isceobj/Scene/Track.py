@@ -245,65 +245,20 @@ class Track(object):
         #first one always starts from zero
         startLine =  [sortedList[0][0]]
         outputs =  [sortedList[0][1]]
-        
-        # 记录第一帧的信息用于调试
-        self.logger.info(f"First frame starts at line 0")
-        self.logger.info(f"First frame has {self._frames[0].getNumberOfLines()} lines")
-        
         for i in range(1,len(sortedList)):
-            # 获取当前帧的行数
-            current_frame_lines = self._frames[i].getNumberOfLines()
-            prev_frame_lines = self._frames[i-1].getNumberOfLines()
-            
-            # 计算基于时间的预期重叠
-            time_overlap = (self._frames[i-1].getSensingStop() - self._frames[i].getSensingStart()).total_seconds()
-            prf = self._frames[i].getInstrument().getPulseRepetitionFrequency()
-            expected_overlap_lines = int(abs(time_overlap * prf)) if time_overlap > 0 else 0
-            
-            # 限制最大重叠比例为20%
-            max_overlap = min(int(0.2 * min(current_frame_lines, prev_frame_lines)), expected_overlap_lines)
-            
-            # 计算endLine（上一帧的结束位置）
+            # endLine of the first file. we use all the lines of the first file up to endLine
             endLine = sortedList[i][0] - sortedList[i-1][0]
-            
-            # 使用findOverlapLine寻找实际重叠
-            indx = self.findOverlapLine(sortedList[i-1][1], sortedList[i][1], endLine, width, i-1, i)
-            
-            # 记录调试信息
-            self.logger.info(f"Frame {i} processing:")
-            self.logger.info(f"Expected overlap based on time: {expected_overlap_lines} lines")
-            self.logger.info(f"Maximum allowed overlap: {max_overlap} lines")
-            self.logger.info(f"Original start line: {sortedList[i][0]}")
-            
-            if (self._frames[0].instrument.platform._mission != 'ALOS') and (indx is not None):
-                # 计算实际重叠
-                actual_overlap = endLine - indx if indx < endLine else 0
-                
-                # 如果重叠过大，调整到最大允许值
-                if actual_overlap > max_overlap:
-                    indx = endLine - max_overlap
-                    self.logger.info(f"Overlap too large ({actual_overlap} lines), limiting to {max_overlap} lines")
-                
-                # 确保新的起始行不会导致负重叠
-                new_start = indx + sortedList[i-1][0]
-                if new_start < sortedList[i-1][0]:
-                    new_start = sortedList[i-1][0] + prev_frame_lines - max_overlap
-                
-                startLine.append(new_start)
+            indx = self.findOverlapLine(sortedList[i-1][1],sortedList[i][1],endLine,width,i-1,i)
+            #if indx is not None than indx is the new start line
+            #otherwise we use startLine  computed from acquisition time
+            #no need to do this for ALOS; otherwise there will be problems when there are multiple prfs and the data are interpolated. C. Liang, 20-dec-2021
+            if (self._frames[0].instrument.platform._mission != 'ALOS') and (indx is not None) and (indx + sortedList[i-1][0] != sortedList[i][0]):
+                startLine.append(indx + sortedList[i-1][0])
                 outputs.append(sortedList[i][1])
-                self.logger.info(f"Adjusted start line for frame {i} from {sortedList[i][0]} to {new_start}")
+                self.logger.info("Changing starting line for frame %d from %d to %d"%(i,endLine,indx))
             else:
-                # 如果是ALOS或没找到重叠，使用原始起始行，但仍要检查重叠
-                new_start = sortedList[i][0]
-                actual_overlap = prev_frame_lines - (new_start - sortedList[i-1][0])
-                
-                if actual_overlap > max_overlap:
-                    new_start = sortedList[i-1][0] + prev_frame_lines - max_overlap
-                    self.logger.info(f"Adjusting start line to limit overlap to {max_overlap} lines")
-                
-                startLine.append(new_start)
+                startLine.append(sortedList[i][0])
                 outputs.append(sortedList[i][1])
-                self.logger.info(f"Using original start line for frame {i}: {new_start}")
 
         return startLine,outputs
 
@@ -396,33 +351,14 @@ class Track(object):
             totalLines = self._frames[0].getNumberOfLines()
         else:
             # 计算总行数，考虑重叠
-            totalLines = 0
-            for i in range(len(self._frames)):
-                if i == 0:
-                    # 第一帧全部使用
-                    totalLines += self._frames[i].getNumberOfLines()
-                else:
-                    # 计算与前一帧的重叠
-                    overlap = (self._frames[i-1].getSensingStop() - self._frames[i].getSensingStart()).total_seconds()
-                    if overlap > 0:
-                        # 重叠区域的行数
-                        overlap_lines = int(round(overlap * self._frames[i].getInstrument().getPulseRepetitionFrequency()))
-                        # 确保重叠行数不超过帧的行数
-                        overlap_lines = min(overlap_lines, self._frames[i].getNumberOfLines())
-                        # 添加非重叠部分
-                        totalLines += self._frames[i].getNumberOfLines() - overlap_lines
-                        self.logger.info(f"Frame {i} overlaps with previous frame by {overlap_lines} lines")
-                    else:
-                        # 无重叠，全部添加
-                        totalLines += self._frames[i].getNumberOfLines()
-                        self.logger.info(f"No overlap between frames {i-1} and {i}")
+            totalLines = startLines[-1] + self._frames[-1].getNumberOfLines()
             
             # 验证计算结果
             sumFrameLines = sum(frame.getNumberOfLines() for frame in self._frames)
-            maxReasonableLines = sumFrameLines  # 不应超过所有帧的总行数
+            maxReasonableLines = sumFrameLines + (len(self._frames) - 1) * 100  # 允许少量额外行
             
             if totalLines > maxReasonableLines:
-                self.logger.warning(f"Calculated total lines ({totalLines}) exceeds sum of frame lines ({maxReasonableLines})")
+                self.logger.warning(f"Calculated total lines ({totalLines}) exceeds reasonable maximum ({maxReasonableLines})")
                 totalLines = maxReasonableLines
                 
             # 验证帧间距
