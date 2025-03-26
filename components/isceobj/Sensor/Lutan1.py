@@ -866,7 +866,7 @@ class Lutan1(Sensor):
         self.validateUserInputs()
         
         # 处理每个frame
-        for i, (xml_file, tiff_file) in enumerate(zip(self._xmlList, self._tiffList)):
+        for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
             # 创建新的frame
             frame = Frame()
             frame.configure()
@@ -879,7 +879,7 @@ class Lutan1(Sensor):
             self.populateMetadata()
             
             # 提取图像数据
-            outputNow = self.output + "_" + str(i) if len(self._xmlList) > 1 else self.output
+            outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
             self.extractFrameImage(tiff_file, outputNow)
             
             # 添加到frameList
