@@ -336,7 +336,6 @@ class Track(object):
                 self.logger.info(f"  长度: {length}")
                 self.logger.info(f"  字节序: {frame.image.getByteOrder()}")
                 self.logger.info(f"  数据类型: {frame.image.getDataType()}")
-                self.logger.info(f"  存储方案: {frame.image.getScheme()}")
                 
                 # 根据XML中的配置使用小端序
                 dtype = np.dtype('<c8')  # 小端序的complex64
@@ -356,10 +355,21 @@ class Track(object):
                     self.logger.info(f"  期望大小: {expected_bytes} bytes")
                     
                     if file_size != expected_bytes:
-                        self.logger.warning(f"文件大小不匹配! 可能存在问题。")
+                        self.logger.warning(f"文件大小不匹配! 实际: {file_size}, 期望: {expected_bytes}")
+                        
+                        # 如果文件大小是期望大小的1/4，可能是数据类型问题
+                        if file_size * 4 == expected_bytes:
+                            self.logger.info("检测到文件大小是期望大小的1/4，尝试以float32格式读取...")
+                            raw_float = np.fromfile(f, dtype='<f4')  # 小端序float32
+                            # 将相邻的float32值转换为complex64
+                            raw_data = raw_float[::2] + 1j * raw_float[1::2]
+                        else:
+                            # 直接尝试读取complex64
+                            raw_data = np.fromfile(f, dtype=dtype)
+                    else:
+                        # 文件大小正确，直接读取complex64
+                        raw_data = np.fromfile(f, dtype=dtype)
                     
-                    # 读取数据
-                    raw_data = np.fromfile(f, dtype=dtype)
                     self.logger.info(f"读取到的数据点数: {len(raw_data)}")
                     
                     if len(raw_data) != expected_points:
