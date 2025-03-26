@@ -229,7 +229,7 @@ class Lutan1(Sensor):
 
         if self._orbitFile:
             # Check if orbit file exists or not
-            if os.path.isfile(self._orbitFile) == True:
+            if os.path.isfile(self._orbitFile):
                 orb = self.extractOrbit()
                 if orb is None:
                     self.logger.error("Failed to extract orbit from file")
@@ -255,10 +255,9 @@ class Lutan1(Sensor):
         for sv in orb._stateVectors:
             self.frame.orbit.addStateVector(sv)
         
-        # 设置轨道的时间范围
+        # 记录轨道的时间范围（仅用于日志）
         if orb._stateVectors:
-            self.frame.orbit.setTimeRange(orb._stateVectors[0].getTime(), orb._stateVectors[-1].getTime())
-            self.logger.info(f"Set orbit time range: {orb._stateVectors[0].getTime()} to {orb._stateVectors[-1].getTime()}")
+            self.logger.info(f"Orbit time range: {orb._stateVectors[0].getTime()} to {orb._stateVectors[-1].getTime()}")
             self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
         else:
             self.logger.error("No state vectors in orbit")
