@@ -98,13 +98,11 @@ class Lutan1(Sensor):
     def validateUserInputs(self):
         '''
         验证用户输入并自动查找文件
-        参考Sentinel1.py中的实现
         '''
         # 如果提供了XML配置文件，从中读取
         if self._xmlConfig:
             self.loadFromXML()
-            return
-
+        
         # 如果提供了SLC目录，自动查找TIFF文件
         if self._slcDir and not self._tiffList:
             self.logger.info(f"Searching for TIFF files in {self._slcDir}")
@@ -117,6 +115,14 @@ class Lutan1(Sensor):
                 for i, tiff in enumerate(self._tiffList):
                     self.logger.info(f"TIFF {i+1}: {tiff}")
 
+        # 检查是否提供了TIFF文件
+        if not self._tiffList:
+            raise Exception("No TIFF files provided. Use TIFF, SLC_DIR or XML_CONFIG parameter.")
+        
+        # 将_tiffList同步到_imageFileList
+        self._imageFileList = self._tiffList.copy()
+        self.logger.info(f"Set up {len(self._imageFileList)} image files")
+        
         # 如果提供了轨道目录，自动查找轨道文件
         if self._orbitDir and not self._orbitFileList:
             self.logger.info(f"Searching for orbit files in {self._orbitDir}")
@@ -129,88 +135,77 @@ class Lutan1(Sensor):
                 for i, orbit in enumerate(self._orbitFileList):
                     self.logger.info(f"Orbit {i+1}: {orbit}")
 
-        # 检查是否提供了TIFF文件
-        if not self._tiffList:
-            raise Exception("No TIFF files provided. Use TIFF, SLC_DIR or XML_CONFIG parameter.")
-
         # 如果轨道文件数量与TIFF文件数量不匹配，尝试自动匹配
-        if len(self._orbitFileList) > 0 and len(self._orbitFileList) != len(self._tiffList):
+        if len(self._orbitFileList) > 0 and len(self._orbitFileList) != len(self._imageFileList):
             self.logger.warning("Number of orbit files does not match number of TIFF files")
             self.logger.info("Attempting to match orbit files with TIFF files...")
             
-            # 尝试根据日期匹配轨道文件
-            # 对于同一日期的多景SLC，应该使用同一个轨道文件
-            try:
-                # 提取每个TIFF文件名中的日期信息
-                tiff_dates = []
-                for tiff in self._tiffList:
-                    # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
-                    # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第8个下划线之后）
-                    basename = os.path.basename(tiff)
-                    parts = basename.split('_')
-                    if len(parts) >= 8:
-                        date_str = parts[7]  # 假设日期在第8个位置
-                        if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
-                            tiff_dates.append(date_str)
+            # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+            if len(self._orbitFileList) == 1:
+                self.logger.info("Using the single orbit file for all TIFF files")
+                self._orbitFileList = [self._orbitFileList[0]] * len(self._imageFileList)
+            else:
+                # 尝试根据日期匹配轨道文件
+                try:
+                    # 提取每个TIFF文件名中的日期信息
+                    tiff_dates = []
+                    for tiff in self._imageFileList:
+                        # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
+                        # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第8个下划线之后）
+                        basename = os.path.basename(tiff)
+                        parts = basename.split('_')
+                        if len(parts) >= 8:
+                            date_str = parts[7]  # 假设日期在第8个位置
+                            if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                                tiff_dates.append(date_str)
+                            else:
+                                tiff_dates.append(None)
                         else:
                             tiff_dates.append(None)
-                    else:
-                        tiff_dates.append(None)
-                
-                # 提取每个轨道文件名中的日期信息
-                orbit_dates = []
-                for orbit in self._orbitFileList:
-                    # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
-                    # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第3个下划线之后）
-                    basename = os.path.basename(orbit)
-                    parts = basename.split('_')
-                    if len(parts) >= 4:
-                        date_str = parts[2][1:9]  # 假设日期在第3个位置，格式为VYYYYMMDD...
-                        if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
-                            orbit_dates.append(date_str)
+                    
+                    # 提取每个轨道文件名中的日期信息
+                    orbit_dates = []
+                    for orbit in self._orbitFileList:
+                        # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
+                        # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第3个下划线之后）
+                        basename = os.path.basename(orbit)
+                        parts = basename.split('_')
+                        if len(parts) >= 4:
+                            date_str = parts[2][1:9]  # 假设日期在第3个位置，格式为VYYYYMMDD...
+                            if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                                orbit_dates.append(date_str)
+                            else:
+                                orbit_dates.append(None)
                         else:
                             orbit_dates.append(None)
-                    else:
-                        orbit_dates.append(None)
-                
-                # 为每个TIFF文件匹配对应的轨道文件
-                matched_orbit_files = []
-                for i, tiff_date in enumerate(tiff_dates):
-                    if tiff_date is None:
-                        matched_orbit_files.append(None)
-                        continue
                     
-                    # 查找日期匹配的轨道文件
-                    matched = False
-                    for j, orbit_date in enumerate(orbit_dates):
-                        if orbit_date is not None and orbit_date == tiff_date:
-                            matched_orbit_files.append(self._orbitFileList[j])
-                            matched = True
-                            break
+                    # 为每个TIFF文件匹配对应的轨道文件
+                    matched_orbit_files = []
+                    for i, tiff_date in enumerate(tiff_dates):
+                        if tiff_date is None:
+                            matched_orbit_files.append(None)
+                            continue
+                        
+                        # 查找日期匹配的轨道文件
+                        matched = False
+                        for j, orbit_date in enumerate(orbit_dates):
+                            if orbit_date is not None and orbit_date == tiff_date:
+                                matched_orbit_files.append(self._orbitFileList[j])
+                                matched = True
+                                break
+                        
+                        if not matched:
+                            matched_orbit_files.append(None)
                     
-                    if not matched:
-                        matched_orbit_files.append(None)
-                
-                # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
-                if all(orbit is not None for orbit in matched_orbit_files):
-                    self.logger.info("Successfully matched orbit files based on date")
-                    self._orbitFileList = matched_orbit_files
-                else:
-                    # 如果只有一个轨道文件，假设它适用于所有TIFF文件
-                    if len(self._orbitFileList) == 1:
-                        self.logger.info("Using the single orbit file for all TIFF files")
-                        self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
+                    # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
+                    if all(orbit is not None for orbit in matched_orbit_files):
+                        self.logger.info("Successfully matched orbit files based on date")
+                        self._orbitFileList = matched_orbit_files
                     else:
-                        self.logger.warning("Could not match orbit files based on date, proceeding without orbit files")
+                        self.logger.warning("Could not match all orbit files based on date, proceeding without orbit files")
                         self._orbitFileList = []
-            except Exception as e:
-                self.logger.warning(f"Error matching orbit files: {str(e)}")
-                # 如果只有一个轨道文件，假设它适用于所有TIFF文件
-                if len(self._orbitFileList) == 1:
-                    self.logger.info("Using the single orbit file for all TIFF files")
-                    self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
-                else:
-                    self.logger.warning("Proceeding without orbit files")
+                except Exception as e:
+                    self.logger.warning(f"Error matching orbit files: {str(e)}")
                     self._orbitFileList = []
 
     def parse(self):
@@ -877,22 +872,22 @@ class Lutan1(Sensor):
     def extractImage(self):
         """合并多帧并正确处理SLC数据"""
         # 验证输入
-        if not self._tiffList:
-            self.logger.error("No TIFF files provided")
-            raise RuntimeError("No TIFF files provided")
+        if not self._imageFileList:
+            self.logger.error("No image files provided")
+            raise RuntimeError("No image files provided")
         
         self.frameList = []
         
         # 1. 首先处理所有帧的元数据
-        for i in range(len(self._tiffList)):
+        for i in range(len(self._imageFileList)):
             appendStr = "_" + str(i)
-            if len(self._tiffList) == 1:
+            if len(self._imageFileList) == 1:
                 appendStr = ''
             
             self.frame = Frame()
             self.frame.configure()
             
-            self._tiff = self._tiffList[i]
+            self._tiff = self._imageFileList[i]
             if self._orbitFileList and i < len(self._orbitFileList):
                 self._orbitFile = self._orbitFileList[i]
             else:
@@ -914,7 +909,7 @@ class Lutan1(Sensor):
                 current_line = 0
                 
                 for i, frame in enumerate(self.frameList):
-                    src = gdal.Open(self._tiffList[i].strip(), gdal.GA_ReadOnly)
+                    src = gdal.Open(self._imageFileList[i].strip(), gdal.GA_ReadOnly)
                     band1 = src.GetRasterBand(1)
                     band2 = src.GetRasterBand(2)
                     cJ = np.complex64(1.0j)
@@ -996,7 +991,7 @@ class Lutan1(Sensor):
 
     def extractSingleFrame(self):
         """处理单帧数据"""
-        src = gdal.Open(self._tiffList[0].strip(), gdal.GA_ReadOnly)
+        src = gdal.Open(self._imageFileList[0].strip(), gdal.GA_ReadOnly)
         band1 = src.GetRasterBand(1)
         band2 = src.GetRasterBand(2)
         cJ = np.complex64(1.0j)
