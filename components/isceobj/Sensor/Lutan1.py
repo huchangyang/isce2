@@ -875,184 +875,121 @@ class Lutan1(Sensor):
         return orbit
 
     def extractImage(self):
-        """
-        提取图像数据
-        """
-        # 验证用户输入
-        self.validateUserInputs()
+        """合并多帧并正确处理SLC数据"""
+        if len(self._imageFileList) != len(self._leaderFileList):
+            self.logger.error("Number of leader files different from number of image files.")
+            raise RuntimeError
         
-        # 确保_xmlFileList和_imageFileList被正确设置
-        if not self._xmlFileList:
-            self._xmlFileList = [tiff[:-4] + "meta.xml" for tiff in self._tiffList]
-            self.logger.info(f"Generated XML file list: {self._xmlFileList}")
-        
-        if not self._imageFileList:
-            self._imageFileList = self._tiffList
-            self.logger.info(f"Using TIFF file list as image file list: {self._imageFileList}")
-        
-        # 检查文件是否存在
-        for xml_file, tiff_file in zip(self._xmlFileList, self._imageFileList):
-            if not os.path.exists(xml_file):
-                self.logger.error(f"XML file not found: {xml_file}")
-                raise RuntimeError(f"XML file not found: {xml_file}")
-            if not os.path.exists(tiff_file):
-                self.logger.error(f"TIFF file not found: {tiff_file}")
-                raise RuntimeError(f"TIFF file not found: {tiff_file}")
-        
-        # 清空frameList
         self.frameList = []
         
-        # 处理每个frame
-        for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
-            self.logger.info(f"Processing frame {i+1}/{len(self._xmlFileList)}")
-            self.logger.info(f"XML file: {xml_file}")
-            self.logger.info(f"TIFF file: {tiff_file}")
+        # 1. 首先处理所有帧的元数据
+        for i in range(len(self._imageFileList)):
+            appendStr = "_" + str(i)
+            if len(self._imageFileList) == 1:
+                appendStr = ''
             
-            # 创建新的frame
-            frame = Frame()
-            frame.configure()
+            self.frame = Frame()
+            self.frame.configure()
             
-            # 设置当前frame
-            self.frame = frame
+            self._leaderFile = self._leaderFileList[i]
+            self._imageFile = self._imageFileList[i]
+            self.parse()
             
-            try:
-                # 解析XML文件
-                self._xml_root = ET.parse(xml_file).getroot()
-                
-                # 解析元数据
-                self.populateMetadata()
-                
-                # 提取图像数据
-                outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
-                self.extractFrameImage(tiff_file, outputNow)
-                
-                # 处理轨道信息
-                if self._orbitFileList and i < len(self._orbitFileList):
-                    self._orbitFile = self._orbitFileList[i]
-                    self.logger.info(f"Processing orbit file for frame {i+1}: {self._orbitFile}")
-                    orb = self.extractOrbit()
-                    if orb:
-                        frame.setOrbit(orb)
-                        self.logger.info(f"Successfully set orbit for frame {i+1}")
-                    else:
-                        self.logger.warning(f"Failed to extract orbit for frame {i+1}")
-                        # 尝试从XML创建轨道
-                        orb = self.createOrbit()
-                        if orb:
-                            frame.setOrbit(orb)
-                            self.logger.info(f"Successfully created orbit from XML for frame {i+1}")
-                        else:
-                            self.logger.error(f"Failed to create orbit from XML for frame {i+1}")
-                            raise RuntimeError(f"Failed to create orbit for frame {i+1}")
-                else:
-                    self.logger.warning(f"No orbit file provided for frame {i+1}, creating from XML")
-                    orb = self.createOrbit()
-                    if orb:
-                        frame.setOrbit(orb)
-                        self.logger.info(f"Successfully created orbit from XML for frame {i+1}")
-                    else:
-                        self.logger.error(f"Failed to create orbit from XML for frame {i+1}")
-                        raise RuntimeError(f"Failed to create orbit for frame {i+1}")
-                
-                # 添加到frameList
-                self.frameList.append(frame)
-                self.logger.info(f"Successfully processed frame {i+1}")
-                
-            except Exception as e:
-                self.logger.error(f"Error processing frame {i+1}: {str(e)}")
-                raise
+            # 保存frame信息
+            self.frameList.append(self.frame)
         
-        # 确保frameList不为空
-        if not self.frameList:
-            raise RuntimeError("No frames were processed")
-        
-        self.logger.info(f"Successfully processed {len(self.frameList)} frames")
-        
-        # 使用tkfunc处理多frame
-        merged_frame = tkfunc(self)
-        
-        # 确保frame和frameList被正确设置
-        if merged_frame:
-            self.frame = merged_frame
-            self.frameList = [merged_frame]
+        # 2. 合并图像数据
+        if len(self.frameList) > 1:
+            # 计算总行数和重叠区域
+            total_lines = self.calculateTotalLines()
+            width = self.frameList[0].getNumberOfSamples()
             
-            # 确保图像被正确设置
-            if not self.frame.image:
-                # 创建SLC图像对象
-                slcImage = isceobj.createSlcImage()
-                slcImage.setByteOrder('l')
-                slcImage.setFilename(self.output)
-                slcImage.setAccessMode('read')
-                slcImage.setWidth(self.frame.getNumberOfSamples())
-                slcImage.setLength(self.frame.getNumberOfLines())
-                slcImage.setXmin(0)
-                slcImage.setXmax(self.frame.getNumberOfSamples())
-                slcImage.setDataType('CFLOAT')
-                slcImage.setImageType('slc')
+            # 创建输出文件
+            with open(self.output, 'wb') as fid:
+                current_line = 0
                 
-                # 设置图像
-                self.frame.setImage(slcImage)
-                
-                # 生成头文件和VRT文件
-                slcImage.renderHdr()
-                slcImage.renderVRT()
+                for i, frame in enumerate(self.frameList):
+                    src = gdal.Open(self._imageFileList[i].strip(), gdal.GA_ReadOnly)
+                    band1 = src.GetRasterBand(1)
+                    band2 = src.GetRasterBand(2)
+                    cJ = np.complex64(1.0j)
+                    
+                    frame_lines = frame.getNumberOfLines()
+                    
+                    self.logger.info(f"Processing frame {i+1}/{len(self.frameList)}")
+                    self.logger.info(f"Current frame lines: {frame_lines}")
+                    
+                    for ii in range(frame_lines):
+                        # 处理重叠区域
+                        if i > 0 and ii < self.overlap_lines[i]:
+                            continue
+                        
+                        real = band1.ReadAsArray(0,ii,width,1)
+                        imag = band2.ReadAsArray(0,ii,width,1)
+                        data = real + (cJ * imag)
+                        data.tofile(fid)
+                        current_line += 1
+                    
+                    src = None
+                    band1 = None
+                    band2 = None
         else:
-            # 如果没有合并的frame，使用第一个frame
-            self.frame = self.frameList[0]
-            self.frameList = [self.frame]
+            # 单帧处理
+            self.extractSingleFrame()
         
-        return self.frame
-
-    def extractFrameImage(self, tiff_file, output):
-        """
-        提取单个帧的图像数据
-        """
-        try:
-            from osgeo import gdal
-        except ImportError:
-            raise Exception('GDAL python bindings not found.')
-        
-        # 打开TIFF文件
-        src = gdal.Open(tiff_file.strip(), gdal.GA_ReadOnly)
-        if src is None:
-            raise Exception(f"Failed to open TIFF file: {tiff_file}")
-        
-        # 获取图像信息
-        width = self.frame.getNumberOfSamples()
-        length = self.frame.getNumberOfLines()
-        
-        # 读取数据并写入输出文件
-        band = src.GetRasterBand(1)
-        with open(output, 'wb') as fid:
-            for ii in range(length):
-                data = band.ReadAsArray(0, ii, width, 1)
-                data.tofile(fid)
-        
-        # 清理资源
-        src = None
-        band = None
-        
-        # 创建SLC图像对象
+        # 3. 设置最终图像信息
         slcImage = isceobj.createSlcImage()
         slcImage.setByteOrder('l')
-        slcImage.setFilename(output)
+        slcImage.setFilename(self.output)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
-        slcImage.setLength(length)
+        slcImage.setLength(total_lines)
         slcImage.setXmin(0)
         slcImage.setXmax(width)
-        slcImage.setDataType('CFLOAT')
-        slcImage.setImageType('slc')
         
-        # 设置图像
+        # 更新主frame的信息
+        self.frame = self.frameList[0]  # 使用第一帧作为主frame
+        self.frame.setNumberOfLines(total_lines)
         self.frame.setImage(slcImage)
+
+    def calculateTotalLines(self):
+        """计算总行数，考虑重叠区域"""
+        total_lines = self.frameList[0].getNumberOfLines()
+        self.overlap_lines = [0]  # 存储每帧的重叠行数
         
-        # 生成头文件和VRT文件
-        slcImage.renderHdr()
-        slcImage.renderVRT()
+        for i in range(1, len(self.frameList)):
+            frame = self.frameList[i]
+            prev_frame = self.frameList[i-1]
+            
+            # 计算重叠
+            overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+            if overlap > 0:
+                overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                self.overlap_lines.append(overlap_lines)
+                total_lines += (frame.getNumberOfLines() - overlap_lines)
+            else:
+                self.overlap_lines.append(0)
+                total_lines += frame.getNumberOfLines()
+            
+        return total_lines
+
+    def extractSingleFrame(self):
+        """处理单帧数据"""
+        src = gdal.Open(self._imageFileList[0].strip(), gdal.GA_ReadOnly)
+        band1 = src.GetRasterBand(1)
+        band2 = src.GetRasterBand(2)
+        cJ = np.complex64(1.0j)
         
-        # 生成辅助文件
-        self.makeFakeAux(output)
+        width = self.frame.getNumberOfSamples()
+        lgth = self.frame.getNumberOfLines()
+        
+        with open(self.output, 'wb') as fid:
+            for ii in range(lgth):
+                real = band1.ReadAsArray(0,ii,width,1)
+                imag = band2.ReadAsArray(0,ii,width,1)
+                data = real + (cJ * imag)
+                data.tofile(fid)
 
     def mergeFrames(self):
         """
