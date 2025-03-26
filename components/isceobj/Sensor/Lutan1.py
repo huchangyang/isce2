@@ -875,9 +875,7 @@ class Lutan1(Sensor):
         return orbit
 
     def extractImage(self):
-        """
-        提取图像数据
-        """
+        """提取图像数据"""
         # 验证用户输入
         self.validateUserInputs()
         
@@ -971,31 +969,55 @@ class Lutan1(Sensor):
         # 使用tkfunc处理多frame
         merged_frame = tkfunc(self)
         
-        # 确保frame和frameList被正确设置
         if merged_frame:
             self.frame = merged_frame
             self.frameList = [merged_frame]
             
-            # 确保图像被正确设置
-            if not self.frame.image:
-                # 创建SLC图像对象
-                slcImage = isceobj.createSlcImage()
-                slcImage.setByteOrder('l')
-                slcImage.setFilename(self.output)
-                slcImage.setAccessMode('read')
-                slcImage.setWidth(self.frame.getNumberOfSamples())
-                slcImage.setLength(self.frame.getNumberOfLines())
-                slcImage.setXmin(0)
-                slcImage.setXmax(self.frame.getNumberOfSamples())
-                slcImage.setDataType('CFLOAT')
-                slcImage.setImageType('slc')
-                
-                # 设置图像
-                self.frame.setImage(slcImage)
-                
-                # 生成头文件和VRT文件
-                slcImage.renderHdr()
-                slcImage.renderVRT()
+            # 在这里重新写入合并后的SLC数据
+            width = merged_frame.getNumberOfSamples()
+            length = merged_frame.getNumberOfLines()
+            
+            # 从原始frame中读取数据并合并
+            merged_data = np.zeros((length, width), dtype=np.complex64)
+            current_line = 0
+            
+            self.logger.info(f"Rewriting merged SLC with dimensions: {width} x {length}")
+            
+            for frame in self.frameList:
+                frame_lines = frame.getNumberOfLines()
+                with open(frame.image.getFilename(), 'rb') as f:
+                    data = np.fromfile(f, dtype=np.complex64).reshape(frame_lines, width)
+                    merged_data[current_line:current_line+frame_lines] = data
+                    current_line += frame_lines
+            
+            # 写入新的SLC文件
+            output_file = self.output
+            with open(output_file, 'wb') as f:
+                merged_data.tofile(f)
+            
+            # 创建新的SLC图像对象
+            slcImage = isceobj.createSlcImage()
+            slcImage.setByteOrder('l')
+            slcImage.setFilename(output_file)
+            slcImage.setAccessMode('read')
+            slcImage.setWidth(width)
+            slcImage.setLength(length)
+            slcImage.setXmin(0)
+            slcImage.setXmax(width)
+            slcImage.setDataType('CFLOAT')
+            slcImage.setImageType('slc')
+            
+            # 设置到合并后的frame
+            self.frame.setImage(slcImage)
+            
+            # 生成头文件和VRT文件
+            slcImage.renderHdr()
+            slcImage.renderVRT()
+            
+            # 生成辅助文件
+            self.makeFakeAux(output_file)
+            
+            self.logger.info("Successfully rewrote merged SLC file")
         else:
             # 如果没有合并的frame，使用第一个frame
             self.frame = self.frameList[0]
@@ -1068,15 +1090,7 @@ class Lutan1(Sensor):
         total_lines = 0
         overlap_info = []  # 存储重叠信息
         
-        # 详细记录每帧信息
-        self.logger.info("Frame information before merging:")
         for i, frame in enumerate(sorted_frames):
-            self.logger.info(f"Frame {i}:")
-            self.logger.info(f"  Lines: {frame.getNumberOfLines()}")
-            self.logger.info(f"  Samples: {frame.getNumberOfSamples()}")
-            self.logger.info(f"  Start time: {frame.getSensingStart()}")
-            self.logger.info(f"  Stop time: {frame.getSensingStop()}")
-            
             if i > 0:
                 prev_frame = sorted_frames[i-1]
                 overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
@@ -1085,15 +1099,13 @@ class Lutan1(Sensor):
                     overlap_lines = min(overlap_lines, frame.getNumberOfLines())
                     total_lines += frame.getNumberOfLines() - overlap_lines
                     overlap_info.append((i, overlap_lines))
-                    self.logger.info(f"  Overlap with previous frame: {overlap_lines} lines")
+                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
                 else:
                     total_lines += frame.getNumberOfLines()
                     overlap_info.append((i, 0))
             else:
                 total_lines += frame.getNumberOfLines()
                 overlap_info.append((i, 0))
-        
-        self.logger.info(f"Total lines after overlap calculation: {total_lines}")
         
         # 创建合并后的frame
         merged_frame = Frame()
@@ -1105,8 +1117,7 @@ class Lutan1(Sensor):
         merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
         merged_frame.setFarRange(sorted_frames[-1].getFarRange())
         merged_frame.setNumberOfLines(total_lines)
-        width = sorted_frames[0].getNumberOfSamples()
-        merged_frame.setNumberOfSamples(width)
+        merged_frame.setNumberOfSamples(sorted_frames[0].getNumberOfSamples())
         
         # 复制第一帧的仪器参数
         merged_frame.setInstrument(sorted_frames[0].getInstrument().copy())
@@ -1116,90 +1127,43 @@ class Lutan1(Sensor):
         merged_frame.setOrbit(merged_orbit)
         
         # 处理SLC数据
+        width = sorted_frames[0].getNumberOfSamples()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         current_line = 0
         
-        # 详细记录合并过程
-        self.logger.info("Starting SLC data merging:")
         for i, frame in enumerate(sorted_frames):
-            self.logger.info(f"Processing frame {i}:")
-            
             # 读取当前帧数据
-            try:
-                with open(frame.image.getFilename(), 'rb') as f:
-                    # 验证文件大小
-                    file_size = os.path.getsize(frame.image.getFilename())
-                    expected_size = frame.getNumberOfLines() * frame.getNumberOfSamples() * 8  # complex64 = 8 bytes
-                    if file_size != expected_size:
-                        self.logger.warning(f"File size mismatch for frame {i}:")
-                        self.logger.warning(f"  Expected: {expected_size} bytes")
-                        self.logger.warning(f"  Actual: {file_size} bytes")
+            with open(frame.image.getFilename(), 'rb') as f:
+                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
+            
+            if i == 0:
+                # 第一帧直接复制
+                merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                current_line += frame.getNumberOfLines()
+            else:
+                # 处理重叠区域
+                overlap_lines = overlap_info[i][1]
+                if overlap_lines > 0:
+                    # 计算非重叠部分
+                    non_overlap_data = frame_data[overlap_lines:]
+                    non_overlap_lines = len(non_overlap_data)
                     
-                    # 读取数据
-                    frame_data = np.fromfile(f, dtype=np.complex64)
-                    frame_data = frame_data.reshape(frame.getNumberOfLines(), width)
-                    
-                    self.logger.info(f"  Read data shape: {frame_data.shape}")
-                    
-                    if i == 0:
-                        # 第一帧直接复制
-                        merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                        current_line += frame.getNumberOfLines()
-                        self.logger.info(f"  Copied first frame, current_line: {current_line}")
-                    else:
-                        # 处理重叠区域
-                        overlap_lines = overlap_info[i][1]
-                        if overlap_lines > 0:
-                            # 计算非重叠部分
-                            non_overlap_data = frame_data[overlap_lines:]
-                            non_overlap_lines = len(non_overlap_data)
-                            
-                            # 复制非重叠部分
-                            merged_data[current_line:current_line+non_overlap_lines] = non_overlap_data
-                            current_line += non_overlap_lines
-                            self.logger.info(f"  Processed overlap frame, current_line: {current_line}")
-                        else:
-                            # 无重叠,直接复制
-                            merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                            current_line += frame.getNumberOfLines()
-                            self.logger.info(f"  Copied non-overlap frame, current_line: {current_line}")
-            except Exception as e:
-                self.logger.error(f"Error processing frame {i}: {str(e)}")
-                raise
-        
-        # 验证最终数据
-        self.logger.info("Final merged data validation:")
-        self.logger.info(f"  Expected total lines: {total_lines}")
-        self.logger.info(f"  Actual merged data shape: {merged_data.shape}")
-        
-        if current_line != total_lines:
-            self.logger.error(f"Line count mismatch: current_line={current_line}, total_lines={total_lines}")
-            raise ValueError("Line count mismatch in merged output")
+                    # 复制非重叠部分
+                    merged_data[current_line:current_line+non_overlap_lines] = non_overlap_data
+                    current_line += non_overlap_lines
+                else:
+                    # 无重叠,直接复制
+                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                    current_line += frame.getNumberOfLines()
         
         # 写入合并后的SLC数据
         output_file = self.output
-        try:
-            with open(output_file, 'wb') as f:
-                merged_data.tofile(f)
-            
-            # 验证写入的文件大小
-            written_size = os.path.getsize(output_file)
-            expected_size = total_lines * width * 8  # complex64 = 8 bytes
-            if written_size != expected_size:
-                self.logger.error(f"Written file size mismatch:")
-                self.logger.error(f"  Expected: {expected_size} bytes")
-                self.logger.error(f"  Actual: {written_size} bytes")
-                raise ValueError("File size mismatch after writing")
-            
-            self.logger.info(f"Successfully wrote merged data to {output_file}")
-            self.logger.info(f"File size: {written_size} bytes")
-        except Exception as e:
-            self.logger.error(f"Error writing merged data: {str(e)}")
-            raise
+        with open(output_file, 'wb') as f:
+            merged_data.tofile(f)
         
         # 设置合并后的图像
         slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')  # 使用小端字节序
+        slcImage.setByteOrder('l')
         slcImage.setFilename(output_file)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
