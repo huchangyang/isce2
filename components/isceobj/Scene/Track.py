@@ -329,55 +329,67 @@ class Track(object):
                 
                 # 读取数据
                 with open(filename, 'rb') as f:
-                    # 计算需要读取的float32数量
-                    expected_floats = frame_lines * frame_width * 2  # 每个复数需要2个float32
+                    # 计算预期的复数数量
+                    expected_complex = frame_lines * frame_width
                     
-                    # 读取为float32数组
-                    raw_float = np.fromfile(f, dtype=np.float32)
+                    # 直接读取为complex64类型
+                    frame_data = np.fromfile(f, dtype=np.complex64)
                     
-                    # 确保数据长度是偶数
-                    if len(raw_float) % 2 != 0:
-                        self.logger.warning(f"数据长度为奇数 ({len(raw_float)})，截断最后一个元素")
-                        raw_float = raw_float[:-1]
+                    # 检查数据大小
+                    actual_size = len(frame_data)
+                    self.logger.info(f"  实际读取的数据点数: {actual_size}")
+                    self.logger.info(f"  预期的数据点数: {expected_complex}")
                     
-                    # 重塑数组以配对实部和虚部
-                    raw_float = raw_float[:expected_floats]  # 确保不超过预期大小
-                    raw_complex = raw_float.reshape(-1, 2)
-                    frame_data = raw_complex[:, 0] + 1j * raw_complex[:, 1]
-                    
-                    # 重塑为最终形状
-                    frame_data = frame_data.reshape(frame_lines, frame_width)
-                
-                self.logger.info(f"  数据形状: {frame_data.shape}")
-                
-                if i == 0:
-                    # 第一帧直接复制
-                    merged_data[current_line:current_line+frame_lines] = frame_data
-                    current_line += frame_lines
-                else:
-                    # 处理与前一帧的重叠
-                    prev_frame = sorted_frames[i-1]
-                    overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
-                    if overlap > 0:
-                        overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                        overlap_lines = min(overlap_lines, frame_lines)
-                        
-                        if overlap_lines < frame_lines:
-                            # 只复制非重叠部分
-                            copy_lines = frame_lines - overlap_lines
-                            merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
-                            current_line += copy_lines
+                    if actual_size != expected_complex:
+                        self.logger.warning(f"  数据大小不匹配，将调整到正确大小")
+                        if actual_size > expected_complex:
+                            # 如果数据太多，截断
+                            frame_data = frame_data[:expected_complex]
                         else:
-                            self.logger.info(f"Frame {i} 完全重叠，跳过")
-                    else:
-                        # 无重叠，直接复制
+                            # 如果数据不够，用零填充
+                            new_data = np.zeros(expected_complex, dtype=np.complex64)
+                            new_data[:actual_size] = frame_data
+                            frame_data = new_data
+                    
+                    # 重塑为2D数组
+                    frame_data = frame_data.reshape(frame_lines, frame_width)
+                    
+                    # 检查数据有效性
+                    if np.any(np.isnan(frame_data)) or np.any(np.isinf(frame_data)):
+                        self.logger.warning("  检测到无效值（NaN或Inf）")
+                    
+                    self.logger.info(f"  数据形状: {frame_data.shape}")
+                    self.logger.info(f"  数据范围: {np.min(np.abs(frame_data))} to {np.max(np.abs(frame_data))}")
+                    
+                    if i == 0:
+                        # 第一帧直接复制
                         merged_data[current_line:current_line+frame_lines] = frame_data
                         current_line += frame_lines
-                
+                    else:
+                        # 处理与前一帧的重叠
+                        prev_frame = sorted_frames[i-1]
+                        overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                        if overlap > 0:
+                            overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                            overlap_lines = min(overlap_lines, frame_lines)
+                            
+                            if overlap_lines < frame_lines:
+                                # 只复制非重叠部分
+                                copy_lines = frame_lines - overlap_lines
+                                merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
+                                current_line += copy_lines
+                            else:
+                                self.logger.info(f"Frame {i} 完全重叠，跳过")
+                        else:
+                            # 无重叠，直接复制
+                            merged_data[current_line:current_line+frame_lines] = frame_data
+                            current_line += frame_lines
+                    
                 self.logger.info(f"当前行数: {current_line}/{total_lines}")
                 
             except Exception as e:
                 self.logger.error(f"处理帧 {i} 时出错: {str(e)}")
+                self.logger.error(f"错误详情: {traceback.format_exc()}")
                 raise
         
         # 写入合并后的数据
