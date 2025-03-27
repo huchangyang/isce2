@@ -962,20 +962,19 @@ class Lutan1(Sensor):
         
         self.logger.info(f"Successfully processed {len(self.frameList)} frames")
         
-        # 如果有多个帧，先合并轨道
+        # 使用tkfunc处理多frame
+        merged_frame = tkfunc(self)
+                # 如果有多个帧，先合并轨道
         if len(self.frameList) > 1:
             merged_orbit = self.mergeOrbits([frame.orbit for frame in self.frameList])
             if merged_orbit:
                 self.logger.info("Successfully merged orbits from all frames")
-        
-        # 使用tkfunc处理多frame
-        merged_frame = tkfunc(self)
-        
         # 确保frame和frameList被正确设置
         if merged_frame:
             self.frame = merged_frame
+            self.frame.orbit = merged_orbit
             self.frameList = [merged_frame]
-            
+            import pdb; pdb.set_trace()
             # 确保图像被正确设置
             if not self.frame.image:
                 # 创建SLC图像对象
