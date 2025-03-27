@@ -225,45 +225,55 @@ class Lutan1(Sensor):
         self.populateMetadata()
         fid.close()
 
+        # 初始化新的轨道对象
+        self.frame.orbit = Orbit()
+        self.frame.orbit.configure()
+
         # 处理轨道信息
-        orb = None
-        if self._orbitFile:
-            if os.path.isfile(self._orbitFile):
-                self.logger.info(f"Extracting orbit from file: {self._orbitFile}")
-                orb = self.extractOrbit()
-                if orb:
-                    self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
-                    
-                    # 添加状态向量到轨道
-                    state_vectors = list(orb._stateVectors)
-                    for sv in state_vectors:
-                        self.frame.orbit.addStateVector(sv)
-                    
-                    # 记录轨道时间范围（不使用setTimeRange方法）
-                    if state_vectors:
-                        self.logger.info(f"Orbit time range: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
-                        self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
-                        
-                        # 保存轨道信息到单独文件
-                        orbit_file = self._tiff[:-5] + '.orb'
-                        self.saveOrbitToFile(self.frame.orbit, orbit_file)
-                        self.logger.info(f"Saved orbit information to {orbit_file}")
-                    else:
-                        self.logger.error("No state vectors found in orbit")
-                        raise RuntimeError("No state vectors found in orbit")
-                else:
-                    self.logger.error("Failed to extract orbit from file")
-                    raise RuntimeError("Failed to extract orbit from file")
-            else:
-                self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
-                orb = self.createOrbit()
+        if self._orbitFile and os.path.isfile(self._orbitFile):
+            # 从轨道文件提取
+            orb = self.extractOrbit()
+            if orb is None:
+                self.logger.error("Failed to extract orbit from file")
+                raise RuntimeError("Failed to extract orbit from file")
+            self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
         else:
-            self.logger.warning("No orbit file provided. Using orbit from annotation file.")
+            # 从注释文件创建
+            if self._orbitFile:
+                self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
+            else:
+                self.logger.warning("No orbit file provided. Using orbit from annotation file.")
+            
             orb = self.createOrbit()
-        
-        if orb is None:
-            self.logger.error("Failed to obtain orbit information")
-            raise RuntimeError("Failed to obtain orbit information")
+            if orb is None:
+                self.logger.error("Failed to create orbit from annotation file")
+                raise RuntimeError("Failed to create orbit from annotation file")
+            self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
+
+        # 添加状态向量到轨道
+        if orb and hasattr(orb, '_stateVectors'):
+            # 确保是列表类型
+            state_vectors = list(orb._stateVectors) if hasattr(orb._stateVectors, '__iter__') else []
+            
+            if not state_vectors:
+                self.logger.error("No state vectors in orbit")
+                raise RuntimeError("No state vectors in orbit")
+
+            # 添加状态向量
+            for sv in state_vectors:
+                self.frame.orbit.addStateVector(sv)
+            
+            # 记录日志
+            self.logger.info(f"Orbit time span: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
+            self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
+            
+            # 保存轨道信息到单独文件
+            orbit_file = self._tiff[:-5] + '.orb'
+            self.saveOrbitToFile(self.frame.orbit, orbit_file)
+            self.logger.info(f"Saved orbit information to {orbit_file}")
+        else:
+            self.logger.error("Invalid orbit object")
+            raise RuntimeError("Invalid orbit object")
 
     def validate_orbit(self, orbit):
         """验证轨道数据的有效性"""
@@ -907,52 +917,108 @@ class Lutan1(Sensor):
 
     def extractImage(self):
         """提取图像数据"""
-        # 验证用户输入并自动查找文件
+        # 验证用户输入
         self.validateUserInputs()
         
-        if self._xmlConfig is not None:
-            if not self.loadFromXML():
-                self.logger.error("Failed to load from XML configuration file")
-                return None
+        # 确保_xmlFileList和_imageFileList被正确设置
+        if not self._xmlFileList:
+            self._xmlFileList = [tiff[:-4] + "meta.xml" for tiff in self._tiffList]
+            self.logger.info(f"Generated XML file list: {self._xmlFileList}")
         
-        if len(self._tiffList) != len(self._orbitFileList) and len(self._orbitFileList) > 0:
-            self.logger.error("Number of orbit files different from number of image files.")
-            raise RuntimeError
+        if not self._imageFileList:
+            self._imageFileList = self._tiffList
+            self.logger.info(f"Using TIFF file list as image file list: {self._imageFileList}")
         
+        # 检查文件是否存在
+        for xml_file, tiff_file in zip(self._xmlFileList, self._imageFileList):
+            if not os.path.exists(xml_file):
+                self.logger.error(f"XML file not found: {xml_file}")
+                raise RuntimeError(f"XML file not found: {xml_file}")
+            if not os.path.exists(tiff_file):
+                self.logger.error(f"TIFF file not found: {tiff_file}")
+                raise RuntimeError(f"TIFF file not found: {tiff_file}")
+        
+        # 清空frameList
         self.frameList = []
-        for i in range(len(self._tiffList)):
-            appendStr = "_" + str(i) if len(self._tiffList) > 1 else ''
+        
+        # 处理每个frame
+        for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
+            self.logger.info(f"Processing frame {i+1}/{len(self._xmlFileList)}")
+            self.logger.info(f"XML file: {xml_file}")
+            self.logger.info(f"TIFF file: {tiff_file}")
             
-            self.frame = Frame()
-            self.frame.configure()
+            # 创建新的frame
+            frame = Frame()
+            frame.configure()
             
-            self._tiff = self._tiffList[i]
-            self._orbitFile = self._orbitFileList[i] if self._orbitFileList else None
+            # 设置当前frame和文件
+            self.frame = frame
+            self._tiff = tiff_file
+            if self._orbitFileList and i < len(self._orbitFileList):
+                self._orbitFile = self._orbitFileList[i]
+            else:
+                self._orbitFile = None
             
             try:
-                # parse方法会处理元数据和轨道信息
+                # 解析元数据和轨道信息
                 self.parse()
-                outputNow = self.output + appendStr
                 
                 # 提取图像数据
-                self.extractFrameImage(self._tiff, outputNow)
+                outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
+                self.extractFrameImage(tiff_file, outputNow)
                 
-                self.frameList.append(self.frame)
-                self.logger.info(f"Processed SLC {i+1}/{len(self._tiffList)}: {self._tiff}")
+                # 添加到frameList
+                self.frameList.append(frame)
+                self.logger.info(f"Successfully processed frame {i+1}")
                 
             except Exception as e:
-                self.logger.error(f"Error processing file {self._tiff}: {str(e)}")
+                self.logger.error(f"Error processing frame {i+1}: {str(e)}")
                 raise
         
-        # 验证所有帧并合并
+        # 确保frameList不为空
         if not self.frameList:
-            raise ValueError("No frames processed successfully")
+            raise RuntimeError("No frames were processed")
         
-        if len(self.frameList) > 1:
-            self.logger.info("Merging multiple frames...")
-            return self.mergeFrames()
+        self.logger.info(f"Successfully processed {len(self.frameList)} frames")
+        
+        # 使用tkfunc处理多frame
+        merged_frame = tkfunc(self)
+        
+        # 确保frame和frameList被正确设置
+        if merged_frame:
+            self.frame = merged_frame
+            self.frameList = [merged_frame]
+            
+            # 确保图像被正确设置
+            if not self.frame.image:
+                # 创建SLC图像对象
+                slcImage = isceobj.createSlcImage()
+                slcImage.setByteOrder('l')
+                slcImage.setFilename(self.output)
+                slcImage.setAccessMode('read')
+                slcImage.setWidth(self.frame.getNumberOfSamples())
+                slcImage.setLength(self.frame.getNumberOfLines())
+                slcImage.setXmin(0)
+                slcImage.setXmax(self.frame.getNumberOfSamples())
+                slcImage.setDataType('CFLOAT')
+                slcImage.setImageType('slc')
+                
+                # 设置图像
+                self.frame.setImage(slcImage)
+                
+                # 生成头文件和VRT文件
+                slcImage.renderHdr()
+                slcImage.renderVRT()
+                
+                # 保存轨道信息到单独文件
+                orbit_file = self.output + '.orb'
+                self.saveOrbitToFile(self.frame.orbit, orbit_file)
         else:
-            return self.frameList[0]
+            # 如果没有合并的frame，使用第一个frame
+            self.frame = self.frameList[0]
+            self.frameList = [self.frame]
+        
+        return self.frame
 
     def extractFrameImage(self, tiff_file, output):
         """
@@ -1055,7 +1121,7 @@ class Lutan1(Sensor):
 
     def mergeFrames(self):
         """
-        合并多个帧，使用 tkfunc 处理
+        合并多个帧，同时处理frame和slc数据
         """
         if not self.frameList:
             return None
@@ -1063,13 +1129,103 @@ class Lutan1(Sensor):
         # 按时间排序帧
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
-        # 使用 tkfunc 合并帧
-        outframe = tkfunc.frameMerge(sorted_frames)
+        # 计算总行数和处理重叠
+        total_lines = 0
+        overlap_info = []  # 存储重叠信息
+        
+        for i, frame in enumerate(sorted_frames):
+            if i > 0:
+                prev_frame = sorted_frames[i-1]
+                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                if overlap > 0:
+                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                    total_lines += frame.getNumberOfLines() - overlap_lines
+                    overlap_info.append((i, overlap_lines))
+                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
+                else:
+                    total_lines += frame.getNumberOfLines()
+                    overlap_info.append((i, 0))
+            else:
+                total_lines += frame.getNumberOfLines()
+                overlap_info.append((i, 0))
+        
+        # 创建合并后的frame
+        merged_frame = Frame()
+        merged_frame.configure()
+        
+        # 设置基本属性
+        merged_frame.setSensingStart(sorted_frames[0].getSensingStart())
+        merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
+        merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
+        merged_frame.setFarRange(sorted_frames[-1].getFarRange())
+        merged_frame.setNumberOfLines(total_lines)
+        merged_frame.setNumberOfSamples(sorted_frames[0].getNumberOfSamples())
+        
+        # 复制第一帧的仪器参数
+        merged_frame.setInstrument(sorted_frames[0].getInstrument().copy())
+        
+        # 合并轨道信息
+        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
+        merged_frame.setOrbit(merged_orbit)
+        
+        # 处理SLC数据
+        width = sorted_frames[0].getNumberOfSamples()
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
+        current_line = 0
+        
+        for i, frame in enumerate(sorted_frames):
+            # 读取当前帧数据
+            with open(frame.image.getFilename(), 'rb') as f:
+                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
+            
+            if i == 0:
+                # 第一帧直接复制
+                merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                current_line += frame.getNumberOfLines()
+            else:
+                # 处理重叠区域
+                overlap_lines = overlap_info[i][1]
+                if overlap_lines > 0:
+                    # 计算非重叠部分
+                    non_overlap_data = frame_data[overlap_lines:]
+                    non_overlap_lines = len(non_overlap_data)
+                    
+                    # 复制非重叠部分
+                    merged_data[current_line:current_line+non_overlap_lines] = non_overlap_data
+                    current_line += non_overlap_lines
+                else:
+                    # 无重叠,直接复制
+                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
+                    current_line += frame.getNumberOfLines()
+        
+        # 写入合并后的SLC数据
+        output_file = self.output
+        with open(output_file, 'wb') as f:
+            merged_data.tofile(f)
+        
+        # 设置合并后的图像
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(output_file)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(width)
+        slcImage.setLength(total_lines)
+        slcImage.setXmin(0)
+        slcImage.setXmax(width)
+        slcImage.setDataType('CFLOAT')
+        slcImage.setImageType('slc')
+        
+        merged_frame.setImage(slcImage)
+        
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
         
         # 生成辅助文件
-        self.makeFakeAux(self.output)
+        self.makeFakeAux(output_file)
         
-        return outframe
+        return merged_frame
 
     def mergeOrbits(self, orbits):
         """合并多个轨道的状态向量"""
