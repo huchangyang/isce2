@@ -1055,7 +1055,7 @@ class Lutan1(Sensor):
 
     def mergeFrames(self):
         """
-        合并多个帧，同时处理frame和slc数据
+        合并多个帧，使用 tkfunc 处理
         """
         if not self.frameList:
             return None
@@ -1063,103 +1063,13 @@ class Lutan1(Sensor):
         # 按时间排序帧
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
-        # 计算总行数和处理重叠
-        total_lines = 0
-        overlap_info = []  # 存储重叠信息
-        
-        for i, frame in enumerate(sorted_frames):
-            if i > 0:
-                prev_frame = sorted_frames[i-1]
-                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
-                if overlap > 0:
-                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
-                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
-                    total_lines += frame.getNumberOfLines() - overlap_lines
-                    overlap_info.append((i, overlap_lines))
-                    self.logger.info(f"Frame {i} overlaps with frame {i-1} by {overlap_lines} lines")
-                else:
-                    total_lines += frame.getNumberOfLines()
-                    overlap_info.append((i, 0))
-            else:
-                total_lines += frame.getNumberOfLines()
-                overlap_info.append((i, 0))
-        
-        # 创建合并后的frame
-        merged_frame = Frame()
-        merged_frame.configure()
-        
-        # 设置基本属性
-        merged_frame.setSensingStart(sorted_frames[0].getSensingStart())
-        merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
-        merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
-        merged_frame.setFarRange(sorted_frames[-1].getFarRange())
-        merged_frame.setNumberOfLines(total_lines)
-        merged_frame.setNumberOfSamples(sorted_frames[0].getNumberOfSamples())
-        
-        # 复制第一帧的仪器参数
-        merged_frame.setInstrument(sorted_frames[0].getInstrument().copy())
-        
-        # 合并轨道信息
-        merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
-        merged_frame.setOrbit(merged_orbit)
-        
-        # 处理SLC数据
-        width = sorted_frames[0].getNumberOfSamples()
-        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
-        current_line = 0
-        
-        for i, frame in enumerate(sorted_frames):
-            # 读取当前帧数据
-            with open(frame.image.getFilename(), 'rb') as f:
-                frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
-            
-            if i == 0:
-                # 第一帧直接复制
-                merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                current_line += frame.getNumberOfLines()
-            else:
-                # 处理重叠区域
-                overlap_lines = overlap_info[i][1]
-                if overlap_lines > 0:
-                    # 计算非重叠部分
-                    non_overlap_data = frame_data[overlap_lines:]
-                    non_overlap_lines = len(non_overlap_data)
-                    
-                    # 复制非重叠部分
-                    merged_data[current_line:current_line+non_overlap_lines] = non_overlap_data
-                    current_line += non_overlap_lines
-                else:
-                    # 无重叠,直接复制
-                    merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
-                    current_line += frame.getNumberOfLines()
-        
-        # 写入合并后的SLC数据
-        output_file = self.output
-        with open(output_file, 'wb') as f:
-            merged_data.tofile(f)
-        
-        # 设置合并后的图像
-        slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')
-        slcImage.setFilename(output_file)
-        slcImage.setAccessMode('read')
-        slcImage.setWidth(width)
-        slcImage.setLength(total_lines)
-        slcImage.setXmin(0)
-        slcImage.setXmax(width)
-        slcImage.setDataType('CFLOAT')
-        slcImage.setImageType('slc')
-        
-        merged_frame.setImage(slcImage)
-        
-        # 生成头文件和VRT文件
-        slcImage.renderHdr()
-        slcImage.renderVRT()
+        # 使用 tkfunc 合并帧
+        outframe = tkfunc.frameMerge(sorted_frames)
         
         # 生成辅助文件
-        self.makeFakeAux(output_file)
+        self.makeFakeAux(self.output)
         
-        return merged_frame
+        return outframe
 
     def mergeOrbits(self, orbits):
         """合并多个轨道的状态向量"""
