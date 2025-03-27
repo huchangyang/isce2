@@ -818,7 +818,7 @@ class Orbit(Component):
             aztime = self.minTime + datetime.timedelta(seconds = 0.5 * delta.total_seconds())
         else:
             aztime = time
-        
+        import pdb; pdb.set_trace()
         vec1 = self.interpolateOrbit(aztime, method='hermite')
         llh1 = refElp.xyz_to_llh(vec1.getPosition())
 
