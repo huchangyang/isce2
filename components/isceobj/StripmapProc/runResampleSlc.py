@@ -31,7 +31,7 @@ def runResampleSlc(self, kind='coarse'):
 
     secondaryFrame = self._insar.loadProduct( self._insar.secondarySlcCropProduct)
     referenceFrame = self._insar.loadProduct( self._insar.referenceSlcCropProduct)
-    import pdb; pdb.set_trace()
+
     inimg = isceobj.createSlcImage()
     inimg.load(secondaryFrame.getImage().filename + '.xml')
     inimg.setAccessMode('READ')
