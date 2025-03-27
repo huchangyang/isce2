@@ -250,30 +250,11 @@ class Lutan1(Sensor):
                 raise RuntimeError("Failed to create orbit from annotation file")
             self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
 
-        # 添加状态向量到轨道
-        if orb and hasattr(orb, '_stateVectors'):
-            # 确保是列表类型
-            state_vectors = list(orb._stateVectors) if hasattr(orb._stateVectors, '__iter__') else []
-            
-            if not state_vectors:
-                self.logger.error("No state vectors in orbit")
-                raise RuntimeError("No state vectors in orbit")
-
-            # 添加状态向量
-            for sv in state_vectors:
-                self.frame.orbit.addStateVector(sv)
-            
-            # 记录日志
-            self.logger.info(f"Orbit time span: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
-            self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
-            
-            # 保存轨道信息到单独文件
-            orbit_file = self._tiff[:-5] + '.orb'
-            self.saveOrbitToFile(self.frame.orbit, orbit_file)
-            self.logger.info(f"Saved orbit information to {orbit_file}")
-        else:
-            self.logger.error("Invalid orbit object")
-            raise RuntimeError("Invalid orbit object")
+        if orb is None:
+            self.logger.error("Failed to create orbit")
+            raise RuntimeError("Failed to create orbit")
+        for sv in orb:
+            self.frame.orbit.addStateVector(sv)
 
     def validate_orbit(self, orbit):
         """验证轨道数据的有效性"""
