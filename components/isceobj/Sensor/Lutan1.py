@@ -974,7 +974,7 @@ class Lutan1(Sensor):
             self.frame = merged_frame
             self.frame.orbit = merged_orbit
             self.frameList = [merged_frame]
-            import pdb; pdb.set_trace()
+            
             # 确保图像被正确设置
             if not self.frame.image:
                 # 创建SLC图像对象
