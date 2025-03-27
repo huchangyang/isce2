@@ -962,6 +962,12 @@ class Lutan1(Sensor):
         
         self.logger.info(f"Successfully processed {len(self.frameList)} frames")
         
+        # 如果有多个帧，先合并轨道
+        if len(self.frameList) > 1:
+            merged_orbit = self.mergeOrbits([frame.orbit for frame in self.frameList])
+            if merged_orbit:
+                self.logger.info("Successfully merged orbits from all frames")
+        
         # 使用tkfunc处理多frame
         merged_frame = tkfunc(self)
         
@@ -995,9 +1001,14 @@ class Lutan1(Sensor):
                 orbit_file = self.output + '.orb'
                 self.saveOrbitToFile(self.frame.orbit, orbit_file)
         else:
-            # 如果没有合并的frame，使用第一个frame
+            # 如果没有合并的frame，使用第一个frame并设置合并的轨道
             self.frame = self.frameList[0]
             self.frameList = [self.frame]
+            if len(self.frameList) > 1 and merged_orbit:
+                self.frame.setOrbit(merged_orbit)
+                # 保存合并后的轨道信息
+                orbit_file = self.output + '.orb'
+                self.saveOrbitToFile(merged_orbit, orbit_file)
         
         return self.frame
 
