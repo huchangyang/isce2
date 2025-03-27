@@ -239,16 +239,18 @@ class Lutan1(Sensor):
                     for sv in state_vectors:
                         self.frame.orbit.addStateVector(sv)
                     
-                    # 设置轨道的时间范围
+                    # 记录轨道时间范围（不使用setTimeRange方法）
                     if state_vectors:
-                        self.frame.orbit.setTimeRange(state_vectors[0].getTime(), state_vectors[-1].getTime())
-                        self.logger.info(f"Set orbit time range: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
+                        self.logger.info(f"Orbit time range: {state_vectors[0].getTime()} to {state_vectors[-1].getTime()}")
                         self.logger.info(f"Frame sensing time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
                         
                         # 保存轨道信息到单独文件
                         orbit_file = self._tiff[:-5] + '.orb'
                         self.saveOrbitToFile(self.frame.orbit, orbit_file)
                         self.logger.info(f"Saved orbit information to {orbit_file}")
+                    else:
+                        self.logger.error("No state vectors found in orbit")
+                        raise RuntimeError("No state vectors found in orbit")
                 else:
                     self.logger.error("Failed to extract orbit from file")
                     raise RuntimeError("Failed to extract orbit from file")
