@@ -690,12 +690,12 @@ class workflow(object):
 def baselinePair(baselineDir, reference, secondary,doBaselines=True):
     
     if doBaselines: # open files to calculate baselines
-        # try:
-        #     mdb = shelve.open( os.path.join(reference, 'raw'), flag='r')
-        #     sdb = shelve.open( os.path.join(secondary, 'raw'), flag='r')
-        # except:
-        mdb = shelve.open( os.path.join(reference, 'data'), flag='r')
-        sdb = shelve.open( os.path.join(secondary, 'data'), flag='r')
+        try:
+            mdb = shelve.open( os.path.join(reference, 'raw'), flag='r')
+            sdb = shelve.open( os.path.join(secondary, 'raw'), flag='r')
+        except:
+            mdb = shelve.open( os.path.join(reference, 'data'), flag='r')
+            sdb = shelve.open( os.path.join(secondary, 'data'), flag='r')
         
         mFrame = mdb['frame']
         sFrame = sdb['frame']
