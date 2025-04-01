@@ -393,21 +393,16 @@ class Lutan1(Sensor):
         
         return filtered_pos, filtered_vel
 
-    def physics_constrained_filter(self, time_data, positions, velocities, 
-                                 img_start_sec=None, img_stop_sec=None):
+    def physics_constrained_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
         """基于物理约束的轨道滤波方法
         
         参数:
         time_data: 时间序列（秒）
-        positions: 位置数据 (N x 3的numpy数组)
-        velocities: 速度数据 (N x 3的numpy数组)
+        positions: 位置数据
+        velocities: 速度数据
         img_start_sec: 成像开始时间（秒）
         img_stop_sec: 成像结束时间（秒）
         """
-        # 直接指定固定权重
-        weights_img = {'original': 0.222, 'fitted': 0.522, 'theory': 0.256}
-        weights_non_img = {'original': 0.222, 'fitted': 0.522, 'theory': 0.256}
-        
         # 1. 检测并处理异常点
         time_diffs = np.diff(time_data)
         median_dt = np.median(time_diffs)
@@ -432,39 +427,41 @@ class Lutan1(Sensor):
             vel_median = np.median(velocities[:, i])
             vel_mad = np.median(np.abs(velocities[:, i] - vel_median))
             vel_anomaly_mask |= np.abs(velocities[:, i] - vel_median) > 3.0 * vel_mad
-        
+    
         # 合并所有异常标记
         anomaly_mask = time_anomaly_mask | pos_anomaly_mask | vel_anomaly_mask
         
-        # 2. 对速度进行多项式拟合
-        fitted_velocities = np.zeros_like(velocities)
-        for i in range(3):
-            valid_indices = ~anomaly_mask
-            if np.sum(valid_indices) > 5:
-                coeffs = np.polyfit(time_data[valid_indices], velocities[valid_indices, i], 5)
-                fitted_velocities[:, i] = np.polyval(coeffs, time_data)
-            else:
-                coeffs = np.polyfit(time_data, velocities[:, i], 5)
-                fitted_velocities[:, i] = np.polyval(coeffs, time_data)
-        
-        # 3. 对位置进行多项式拟合
+        # 2. 分别对位置和速度进行多项式拟合
         fitted_positions = np.zeros_like(positions)
-        for i in range(3):
-            valid_indices = ~anomaly_mask
-            if np.sum(valid_indices) > 5:
-                coeffs = np.polyfit(time_data[valid_indices], positions[valid_indices, i], 4)
-                fitted_positions[:, i] = np.polyval(coeffs, time_data)
-            else:
-                coeffs = np.polyfit(time_data, positions[:, i], 4)
-                fitted_positions[:, i] = np.polyval(coeffs, time_data)
+        fitted_velocities = np.zeros_like(velocities)
         
-        # 4. 计算基于位置的理论速度
+        for i in range(3):
+            # 使用非异常点进行多项式拟合
+            valid_indices = ~anomaly_mask
+            if np.sum(valid_indices) > 5:  # 确保有足够的有效点
+                # 位置拟合
+                pos_coeffs = np.polyfit(time_data[valid_indices], positions[valid_indices, i], 4)
+                fitted_positions[:, i] = np.polyval(pos_coeffs, time_data)
+                
+                # 速度拟合
+                vel_coeffs = np.polyfit(time_data[valid_indices], velocities[valid_indices, i], 5)
+                fitted_velocities[:, i] = np.polyval(vel_coeffs, time_data)
+            else:
+                # 如果有效点太少，使用所有点进行拟合
+                pos_coeffs = np.polyfit(time_data, positions[:, i], 4)
+                fitted_positions[:, i] = np.polyval(pos_coeffs, time_data)
+                
+                vel_coeffs = np.polyfit(time_data, velocities[:, i], 5)
+                fitted_velocities[:, i] = np.polyval(vel_coeffs, time_data)
+    
+        # 3. 基于位置计算理论速度
         theoretical_velocities = np.zeros_like(velocities)
-        dt = median_dt
+        dt = median_dt  # 使用中位数时间步长
         
         # 使用中心差分计算速度
         for i in range(1, len(time_data)-1):
             if not anomaly_mask[i]:
+                # 寻找前后最近的有效点
                 prev_idx = i - 1
                 next_idx = i + 1
                 
@@ -477,7 +474,7 @@ class Lutan1(Sensor):
                     dt_local = time_data[next_idx] - time_data[prev_idx]
                     if dt_local > 0:
                         theoretical_velocities[i] = (fitted_positions[next_idx] - fitted_positions[prev_idx]) / dt_local
-        
+    
         # 处理边界点和异常点
         # 向前填充
         last_valid = None
@@ -486,7 +483,7 @@ class Lutan1(Sensor):
                 last_valid = theoretical_velocities[i].copy()
             elif last_valid is not None:
                 theoretical_velocities[i] = last_valid
-        
+    
         # 向后填充未处理的点
         last_valid = None
         for i in range(len(time_data)-1, -1, -1):
@@ -494,45 +491,47 @@ class Lutan1(Sensor):
                 last_valid = theoretical_velocities[i].copy()
             elif last_valid is not None:
                 theoretical_velocities[i] = last_valid
-        
-        # 5. 在成像时间段内特殊处理
+    
+        # 4. 在成像时间段内特殊处理
         if img_start_sec is not None and img_stop_sec is not None:
             img_mask = (time_data >= img_start_sec) & (time_data <= img_stop_sec)
             if np.any(img_mask):
+                # 计算成像时间段内的平均速度
                 valid_img_mask = img_mask & ~anomaly_mask
                 if np.any(valid_img_mask):
+                    # 使用有效点的中位数速度作为参考
+                    ref_velocity = np.median(fitted_velocities[valid_img_mask], axis=0)
+                    
+                    # 在成像时间段内保持速度相对稳定
                     img_indices = np.where(img_mask)[0]
                     for i in img_indices:
                         if anomaly_mask[i]:
-                            theoretical_velocities[i] = fitted_velocities[i]
-        
-        # 6. 融合拟合速度和理论速度
+                            fitted_velocities[i] = ref_velocity
+                            theoretical_velocities[i] = ref_velocity
+    
+        # 5. 融合拟合速度和理论速度
         filtered_velocities = np.zeros_like(velocities)
         for i in range(3):
+            # 基础权重
+            weights = np.exp(-np.abs(time_data - (img_start_sec + img_stop_sec)/2) / 100)
+            
+            # 异常点的权重降低
+            weights[anomaly_mask] *= 0.01
+            
+            # 成像时间段内增加理论速度的权重
             if img_start_sec is not None and img_stop_sec is not None:
                 img_mask = (time_data >= img_start_sec) & (time_data <= img_stop_sec)
-                
-                # 成像时间段使用img权重
-                filtered_velocities[img_mask, i] = (
-                    velocities[img_mask, i] * weights_img['original'] +
-                    fitted_velocities[img_mask, i] * weights_img['fitted'] +
-                    theoretical_velocities[img_mask, i] * weights_img['theory']
-                )
-                
-                # 非成像时间段使用non_img权重
-                filtered_velocities[~img_mask, i] = (
-                    velocities[~img_mask, i] * weights_non_img['original'] +
-                    fitted_velocities[~img_mask, i] * weights_non_img['fitted'] +
-                    theoretical_velocities[~img_mask, i] * weights_non_img['theory']
-                )
-            else:
-                # 如果没有成像时间信息，使用non_img权重
-                filtered_velocities[:, i] = (
-                    velocities[:, i] * weights_non_img['original'] +
-                    fitted_velocities[:, i] * weights_non_img['fitted'] +
-                    theoretical_velocities[:, i] * weights_non_img['theory']
-                )
-        
+                weights[img_mask] *= 5.0
+            
+            # 确保权重在[0,1]范围内
+            weights = weights / np.max(weights)
+            
+            # 加权融合拟合速度和理论速度（不再使用原始速度）
+            filtered_velocities[:, i] = (
+                fitted_velocities[:, i] * (1 - weights) + 
+                theoretical_velocities[:, i] * weights
+            )
+    
         return fitted_positions, filtered_velocities
 
     def extractOrbitFromAnnotation(self):
