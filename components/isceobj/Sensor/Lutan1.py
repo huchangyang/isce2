@@ -393,11 +393,140 @@ class Lutan1(Sensor):
         
         return filtered_pos, filtered_vel
 
+    def physics_constrained_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
+        """基于物理约束的轨道滤波方法
+        
+        参数:
+        time_data: 时间序列（秒）
+        positions: 位置数据 (N x 3的numpy数组)
+        velocities: 速度数据 (N x 3的numpy数组)
+        img_start_sec: 成像开始时间（秒）
+        img_stop_sec: 成像结束时间（秒）
+        """
+        
+        # 1. 检测并处理异常点
+        time_diffs = np.diff(time_data)
+        median_dt = np.median(time_diffs)
+        dt_threshold = 3 * median_dt
+        
+        # 标记时间异常点
+        time_anomaly_mask = np.zeros(len(time_data), dtype=bool)
+        time_anomaly_mask[1:] = time_diffs > dt_threshold
+        time_anomaly_mask[:-1] |= time_diffs > dt_threshold
+        
+        # 检测位置和速度异常值
+        pos_anomaly_mask = np.zeros_like(time_anomaly_mask)
+        vel_anomaly_mask = np.zeros_like(time_anomaly_mask)
+        
+        for i in range(3):  # 对每个维度分别处理
+            # 位置异常检测
+            pos_median = np.median(positions[:, i])
+            pos_mad = np.median(np.abs(positions[:, i] - pos_median))
+            pos_anomaly_mask |= np.abs(positions[:, i] - pos_median) > 3.0 * pos_mad
+            
+            # 速度异常检测
+            vel_median = np.median(velocities[:, i])
+            vel_mad = np.median(np.abs(velocities[:, i] - vel_median))
+            vel_anomaly_mask |= np.abs(velocities[:, i] - vel_median) > 3.0 * vel_mad
+        
+        # 合并所有异常标记
+        anomaly_mask = time_anomaly_mask | pos_anomaly_mask | vel_anomaly_mask
+        
+        # 2. 处理位置数据
+        # 对异常点进行插值处理
+        fitted_positions = np.zeros_like(positions)
+        for i in range(3):
+            # 使用非异常点进行多项式拟合
+            valid_indices = ~anomaly_mask
+            if np.sum(valid_indices) > 5:  # 确保有足够的有效点
+                coeffs = np.polyfit(time_data[valid_indices], positions[valid_indices, i], 4)
+                fitted_positions[:, i] = np.polyval(coeffs, time_data)
+            else:
+                # 如果有效点太少，使用所有点进行拟合
+                coeffs = np.polyfit(time_data, positions[:, i], 4)
+                fitted_positions[:, i] = np.polyval(coeffs, time_data)
+        
+        # 3. 计算理论速度
+        theoretical_velocities = np.zeros_like(velocities)
+        dt = median_dt  # 使用中位数时间步长
+        
+        # 使用中心差分计算速度，跳过异常点
+        for i in range(1, len(time_data)-1):
+            if not anomaly_mask[i]:
+                # 寻找前后最近的有效点
+                prev_idx = i - 1
+                next_idx = i + 1
+                
+                while prev_idx > 0 and anomaly_mask[prev_idx]:
+                    prev_idx -= 1
+                while next_idx < len(time_data)-1 and anomaly_mask[next_idx]:
+                    next_idx += 1
+                
+                if not (anomaly_mask[prev_idx] or anomaly_mask[next_idx]):
+                    dt_local = time_data[next_idx] - time_data[prev_idx]
+                    if dt_local > 0:
+                        theoretical_velocities[i] = (fitted_positions[next_idx] - fitted_positions[prev_idx]) / dt_local
+        
+        # 处理边界点和异常点
+        # 向前填充
+        last_valid = None
+        for i in range(len(time_data)):
+            if not anomaly_mask[i] and np.any(theoretical_velocities[i]):
+                last_valid = theoretical_velocities[i].copy()
+            elif last_valid is not None:
+                theoretical_velocities[i] = last_valid
+        
+        # 向后填充未处理的点
+        last_valid = None
+        for i in range(len(time_data)-1, -1, -1):
+            if not anomaly_mask[i] and np.any(theoretical_velocities[i]):
+                last_valid = theoretical_velocities[i].copy()
+            elif last_valid is not None:
+                theoretical_velocities[i] = last_valid
+        
+        # 4. 在成像时间段内特殊处理
+        if img_start_sec is not None and img_stop_sec is not None:
+            img_mask = (time_data >= img_start_sec) & (time_data <= img_stop_sec)
+            if np.any(img_mask):
+                # 计算成像时间段内的平均速度和加速度
+                valid_img_mask = img_mask & ~anomaly_mask
+                if np.any(valid_img_mask):
+                    # 使用有效点的中位数速度作为参考
+                    ref_velocity = np.median(theoretical_velocities[valid_img_mask], axis=0)
+                    
+                    # 在成像时间段内保持速度相对稳定
+                    img_indices = np.where(img_mask)[0]
+                    for i in img_indices:
+                        if anomaly_mask[i]:
+                            theoretical_velocities[i] = ref_velocity
+        
+        # 5. 融合原始速度和理论速度
+        filtered_velocities = np.zeros_like(velocities)
+        for i in range(3):
+            # 基础权重
+            weights = np.exp(-np.abs(time_data - (img_start_sec + img_stop_sec)/2) / 100)
+            
+            # 异常点的权重降低
+            weights[anomaly_mask] *= 0.01
+            
+            # 成像时间段内增加理论速度的权重
+            if img_start_sec is not None and img_stop_sec is not None:
+                img_mask = (time_data >= img_start_sec) & (time_data <= img_stop_sec)
+                weights[img_mask] *= 2.0
+            
+            # 确保权重在[0,1]范围内
+            weights = weights / np.max(weights)
+            
+            # 加权融合
+            filtered_velocities[:, i] = (
+                velocities[:, i] * (1 - weights) + 
+                theoretical_velocities[:, i] * weights
+            )
+        
+        return fitted_positions, filtered_velocities
+
     def extractOrbitFromAnnotation(self):
-        '''
-        从xml注释中提取轨道信息并进行滤波
-        如果没有精轨数据，使用此方法
-        '''
+        '''从xml注释中提取轨道信息并进行滤波'''
         try:
             fp = open(self.xml, 'r')
         except IOError as strerr:
@@ -413,7 +542,7 @@ class Lutan1(Sensor):
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
         
-        # 收集所有轨道数据点
+        # 收集轨道数据
         timestamps = []
         positions = []
         velocities = []
@@ -433,40 +562,26 @@ class Lutan1(Sensor):
                 velocities.append(vel)
         
         fp.close()
+
+        # 转换为numpy数组
+        positions = np.array(positions)
+        velocities = np.array(velocities)
         
         # 计算相对时间（秒）
-        time_seconds = [(t - timestamps[0]).total_seconds() for t in timestamps]
-        self.filterMethod = 'none'
-        # 根据选择的方法进行滤波
-        if self.filterMethod == 'none':
-            # 不进行滤波，直接使用原始数据
-            filtered_pos = np.array(positions)
-            filtered_vel = np.array(velocities)
-        elif self.filterMethod == 'position_only':
-            # 只对位置进行标准滤波
-            filtered_pos, _ = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
-            filtered_vel = np.array(velocities)  # 速度保持原始数据
-        elif self.filterMethod == 'velocity_only':
-            # 只对速度进行标准滤波
-            _, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
-            filtered_pos = np.array(positions)  # 位置保持原始数据
-        elif self.filterMethod == 'standard':
-            filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'sliding':
-            filtered_pos, filtered_vel = self.filter_orbit_sliding(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'spline':
-            filtered_pos, filtered_vel = self.filter_orbit_spline(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'combined':
-            filtered_pos, filtered_vel = self.filter_orbit_combined(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'combined_spline':
-            filtered_pos, filtered_vel = self.filter_orbit_combined_spline(timestamps, np.array(positions), np.array(velocities))
-        elif self.filterMethod == 'weighted':
-            filtered_pos, filtered_vel = self.filter_orbit_weighted(timestamps, np.array(positions), np.array(velocities))
-        else:
-            print(f"Warning: Unknown filter method {self.filterMethod}, using standard method")
-            filtered_pos, filtered_vel = self.filter_orbit(timestamps, np.array(positions), np.array(velocities))
+        t0 = timestamps[0]
+        time_seconds = np.array([(t - t0).total_seconds() for t in timestamps])
         
-        # 将滤波后的结果转换为轨道状态向量
+        # 获取成像时间的相对秒数
+        img_start_sec = (self.frame.getSensingStart() - t0).total_seconds()
+        img_stop_sec = (self.frame.getSensingStop() - t0).total_seconds()
+        
+        # 应用物理约束滤波
+        filtered_pos, filtered_vel = self.physics_constrained_filter(
+            time_seconds, positions, velocities,
+            img_start_sec, img_stop_sec
+        )
+        
+        # 创建轨道状态向量
         for i, timestamp in enumerate(timestamps):
             vec = StateVector()
             vec.setTime(timestamp)
