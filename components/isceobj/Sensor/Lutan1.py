@@ -221,45 +221,31 @@ class Lutan1(Sensor):
                     self._orbitFileList = []
 
     def parse(self):
-        """解析元数据和轨道信息"""
-        xmlFileName = self._tiff[:-4] + "meta.xml"
-        self._xml = xmlFileName
+        xmlFileName = self.tiff[:-4] + "meta.xml"
+        self.xml = xmlFileName
 
-        with open(self._xml, 'r') as fid:
+        with open(self.xml, 'r') as fid:
             xmlstr = fid.read()
         
         self._xml_root = ET.fromstring(xmlstr)
         self.populateMetadata()
         fid.close()
 
-        # 初始化新的轨道对象
-        self.frame.orbit = Orbit()
-        self.frame.orbit.configure()
-
-        # 处理轨道信息
-        if self._orbitFile and os.path.isfile(self._orbitFile):
-            # 从轨道文件提取
-            orb = self.extractOrbit()
-            if orb is None:
-                self.logger.error("Failed to extract orbit from file")
-                raise RuntimeError("Failed to extract orbit from file")
-            self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
-        else:
-            # 从注释文件创建
-            if self._orbitFile:
-                self.logger.warning(f"Orbit file {self._orbitFile} not found. Using orbit from annotation file.")
+        if self.orbitFile:
+            # Check if orbit file exists or not
+            if os.path.isfile(self.orbitFile) == True:
+                orb = self.extractOrbit()
+                self.frame.orbit.setOrbitSource(os.path.basename(self.orbitFile))
             else:
-                self.logger.warning("No orbit file provided. Using orbit from annotation file.")
-            
-            orb = self.createOrbit()
-            if orb is None:
-                self.logger.error("Failed to create orbit from annotation file")
-                raise RuntimeError("Failed to create orbit from annotation file")
-            self.frame.orbit.setOrbitSource(os.path.basename(self._xml))
+                self.logger.warning("Orbit file not found: %s" % self.orbitFile)
+                self.logger.warning("Using orbit from annotation file.")
+                orb = self.extractOrbitFromAnnotation()
+                self.frame.orbit.setOrbitSource('Annotation')
+        else:
+            self.logger.warning("No orbit file provided. Using orbit from annotation file.")
+            orb = self.extractOrbitFromAnnotation()
+            self.frame.orbit.setOrbitSource('Annotation')
 
-        if orb is None:
-            self.logger.error("Failed to create orbit")
-            raise RuntimeError("Failed to create orbit")
         for sv in orb:
             self.frame.orbit.addStateVector(sv)
 
@@ -1081,6 +1067,11 @@ class Lutan1(Sensor):
         """
         from isceobj.Orbit.Orbit import Orbit, StateVector
         
+        # Check if we have a frameList to work with
+        if not hasattr(self, 'frameList') or not self.frameList:
+            self.logger.warning("No frameList found, extracting orbit from annotation file")
+            return self.extractOrbitFromAnnotation()
+        
         # Create new orbit object
         orbit = Orbit()
         orbit.configure()
@@ -1091,9 +1082,10 @@ class Lutan1(Sensor):
             if frame.orbit and frame.orbit._stateVectors:
                 all_vectors.extend(frame.orbit._stateVectors)
         
+        # If no state vectors found in frameList, try to extract from annotation
         if not all_vectors:
-            self.logger.error("No orbit state vectors found in any frames")
-            raise RuntimeError("No orbit state vectors found in any frames")
+            self.logger.warning("No orbit state vectors found in frameList, extracting from annotation")
+            return self.extractOrbitFromAnnotation()
             
         # Sort by time
         all_vectors.sort(key=lambda x: x.getTime())
@@ -1107,41 +1099,10 @@ class Lutan1(Sensor):
                 unique_vectors.append(sv)
                 prev_time = curr_time
         
-        # Ensure we have at least 4 state vectors for polynomial fitting
+        # If still not enough vectors, use annotation file
         if len(unique_vectors) < 4:
-            self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
-            
-            # Get the times of first and last vectors
-            t_start = unique_vectors[0].getTime()
-            t_end = unique_vectors[-1].getTime()
-            
-            # Extend time range
-            margin = datetime.timedelta(minutes=60)
-            t_start_extended = t_start - margin
-            t_end_extended = t_end + margin
-            
-            # Recollect state vectors within extended time range
-            extended_vectors = []
-            for frame in self.frameList:
-                if frame.orbit and frame.orbit._stateVectors:
-                    for sv in frame.orbit._stateVectors:
-                        t = sv.getTime()
-                        if t_start_extended <= t <= t_end_extended:
-                            extended_vectors.append(sv)
-            
-            # Re-sort and remove duplicates
-            extended_vectors.sort(key=lambda x: x.getTime())
-            unique_vectors = []
-            prev_time = None
-            for sv in extended_vectors:
-                curr_time = sv.getTime()
-                if prev_time is None or curr_time != prev_time:
-                    unique_vectors.append(sv)
-                    prev_time = curr_time
-        
-        if len(unique_vectors) < 4:
-            self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
-            raise RuntimeError("Insufficient orbit state vectors for interpolation")
+            self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, using annotation file")
+            return self.extractOrbitFromAnnotation()
         
         # Extract timestamps, positions, and velocities
         timestamps = []
@@ -1170,21 +1131,32 @@ class Lutan1(Sensor):
         img_stop_sec = (sensing_stop - t0).total_seconds()
         
         # Apply orbit filtering based on selected method
-        if self.filterMethod == 'poly_filter':
-            self.logger.info("Applying polynomial filter to orbit data")
-            filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
-        elif self.filterMethod == 'physics_filter':
-            self.logger.info("Applying physics-constrained filter to orbit data")
-            filtered_pos, filtered_vel = self.physics_constrained_filter(
-                time_seconds, positions, velocities,
-                img_start_sec, img_stop_sec
-            )
-        else:  # default to combined_weighted_filter
-            self.logger.info("Applying combined weighted filter to orbit data")
-            filtered_pos, filtered_vel = self.combined_weighted_filter(
-                time_seconds, positions, velocities,
-                img_start_sec, img_stop_sec
-            )
+        try:
+            if self.filterMethod == 'poly_filter':
+                self.logger.info("Applying polynomial filter to orbit data")
+                filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
+            elif self.filterMethod == 'physics_filter':
+                self.logger.info("Applying physics-constrained filter to orbit data")
+                filtered_pos, filtered_vel = self.physics_constrained_filter(
+                    time_seconds, positions, velocities,
+                    img_start_sec, img_stop_sec
+                )
+            else:  # default to combined_weighted_filter
+                self.logger.info("Applying combined weighted filter to orbit data")
+                filtered_pos, filtered_vel = self.combined_weighted_filter(
+                    time_seconds, positions, velocities,
+                    img_start_sec, img_stop_sec
+                )
+        except Exception as e:
+            self.logger.error(f"Error during orbit filtering: {str(e)}")
+            self.logger.warning("Returning unfiltered orbit data")
+            
+            # Return original orbit in case of filtering errors
+            orbit = Orbit()
+            orbit.configure()
+            for sv in unique_vectors:
+                orbit.addStateVector(sv)
+            return orbit
         
         # Create and add filtered state vectors to orbit
         filtered_orbit = Orbit()
@@ -1823,3 +1795,119 @@ class Lutan1(Sensor):
             orbit.addStateVector(sv)
         
         return orbit
+
+    def extractOrbitFromAnnotation(self):
+        '''Extract orbit information from xml annotation and apply filtering'''
+        try:
+            fp = open(self.xml, 'r')
+        except IOError as strerr:
+            print("IOError: %s" % strerr)
+    
+        _xml_root = ET.ElementTree(file=fp).getroot()
+        node = _xml_root.find('platform/orbit')
+        countNode = len(list(_xml_root.find('platform/orbit')))
+    
+        frameOrbit = Orbit()
+        frameOrbit.setOrbitSource('Header')
+        margin = datetime.timedelta(minutes=10.0)
+        tstart = self.frame.getSensingStart() - margin
+        tend = self.frame.getSensingStop() + margin
+        
+        timestamps = []
+        positions = []
+        velocities = []
+        
+        for k in range(1,countNode):
+            timestamp = self.convertToDateTime(node.find('stateVec[{}]/timeUTC'.format(k)).text)
+            if (timestamp >= tstart) and (timestamp <= tend):
+                pos = [float(node.find('stateVec[{}]/posX'.format(k)).text), 
+                      float(node.find('stateVec[{}]/posY'.format(k)).text), 
+                      float(node.find('stateVec[{}]/posZ'.format(k)).text)]
+                vel = [float(node.find('stateVec[{}]/velX'.format(k)).text), 
+                      float(node.find('stateVec[{}]/velY'.format(k)).text), 
+                      float(node.find('stateVec[{}]/velZ'.format(k)).text)]
+                
+                timestamps.append(timestamp)
+                positions.append(pos)
+                velocities.append(vel)
+        
+        fp.close()
+
+        # 检查是否有足够的数据
+        if len(timestamps) < 4:
+            self.logger.warning(f"Only {len(timestamps)} state vectors found in annotation file. Minimum required is 4.")
+            if hasattr(self, 'frame') and hasattr(self.frame, 'getSensingStart') and hasattr(self.frame, 'getSensingStop'):
+                # 尝试扩大时间范围
+                margin = datetime.timedelta(minutes=30.0)
+                tstart = self.frame.getSensingStart() - margin
+                tend = self.frame.getSensingStop() + margin
+                
+                self.logger.info(f"Extending time range to {tstart} - {tend}")
+                
+                # 重新收集数据
+                timestamps = []
+                positions = []
+                velocities = []
+                
+                try:
+                    fp = open(self.xml, 'r')
+                    _xml_root = ET.ElementTree(file=fp).getroot()
+                    node = _xml_root.find('platform/orbit')
+                    countNode = len(list(_xml_root.find('platform/orbit')))
+                    
+                    for k in range(1,countNode):
+                        timestamp = self.convertToDateTime(node.find('stateVec[{}]/timeUTC'.format(k)).text)
+                        if (timestamp >= tstart) and (timestamp <= tend):
+                            pos = [float(node.find('stateVec[{}]/posX'.format(k)).text), 
+                                  float(node.find('stateVec[{}]/posY'.format(k)).text), 
+                                  float(node.find('stateVec[{}]/posZ'.format(k)).text)]
+                            vel = [float(node.find('stateVec[{}]/velX'.format(k)).text), 
+                                  float(node.find('stateVec[{}]/velY'.format(k)).text), 
+                                  float(node.find('stateVec[{}]/velZ'.format(k)).text)]
+                            
+                            timestamps.append(timestamp)
+                            positions.append(pos)
+                            velocities.append(vel)
+                    
+                    fp.close()
+                except Exception as e:
+                    self.logger.error(f"Error while extending time range: {str(e)}")
+        
+        if len(timestamps) < 4:
+            self.logger.error(f"Still only found {len(timestamps)} state vectors after extending time range")
+            raise RuntimeError("Insufficient orbit state vectors for interpolation (minimum 4 required)")
+
+        positions = np.array(positions)
+        velocities = np.array(velocities)
+        
+        t0 = timestamps[0]
+        time_seconds = np.array([(t - t0).total_seconds() for t in timestamps])
+        
+        img_start_sec = (self.frame.getSensingStart() - t0).total_seconds()
+        img_stop_sec = (self.frame.getSensingStop() - t0).total_seconds()
+        
+        if self.filterMethod == 'poly_filter':
+            self.logger.info("Applying polynomial filter to orbit data")
+            filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
+        elif self.filterMethod == 'physics_filter':
+            self.logger.info("Applying physics-constrained filter to orbit data")
+            filtered_pos, filtered_vel = self.physics_constrained_filter(
+                time_seconds, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
+        else:  # default to combined_weighted_filter
+            self.logger.info("Applying combined weighted filter to orbit data")
+            filtered_pos, filtered_vel = self.combined_weighted_filter(
+                time_seconds, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
+        
+        # Create orbit state vectors
+        for i, timestamp in enumerate(timestamps):
+            vec = StateVector()
+            vec.setTime(timestamp)
+            vec.setPosition(filtered_pos[i].tolist())
+            vec.setVelocity(filtered_vel[i].tolist())
+            frameOrbit.addStateVector(vec)
+        
+        return frameOrbit
