@@ -221,23 +221,23 @@ class Lutan1(Sensor):
                     self._orbitFileList = []
 
     def parse(self):
-        xmlFileName = self.tiff[:-4] + "meta.xml"
-        self.xml = xmlFileName
+        xmlFileName = self._tiff[:-4] + "meta.xml"
+        self._xml = xmlFileName
 
-        with open(self.xml, 'r') as fid:
+        with open(self._xml, 'r') as fid:
             xmlstr = fid.read()
         
         self._xml_root = ET.fromstring(xmlstr)
         self.populateMetadata()
         fid.close()
 
-        if self.orbitFile:
+        if self._orbitFile:
             # Check if orbit file exists or not
-            if os.path.isfile(self.orbitFile) == True:
+            if os.path.isfile(self._orbitFile) == True:
                 orb = self.extractOrbit()
-                self.frame.orbit.setOrbitSource(os.path.basename(self.orbitFile))
+                self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
-                self.logger.warning("Orbit file not found: %s" % self.orbitFile)
+                self.logger.warning("Orbit file not found: %s" % self._orbitFile)
                 self.logger.warning("Using orbit from annotation file.")
                 orb = self.extractOrbitFromAnnotation()
                 self.frame.orbit.setOrbitSource('Annotation')
@@ -1799,7 +1799,7 @@ class Lutan1(Sensor):
     def extractOrbitFromAnnotation(self):
         '''Extract orbit information from xml annotation and apply filtering'''
         try:
-            fp = open(self.xml, 'r')
+            fp = open(self._xml, 'r')
         except IOError as strerr:
             print("IOError: %s" % strerr)
     
@@ -1850,7 +1850,7 @@ class Lutan1(Sensor):
                 velocities = []
                 
                 try:
-                    fp = open(self.xml, 'r')
+                    fp = open(self._xml, 'r')
                     _xml_root = ET.ElementTree(file=fp).getroot()
                     node = _xml_root.find('platform/orbit')
                     countNode = len(list(_xml_root.find('platform/orbit')))
