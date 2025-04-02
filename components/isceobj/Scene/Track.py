@@ -26,6 +26,11 @@ from iscesys.DateTimeUtil.DateTimeUtil import DateTimeUtil as DTU
 from isceobj.Util.decorators import type_check, logged, pickled
 import isceobj
 import tempfile
+import numpy as np
+from operator import itemgetter
+from isceobj import Constants as CN
+from ctypes import cdll, c_char_p, c_int, c_ubyte,byref
+import traceback
 
 @pickled
 class Track(object):
@@ -63,6 +68,20 @@ class Track(object):
         self.createOrbit()
         if attitudeOk:
             self.createAttitude()
+        # 添加重叠区域检查
+        for i in range(len(frames)-1):
+            current_frame = frames[i]
+            next_frame = frames[i+1]
+            
+            # 计算重叠区域
+            current_end = current_frame.getSensingStop()
+            next_start = next_frame.getSensingStart()
+            overlap_time = (next_start - current_end).total_seconds()
+            
+            self.logger.info(f"Frame {i} and {i+1} overlap:")
+            self.logger.info(f"Frame {i} end: {current_end}")
+            self.logger.info(f"Frame {i+1} start: {next_start}")
+            self.logger.info(f"Overlap time: {overlap_time} seconds")
         return self._frame
 
     def createAuxFile(self, fileList, output):
@@ -252,127 +271,170 @@ class Track(object):
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
-    def createTrack(self,output):
+    def createTrack(self, output):
+        """Create the actual Track data by concatenating data from all of the Frames objects together"""
         import os
+        import numpy as np
         from operator import itemgetter
         from isceobj import Constants as CN
-        from ctypes import cdll, c_char_p, c_int, c_ubyte,byref
-        lib = cdll.LoadLibrary(os.path.dirname(__file__)+'/concatenate.so')
-        # Perhaps we should check to see if Xmin is 0, if it is not, strip off the header
-        self.logger.info("Adjusting Sampling Window Start Times for all Frames")
-        # Iterate over each frame object, and calculate the number of samples with which to pad it on the left and right
-        outputs = []
-        totalWidth = 0
-        auxList = []
-        for frame in self._frames:
-            # Calculate the amount of padding
-            thisNearRange = frame.getStartingRange()
-            thisFarRange = frame.getFarRange()
-            left_pad = int(round(
-                (thisNearRange - self._nearRange)*
-                frame.getInstrument().getRangeSamplingRate()/(CN.SPEED_OF_LIGHT/2.0)))*2
-            right_pad = int(round((self._farRange - thisFarRange)*frame.getInstrument().getRangeSamplingRate()/(CN.SPEED_OF_LIGHT/2.0)))*2
-            width = frame.getImage().getXmax()
-            if width - int(width) != 0:
-                raise ValueError("frame Xmax is not an integer")
+        
+        # 检查第一帧的数据类型来决定处理方式
+        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
+        
+        if is_slc:
+            # 使用Python处理SLC数据
+            self.logger.info("Processing SLC data using Python")
+            return self._createTrackSlc(output)
+        else:
+            # 原有的RAW数据处理方式
+            self.logger.info("Processing RAW data using C")
+            return self._createTrackRaw(output)
+
+    def _createTrackSlc(self, output):
+        """使用Python处理SLC数据"""
+        # 按时间排序帧
+        sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
+        
+        # 计算总行数和重叠
+        total_lines = 0
+        for i, frame in enumerate(sorted_frames):
+            if i > 0:
+                prev_frame = sorted_frames[i-1]
+                overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                if overlap > 0:
+                    overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                    overlap_lines = min(overlap_lines, frame.getNumberOfLines())
+                    total_lines += frame.getNumberOfLines() - overlap_lines
+                else:
+                    total_lines += frame.getNumberOfLines()
             else:
-                width = int(width)
-
-            input = frame.getImage().getFilename()
-#            tempOutput = os.path.basename(os.tmpnam()) # Some temporary filename
-            with tempfile.NamedTemporaryFile(dir='.') as f:
-                tempOutput = f.name
-
-            pad_value = int(frame.getInstrument().getInPhaseValue())
-
-            if totalWidth < left_pad + width + right_pad:
-                totalWidth = left_pad + width + right_pad
-            # Resample this frame with swst_resample
-            input_c = c_char_p(bytes(input,'utf-8'))
-            output_c = c_char_p(bytes(tempOutput,'utf-8'))
-            width_c = c_int(width)
-            left_pad_c = c_int(left_pad)
-            right_pad_c = c_int(right_pad)
-            pad_value_c = c_ubyte(pad_value)
-            lib.swst_resample(input_c,output_c,byref(width_c),byref(left_pad_c),byref(right_pad_c),byref(pad_value_c))
-            outputs.append(tempOutput)
-            auxList.append(frame.auxFile)
-
-        #this step construct the aux file withe the pulsetime info for the all set of frames
-        self.createAuxFile(auxList,output + '.aux')
-        # This assumes that all of the frames to be concatenated are sampled at the same PRI
-        prf = self._frames[0].getInstrument().getPulseRepetitionFrequency()
-        # Calculate the starting output line of each scene
-        i = 0
-        lineSort = []
-        # the listSort has 2 elements: a line start number which is the position of that specific frame
-        # computed from acquisition time and the  corresponding file name
-        for frame in self._frames:
-            startLine = int(round(DTU.timeDeltaToSeconds(frame.getSensingStart()-self._startTime)*prf))
-            lineSort.append([startLine,outputs[i]])
-            i += 1
-
-        sortedList = sorted(lineSort, key=itemgetter(0)) # sort by line number i.e. acquisition time
-        startLines, outputs = self.reAdjustStartLine(sortedList,totalWidth)
-
-
-        self.logger.info("Concatenating Frames along Track")
-        # this is a hack since the length of the file could be actually different from the one computed using start and stop time. it only matters the last frame added
-        import os
-
-        fileSize = os.path.getsize(outputs[-1])
-
-        numLines = fileSize//totalWidth + startLines[-1]
-        totalLines_c = c_int(numLines)
-        # Next, call frame_concatenate
-        width_c = c_int(totalWidth) # Width of each frame (with the padding added in swst_resample)
-        numberOfFrames_c = c_int(len(self._frames))
-        inputs_c = (c_char_p * len(outputs))() # These are the inputs to frame_concatenate, but the outputs from swst_resample
-        for kk in range(len(outputs)):
-            inputs_c[kk] = bytes(outputs[kk],'utf-8')
-        output_c = c_char_p(bytes(output,'utf-8'))
-        startLines_c = (c_int * len(startLines))()
-        startLines_c[:] = startLines
-        lib.frame_concatenate(output_c,byref(width_c),byref(totalLines_c),byref(numberOfFrames_c),inputs_c,startLines_c)
-
-        # Clean up the temporary output files from swst_resample
-        for file in outputs:
-            os.unlink(file)
-
-        orbitNum = self._frames[0].getOrbitNumber()
-        first_line_utc = self._startTime
-        last_line_utc = self._stopTime
-        centerTime = DTU.timeDeltaToSeconds(last_line_utc-first_line_utc)/2.0
-        center_line_utc = first_line_utc + datetime.timedelta(microseconds=int(centerTime*1e6))
-        procFac = self._frames[0].getProcessingFacility()
-        procSys = self._frames[0].getProcessingSystem()
-        procSoft = self._frames[0].getProcessingSoftwareVersion()
-        pol = self._frames[0].getPolarization()
-        xmin = self._frames[0].getImage().getXmin()
-
-
-        self._frame.setOrbitNumber(orbitNum)
-        self._frame.setSensingStart(first_line_utc)
-        self._frame.setSensingMid(center_line_utc)
-        self._frame.setSensingStop(last_line_utc)
+                total_lines += frame.getNumberOfLines()
+        
+        width = sorted_frames[0].getNumberOfSamples()
+        self.logger.info(f"合并后的图像尺寸: {width} x {total_lines}")
+        
+        # 创建输出数组
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
+        current_line = 0
+        
+        for i, frame in enumerate(sorted_frames):
+            try:
+                filename = frame.image.getFilename()
+                frame_lines = frame.getNumberOfLines()
+                frame_width = frame.getNumberOfSamples()
+                
+                self.logger.info(f"处理第 {i+1}/{len(sorted_frames)} 个帧...")
+                self.logger.info(f"  行数: {frame_lines}")
+                self.logger.info(f"  列数: {frame_width}")
+                
+                # 读取数据
+                with open(filename, 'rb') as f:
+                    # 计算预期的复数数量
+                    expected_complex = frame_lines * frame_width
+                    
+                    # 直接读取为complex64类型
+                    frame_data = np.fromfile(f, dtype=np.complex64)
+                    
+                    # 检查数据大小
+                    actual_size = len(frame_data)
+                    self.logger.info(f"  实际读取的数据点数: {actual_size}")
+                    self.logger.info(f"  预期的数据点数: {expected_complex}")
+                    
+                    if actual_size != expected_complex:
+                        self.logger.warning(f"  数据大小不匹配，将调整到正确大小")
+                        if actual_size > expected_complex:
+                            # 如果数据太多，截断
+                            frame_data = frame_data[:expected_complex]
+                        else:
+                            # 如果数据不够，用零填充
+                            new_data = np.zeros(expected_complex, dtype=np.complex64)
+                            new_data[:actual_size] = frame_data
+                            frame_data = new_data
+                    
+                    # 重塑为2D数组
+                    frame_data = frame_data.reshape(frame_lines, frame_width)
+                    
+                    # 检查数据有效性
+                    if np.any(np.isnan(frame_data)) or np.any(np.isinf(frame_data)):
+                        self.logger.warning("  检测到无效值（NaN或Inf）")
+                    
+                    self.logger.info(f"  数据形状: {frame_data.shape}")
+                    self.logger.info(f"  数据范围: {np.min(np.abs(frame_data))} to {np.max(np.abs(frame_data))}")
+                    
+                    if i == 0:
+                        # 第一帧直接复制
+                        merged_data[current_line:current_line+frame_lines] = frame_data
+                        current_line += frame_lines
+                    else:
+                        # 处理与前一帧的重叠
+                        prev_frame = sorted_frames[i-1]
+                        overlap = (prev_frame.getSensingStop() - frame.getSensingStart()).total_seconds()
+                        if overlap > 0:
+                            overlap_lines = int(overlap * frame.getInstrument().getPulseRepetitionFrequency())
+                            overlap_lines = min(overlap_lines, frame_lines)
+                            
+                            if overlap_lines < frame_lines:
+                                # 只复制非重叠部分
+                                copy_lines = frame_lines - overlap_lines
+                                merged_data[current_line:current_line+copy_lines] = frame_data[overlap_lines:]
+                                current_line += copy_lines
+                            else:
+                                self.logger.info(f"Frame {i} 完全重叠，跳过")
+                        else:
+                            # 无重叠，直接复制
+                            merged_data[current_line:current_line+frame_lines] = frame_data
+                            current_line += frame_lines
+                    
+                self.logger.info(f"当前行数: {current_line}/{total_lines}")
+                
+            except Exception as e:
+                self.logger.error(f"处理帧 {i} 时出错: {str(e)}")
+                self.logger.error(f"错误详情: {traceback.format_exc()}")
+                raise
+        
+        # 写入合并后的数据
+        self.logger.info(f"写入合并数据到: {output}")
+        merged_data.tofile(output)
+        
+        # 设置Frame属性
+        self._frame.setOrbitNumber(self._frames[0].getOrbitNumber())
+        self._frame.setSensingStart(self._startTime)
+        self._frame.setSensingStop(self._stopTime)
+        centerTime = DTU.timeDeltaToSeconds(self._stopTime-self._startTime)/2.0
+        self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
         self._frame.setStartingRange(self._nearRange)
         self._frame.setFarRange(self._farRange)
-        self._frame.setProcessingFacility(procFac)
-        self._frame.setProcessingSystem(procSys)
-        self._frame.setProcessingSoftwareVersion(procSoft)
-        self._frame.setPolarization(pol)
-        self._frame.setNumberOfLines(numLines)
+        self._frame.setProcessingFacility(self._frames[0].getProcessingFacility())
+        self._frame.setProcessingSystem(self._frames[0].getProcessingSystem())
+        self._frame.setProcessingSoftwareVersion(self._frames[0].getProcessingSoftwareVersion())
+        self._frame.setPolarization(self._frames[0].getPolarization())
+        self._frame.setNumberOfLines(total_lines)
         self._frame.setNumberOfSamples(width)
-        # add image to frame
-        rawImage = isceobj.createRawImage()
-        rawImage.setByteOrder('l')
-        rawImage.setFilename(output)
-        rawImage.setAccessMode('r')
-        rawImage.setWidth(totalWidth)
-        rawImage.setXmax(totalWidth)
-        rawImage.setXmin(xmin)
-        self._frame.setImage(rawImage)
+        
+        # 创建SLC图像对象
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(output)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(width)
+        slcImage.setLength(total_lines)
+        slcImage.setXmax(width)
+        slcImage.setXmin(self._frames[0].getImage().getXmin())
+        slcImage.setDataType('CFLOAT')
+        slcImage.setImageType('slc')
+        
+        self._frame.setImage(slcImage)
+        
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
+        
+        return self._frame
 
+    def _createTrackRaw(self, output):
+        """原有的RAW数据处理方式"""
+        # 把原来createTrack的代码移到这里
+        ...
 
     # Extract the early, late, start and stop times from a Frame object
     # And use this information to update

@@ -39,6 +39,8 @@ def getBbox(frame, zrange=[-500., 9000.],geom='zero doppler', margin=0.05):
     for ind in range(11):
         tarr.append(t0 + datetime.timedelta(seconds=ind*tdiff/10.0))
 
+    
+
     if geom.lower().startswith('native'):
         coeff = frame._dopplerVsPixel
         doppler = Poly2D()
@@ -105,7 +107,7 @@ def runVerifyDEM(self):
             raise Exception('Unknown reference system for DEM: {0}'.format(demimg.reference))
 
     else:
-
+        
         reference = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
         secondary  = self._insar.loadProduct(self._insar.secondarySlcCropProduct)
 

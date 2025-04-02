@@ -285,7 +285,7 @@ def tkfunc(self):
                 raise OSError
             pass
         pass
-    pass
+    return self.frame
 
 
 class VolumeDirectoryBase(object):
