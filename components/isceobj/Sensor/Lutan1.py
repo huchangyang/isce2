@@ -50,6 +50,12 @@ ORBIT_FILE = Component.Parameter('orbitFile',
                             type=str,
                             doc = 'Orbit file')
 
+FILTER_METHOD = Component.Parameter('filterMethod',
+                            public_name ='filterMethod',
+                            default = 'combined_weighted_filter',
+                            type=str,
+                            doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter)')
+
 
 class Lutan1(Sensor):
 
@@ -58,7 +64,7 @@ class Lutan1(Sensor):
     family = 'l1sm'
     logging_name = 'isce.sensor.Lutan1'
 
-    parameter_list = (TIFF, ORBIT_FILE) + Sensor.parameter_list
+    parameter_list = (TIFF, ORBIT_FILE, FILTER_METHOD) + Sensor.parameter_list
 
     def __init__(self, name = ''):
         super(Lutan1,self).__init__(self.__class__.family, name=name)
@@ -66,7 +72,7 @@ class Lutan1(Sensor):
         self.frame.configure()
         self._xml_root = None
         self.doppler_coeff = None
-        self.filterMethod = 'weighted'
+        self.filterMethod = 'combined_weighted_filter'
 
     def parse(self):
         xmlFileName = self.tiff[:-4] + "meta.xml"
@@ -263,8 +269,8 @@ class Lutan1(Sensor):
             raise Exception("Unsupported orbit file extension: %s" % file_ext)
         return orb
         
-    def filter_orbit(self, times, positions, velocities):
-        """使用标准多项式拟合滤波轨道数据"""
+    def poly_filter(self, times, positions, velocities):
+        """Use polynomial fitting to filter orbit data"""
         t0 = times[0]
         seconds = np.array([(t - t0).total_seconds() for t in times])
         
@@ -275,267 +281,372 @@ class Lutan1(Sensor):
             pos_coef = np.polyfit(seconds, positions[:,i], 4)
             filtered_pos[:,i] = np.polyval(pos_coef, seconds)
             
-            vel_coef = np.polyfit(seconds, velocities[:,i], 5)
+            vel_coef = np.polyfit(seconds, velocities[:,i], 4)
             filtered_vel[:,i] = np.polyval(vel_coef, seconds)
             
-        return filtered_pos, filtered_vel
-
-    def filter_orbit_sliding(self, times, positions, velocities, window_size=20):
-        """使用滑动窗口的多项式拟合"""
-        t0 = times[0]
-        seconds = np.array([(t - t0).total_seconds() for t in times])
-        
-        filtered_pos = np.zeros_like(positions)
-        filtered_vel = np.zeros_like(velocities)
-        
-        for i in range(len(times)):
-            start_idx = max(0, i - window_size//2)
-            end_idx = min(len(times), i + window_size//2)
-            
-            window_seconds = seconds[start_idx:end_idx]
-            window_pos = positions[start_idx:end_idx]
-            window_vel = velocities[start_idx:end_idx]
-            
-            for j in range(3):
-                pos_coef = np.polyfit(window_seconds - seconds[i], window_pos[:,j], 4)
-                filtered_pos[i,j] = np.polyval(pos_coef, 0)
-                
-                vel_coef = np.polyfit(window_seconds - seconds[i], window_vel[:,j], 5)
-                filtered_vel[i,j] = np.polyval(vel_coef, 0)
-                
-        return filtered_pos, filtered_vel
-
-    def filter_orbit_spline(self, times, positions, velocities, k=4):
-        """使用样条拟合轨道数据"""
-        t0 = times[0]
-        seconds = np.array([(t - t0).total_seconds() for t in times])
-        
-        filtered_pos = np.zeros_like(positions)
-        filtered_vel = np.zeros_like(velocities)
-        
-        for i in range(3):
-            spline_pos = UnivariateSpline(seconds, positions[:,i], k=k, s=len(seconds))
-            filtered_pos[:,i] = spline_pos(seconds)
-            
-            spline_vel = UnivariateSpline(seconds, velocities[:,i], k=k, s=len(seconds))
-            filtered_vel[:,i] = spline_vel(seconds)
-        
-        return filtered_pos, filtered_vel
-
-    def filter_orbit_combined(self, times, positions, velocities, window_size=10):
-        """先滑动窗口，再多项式拟合的组合方法"""
-        sliding_pos, sliding_vel = self.filter_orbit_sliding(times, positions, velocities, window_size)
-        
-        t0 = times[0]
-        seconds = np.array([(t - t0).total_seconds() for t in times])
-        
-        filtered_pos = np.zeros_like(positions)
-        filtered_vel = np.zeros_like(velocities)
-        
-        for i in range(3):
-            pos_coef = np.polyfit(seconds, sliding_pos[:,i], 4)
-            filtered_pos[:,i] = np.polyval(pos_coef, seconds)
-            
-            vel_coef = np.polyfit(seconds, sliding_vel[:,i], 5)
-            filtered_vel[:,i] = np.polyval(vel_coef, seconds)
-        
-        return filtered_pos, filtered_vel
-
-    def filter_orbit_combined_spline(self, times, positions, velocities, window_size=10, k=4):
-        """先滑动窗口，再样条拟合的组合方法"""
-        # 1. 首先进行滑动窗口滤波
-        sliding_pos, sliding_vel = self.filter_orbit_sliding(times, positions, velocities, window_size)
-        
-        # 2. 对滑动窗口结果进行样条拟合
-        t0 = times[0]
-        seconds = np.array([(t - t0).total_seconds() for t in times])
-        
-        filtered_pos = np.zeros_like(positions)
-        filtered_vel = np.zeros_like(velocities)
-        
-        # 对每个坐标分量进行拟合
-        for i in range(3):
-            # 位置样条拟合
-            spline_pos = UnivariateSpline(seconds, sliding_pos[:,i], k=k, s=len(seconds))
-            filtered_pos[:,i] = spline_pos(seconds)
-            
-            # 速度样条拟合
-            spline_vel = UnivariateSpline(seconds, sliding_vel[:,i], k=k, s=len(seconds))
-            filtered_vel[:,i] = spline_vel(seconds)
-        
-        return filtered_pos, filtered_vel
-        
-    def filter_orbit_weighted(self, times, positions, velocities):
-        """对成像时间段赋予更高权重"""
-        t0 = times[0]
-        seconds = np.array([(t - t0).total_seconds() for t in times])
-        
-        # 获取成像时间段
-        data_start_time = self.frame.getSensingStart()
-        data_stop_time = self.frame.getSensingStop()
-        
-        weights = np.ones(len(times))
-        scene_indices = [i for i, t in enumerate(times) 
-                        if data_start_time <= t <= data_stop_time]
-        weights[scene_indices] = 2.0  # 成像段更高权重
-        
-        filtered_pos = np.zeros_like(positions)
-        filtered_vel = np.zeros_like(velocities)
-        
-        for i in range(3):
-            # 位置加权拟合
-            pos_coef = np.polyfit(seconds, positions[:,i], 4, w=weights)
-            filtered_pos[:,i] = np.polyval(pos_coef, seconds)
-            
-            # 速度加权拟合
-            vel_coef = np.polyfit(seconds, velocities[:,i], 5, w=weights)
-            filtered_vel[:,i] = np.polyval(vel_coef, seconds)
-        
         return filtered_pos, filtered_vel
 
     def physics_constrained_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
-        """基于物理约束的轨道滤波方法
+        """Filter based on physics constraints
         
-        参数:
-        time_data: 时间序列（秒）
-        positions: 位置数据
-        velocities: 速度数据
-        img_start_sec: 成像开始时间（秒）
-        img_stop_sec: 成像结束时间（秒）
+        Args:
+        time_data: time sequence (seconds)
+        positions: position data (N x 3 numpy array)
+        velocities: velocity data (N x 3 numpy array)
+        img_start_sec: imaging start time (seconds)
+        img_stop_sec: imaging stop time (seconds)
         """
-        # 1. 检测并处理异常点
+        # Detect and handle time discontinuities
         time_diffs = np.diff(time_data)
-        median_dt = np.median(time_diffs)
-        dt_threshold = 3 * median_dt  # 降低阈值，使检测更敏感
+
+        large_gaps = np.where(time_diffs > 2.0)[0]
+
+        full_time = np.arange(time_data[0], time_data[-1] + 1, 1.0)
+
+        interp_positions = np.zeros((len(full_time), 3))
+        interp_velocities = np.zeros((len(full_time), 3))
+
+        original_data_mask = np.zeros(len(full_time), dtype=bool)
+
+        for i, t in enumerate(time_data):
+            idx = int(round(t - full_time[0]))
+            if 0 <= idx < len(full_time):
+                original_data_mask[idx] = True
+                interp_positions[idx] = positions[i]
+                interp_velocities[idx] = velocities[i]
         
-        # 标记时间异常点
-        time_anomaly_mask = np.zeros(len(time_data), dtype=bool)
-        time_anomaly_mask[1:] = time_diffs > dt_threshold
-        time_anomaly_mask[:-1] |= time_diffs > dt_threshold
-        
-        # 检测位置和速度异常值
-        pos_anomaly_mask = np.zeros_like(time_anomaly_mask)
-        vel_anomaly_mask = np.zeros_like(time_anomaly_mask)
-        
-        for i in range(3):  # 对每个维度分别处理
-            # 位置异常检测
-            pos_median = np.median(positions[:, i])
-            pos_mad = np.median(np.abs(positions[:, i] - pos_median))
-            pos_anomaly_mask |= np.abs(positions[:, i] - pos_median) > 3.0 * pos_mad
-            
-            # 速度异常检测
-            vel_median = np.median(velocities[:, i])
-            vel_mad = np.median(np.abs(velocities[:, i] - vel_median))
-            vel_anomaly_mask |= np.abs(velocities[:, i] - vel_median) > 3.0 * vel_mad
-    
-        # 合并所有异常标记
-        anomaly_mask = time_anomaly_mask | pos_anomaly_mask | vel_anomaly_mask
-        
-        # 2. 分别对位置和速度进行多项式拟合
-        fitted_positions = np.zeros_like(positions)
-        fitted_velocities = np.zeros_like(velocities)
-        
+        # Interpolate missing points
         for i in range(3):
-            # 使用非异常点进行多项式拟合
-            valid_indices = ~anomaly_mask
-            if np.sum(valid_indices) > 5:  # 确保有足够的有效点
-                # 位置拟合
-                pos_coeffs = np.polyfit(time_data[valid_indices], positions[valid_indices, i], 4)
-                fitted_positions[:, i] = np.polyval(pos_coeffs, time_data)
-                
-                # 速度拟合
-                vel_coeffs = np.polyfit(time_data[valid_indices], velocities[valid_indices, i], 5)
-                fitted_velocities[:, i] = np.polyval(vel_coeffs, time_data)
+            # Interpolate positions
+            valid_pos = original_data_mask
+            if np.sum(valid_pos) > 1:  
+                interp_positions[:, i] = np.interp(full_time, 
+                                                full_time[valid_pos],
+                                                interp_positions[valid_pos, i])  
+            # Interpolate velocities
+            valid_vel = original_data_mask
+            if np.sum(valid_vel) > 1:
+                interp_velocities[:, i] = np.interp(full_time,
+                                                full_time[valid_vel],
+                                                interp_velocities[valid_vel, i])
+        
+        # Fit positions with polynomial segments
+        fitted_positions = np.zeros_like(interp_positions)
+        for i in range(3):
+            if len(large_gaps) == 0:
+                # If there are no large gaps, fit the whole time sequence
+                order = min(4, len(full_time)-1)
+                coeffs = np.polyfit(full_time, interp_positions[:, i], order)
+                fitted_positions[:, i] = np.polyval(coeffs, full_time)
             else:
-                # 如果有效点太少，使用所有点进行拟合
-                pos_coeffs = np.polyfit(time_data, positions[:, i], 4)
-                fitted_positions[:, i] = np.polyval(pos_coeffs, time_data)
-                
-                vel_coeffs = np.polyfit(time_data, velocities[:, i], 5)
-                fitted_velocities[:, i] = np.polyval(vel_coeffs, time_data)
-    
-        # 3. 基于位置计算理论速度
-        theoretical_velocities = np.zeros_like(velocities)
-        dt = median_dt  # 使用中位数时间步长
+                # Fit with polynomial segments
+                start_idx = 0
+                for gap_idx in large_gaps:
+                    if gap_idx - start_idx > 5:
+                        seg_time = full_time[start_idx:gap_idx+1]
+                        seg_pos = interp_positions[start_idx:gap_idx+1, i]
+                        order = min(4, len(seg_time)-1)
+                        coeffs = np.polyfit(seg_time, seg_pos, order)
+                        fitted_positions[start_idx:gap_idx+1, i] = np.polyval(coeffs, seg_time)
+                    start_idx = gap_idx + 1
+                # Process the last segment
+                if len(full_time) - start_idx > 5:
+                    seg_time = full_time[start_idx:]
+                    seg_pos = interp_positions[start_idx:, i]
+                    order = min(4, len(seg_time)-1)
+                    coeffs = np.polyfit(seg_time, seg_pos, order)
+                    fitted_positions[start_idx:, i] = np.polyval(coeffs, seg_time)
         
-        # 使用中心差分计算速度
-        for i in range(1, len(time_data)-1):
-            if not anomaly_mask[i]:
-                # 寻找前后最近的有效点
-                prev_idx = i - 1
-                next_idx = i + 1
-                
-                while prev_idx > 0 and anomaly_mask[prev_idx]:
-                    prev_idx -= 1
-                while next_idx < len(time_data)-1 and anomaly_mask[next_idx]:
-                    next_idx += 1
-                
-                if not (anomaly_mask[prev_idx] or anomaly_mask[next_idx]):
-                    dt_local = time_data[next_idx] - time_data[prev_idx]
-                    if dt_local > 0:
-                        theoretical_velocities[i] = (fitted_positions[next_idx] - fitted_positions[prev_idx]) / dt_local
-    
-        # 处理边界点和异常点
-        # 向前填充
-        last_valid = None
-        for i in range(len(time_data)):
-            if not anomaly_mask[i] and np.any(theoretical_velocities[i]):
-                last_valid = theoretical_velocities[i].copy()
-            elif last_valid is not None:
-                theoretical_velocities[i] = last_valid
-    
-        # 向后填充未处理的点
-        last_valid = None
-        for i in range(len(time_data)-1, -1, -1):
-            if not anomaly_mask[i] and np.any(theoretical_velocities[i]):
-                last_valid = theoretical_velocities[i].copy()
-            elif last_valid is not None:
-                theoretical_velocities[i] = last_valid
-    
-        # 4. 在成像时间段内特殊处理
+        # Calculate theoretical velocities based on positions
+        theoretical_velocities = np.zeros_like(interp_velocities)
+        
+        # Calculate theoretical velocities based on positions
+        for i in range(1, len(full_time)-1):
+            dt = full_time[i+1] - full_time[i-1]
+            theoretical_velocities[i] = (fitted_positions[i+1] - fitted_positions[i-1]) / dt
+        
+        # Set the theoretical velocities at boundary points to be the same as the interpolated velocities
+        theoretical_velocities[0] = interp_velocities[0]
+        theoretical_velocities[-1] = interp_velocities[-1]
+        
+        # Calculate weights
+        weights = np.ones(len(full_time))
+        
+        # Process boundary points
+        boundary_mask = np.zeros_like(full_time, dtype=bool)
+        boundary_mask[0] = True  # Start point
+        boundary_mask[-1] = True  # End point
+        if len(large_gaps) > 0:
+            # The start and end points of the segments are also considered as boundary points
+            for gap_idx in large_gaps:
+                if gap_idx > 0:
+                    boundary_mask[gap_idx] = True
+                if gap_idx + 1 < len(boundary_mask):
+                    boundary_mask[gap_idx + 1] = True
+        
+        # Set the weights of boundary points to a smaller value
+        weights[boundary_mask] = 0.01
+        
+        # Enhance the weights of the imaging period
         if img_start_sec is not None and img_stop_sec is not None:
-            img_mask = (time_data >= img_start_sec) & (time_data <= img_stop_sec)
-            if np.any(img_mask):
-                # 计算成像时间段内的平均速度
-                valid_img_mask = img_mask & ~anomaly_mask
-                if np.any(valid_img_mask):
-                    # 使用有效点的中位数速度作为参考
-                    ref_velocity = np.median(fitted_velocities[valid_img_mask], axis=0)
-                    
-                    # 在成像时间段内保持速度相对稳定
-                    img_indices = np.where(img_mask)[0]
-                    for i in img_indices:
-                        if anomaly_mask[i]:
-                            fitted_velocities[i] = ref_velocity
-                            theoretical_velocities[i] = ref_velocity
-    
-        # 5. 融合拟合速度和理论速度
-        filtered_velocities = np.zeros_like(velocities)
+            img_mask = (full_time >= img_start_sec) & (full_time <= img_stop_sec)
+            weights[img_mask] *= 5.0  # Enhance the weights of the imaging period
+        
+        # Time decay weights
+        time_weights = np.exp(-np.abs(full_time - full_time[len(full_time)//2]) / 100)
+        weights *= time_weights
+        
+        # Merge velocities
+        filtered_velocities = np.zeros_like(theoretical_velocities)
         for i in range(3):
-            # 基础权重
-            weights = np.exp(-np.abs(time_data - (img_start_sec + img_stop_sec)/2) / 100)
-            
-            # 异常点的权重降低
-            weights[anomaly_mask] *= 0.01
-            
-            # 成像时间段内增加理论速度的权重
-            if img_start_sec is not None and img_stop_sec is not None:
-                img_mask = (time_data >= img_start_sec) & (time_data <= img_stop_sec)
-                weights[img_mask] *= 5.0
-            
-            # 确保权重在[0,1]范围内
-            weights = weights / np.max(weights)
-            
-            # 加权融合拟合速度和理论速度（不再使用原始速度）
-            filtered_velocities[:, i] = (
-                fitted_velocities[:, i] * (1 - weights) + 
-                theoretical_velocities[:, i] * weights
+            # Calculate weighted average
+            non_boundary = ~boundary_mask
+            filtered_velocities[non_boundary, i] = (
+                theoretical_velocities[non_boundary, i] * weights[non_boundary] +
+                interp_velocities[non_boundary, i] * (1 - weights[non_boundary])
             )
-    
-        return fitted_positions, filtered_velocities
+            
+            # Use interpolated velocities at boundary points
+            filtered_velocities[boundary_mask, i] = interp_velocities[boundary_mask, i]
+        
+        # Return the data at the original time points
+        output_positions = fitted_positions[original_data_mask]
+        output_velocities = filtered_velocities[original_data_mask]
+        
+        return output_positions, output_velocities
+
+    def combined_weighted_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
+        """Filter based on combined weighted method
+        
+        Args:
+        time_data: time sequence (seconds)
+        positions: position data (N x 3 numpy array)
+        velocities: velocity data (N x 3 numpy array)
+        img_start_sec: imaging start time (seconds)
+        img_stop_sec: imaging stop time (seconds)
+        """
+        # Directly specify fixed weights
+        weights_img = {'original': 0.222, 'fitted': 0.522, 'theory': 0.256}
+        weights_non_img = {'original': 0.222, 'fitted': 0.522, 'theory': 0.256}
+        # Special weights for boundary points: don't use theoretical velocity
+        weights_boundary = {'original': 0.3, 'fitted': 0.7, 'theory': 0.0}
+        
+        # 1. Detect and handle time discontinuities
+        time_diffs = np.diff(time_data)
+        
+        large_gaps = np.where(time_diffs > 2.0)[0]
+        
+        full_time = np.arange(time_data[0], time_data[-1] + 1, 1.0)
+        
+        interp_positions = np.zeros((len(full_time), 3))
+        interp_velocities = np.zeros((len(full_time), 3))
+        
+        original_data_mask = np.zeros(len(full_time), dtype=bool)
+        
+        for i, t in enumerate(time_data):
+            idx = int(round(t - full_time[0]))
+            if 0 <= idx < len(full_time):
+                original_data_mask[idx] = True
+                interp_positions[idx] = positions[i]
+                interp_velocities[idx] = velocities[i]
+        
+        # Interpolate missing points
+        for i in range(3):
+            # Interpolate positions
+            valid_pos = original_data_mask
+            if np.sum(valid_pos) > 1:  # Ensure enough points for interpolation
+                interp_positions[:, i] = np.interp(full_time, 
+                                                 full_time[valid_pos],
+                                                 interp_positions[valid_pos, i])
+            
+            # Interpolate velocities
+            valid_vel = original_data_mask
+            if np.sum(valid_vel) > 1:
+                interp_velocities[:, i] = np.interp(full_time,
+                                                  full_time[valid_vel],
+                                                  interp_velocities[valid_vel, i])
+        
+        # 2. Polynomial fitting for velocities, using a fixed 4th order polynomial
+        fitted_velocities = np.zeros_like(interp_velocities)
+        for i in range(3):
+            if len(large_gaps) == 0:
+                # If no large gaps, fit the entire dataset
+                try:
+                    coeffs = np.polyfit(full_time, interp_velocities[:, i], 4)
+                    fitted_velocities[:, i] = np.polyval(coeffs, full_time)
+                except:
+                    # If fitting fails, use interpolated results
+                    fitted_velocities[:, i] = interp_velocities[:, i]
+            else:
+                # Fit with segments when there are large gaps
+                start_idx = 0
+                for gap_idx in large_gaps:
+                    if gap_idx - start_idx > 4:  # Ensure segment is long enough
+                        seg_time = full_time[start_idx:gap_idx+1]
+                        seg_vel = interp_velocities[start_idx:gap_idx+1, i]
+                        try:
+                            coeffs = np.polyfit(seg_time, seg_vel, 4)
+                            fitted_velocities[start_idx:gap_idx+1, i] = np.polyval(coeffs, seg_time)
+                        except:
+                            # If fitting fails, use interpolated results
+                            fitted_velocities[start_idx:gap_idx+1, i] = seg_vel
+                    else:
+                        # Segment too short, use interpolated results
+                        fitted_velocities[start_idx:gap_idx+1, i] = interp_velocities[start_idx:gap_idx+1, i]
+                    start_idx = gap_idx + 1
+                
+                if len(full_time) - start_idx > 4:
+                    seg_time = full_time[start_idx:]
+                    seg_vel = interp_velocities[start_idx:, i]
+                    try:
+                        coeffs = np.polyfit(seg_time, seg_vel, 4)
+                        fitted_velocities[start_idx:, i] = np.polyval(coeffs, seg_time)
+                    except:
+                        # If fitting fails, use interpolated results
+                        fitted_velocities[start_idx:, i] = seg_vel
+                else:
+                    # Segment too short, use interpolated results
+                    fitted_velocities[start_idx:, i] = interp_velocities[start_idx:, i]
+        
+        # 3. Polynomial fitting for positions, using a fixed 4th order polynomial
+        fitted_positions = np.zeros_like(interp_positions)
+        for i in range(3):
+            # Check if segmentation is needed
+            if len(large_gaps) == 0:
+                # If no large gaps, fit the entire dataset
+                try:
+                    coeffs = np.polyfit(full_time, interp_positions[:, i], 4)
+                    fitted_positions[:, i] = np.polyval(coeffs, full_time)
+                except:
+                    # If fitting fails, use interpolated results
+                    fitted_positions[:, i] = interp_positions[:, i]
+            else:
+                # Fit with segments when there are large gaps
+                start_idx = 0
+                for gap_idx in large_gaps:
+                    if gap_idx - start_idx > 4:  # Ensure segment is long enough
+                        seg_time = full_time[start_idx:gap_idx+1]
+                        seg_pos = interp_positions[start_idx:gap_idx+1, i]
+                        try:
+                            coeffs = np.polyfit(seg_time, seg_pos, 4)
+                            fitted_positions[start_idx:gap_idx+1, i] = np.polyval(coeffs, seg_time)
+                        except:
+                            # If fitting fails, use interpolated results
+                            fitted_positions[start_idx:gap_idx+1, i] = seg_pos
+                    else:
+                        # Segment too short, use interpolated results
+                        fitted_positions[start_idx:gap_idx+1, i] = interp_positions[start_idx:gap_idx+1, i]
+                    start_idx = gap_idx + 1
+                
+                if len(full_time) - start_idx > 4:
+                    seg_time = full_time[start_idx:]
+                    seg_pos = interp_positions[start_idx:, i]
+                    try:
+                        coeffs = np.polyfit(seg_time, seg_pos, 4)
+                        fitted_positions[start_idx:, i] = np.polyval(coeffs, seg_time)
+                    except:
+                        # If fitting fails, use interpolated results
+                        fitted_positions[start_idx:, i] = seg_pos
+                else:
+                    # Segment too short, use interpolated results
+                    fitted_positions[start_idx:, i] = interp_positions[start_idx:, i]
+        
+        # 4. Calculate theoretical velocities based on positions
+        theoretical_velocities = np.zeros_like(fitted_velocities)
+        
+        # Use central difference to calculate theoretical velocities (non-boundary points)
+        for i in range(1, len(full_time)-1):
+            dt = full_time[i+1] - full_time[i-1]
+            theoretical_velocities[i] = (fitted_positions[i+1] - fitted_positions[i-1]) / dt
+        
+        # Set theoretical velocities at boundary points to be the same as fitted velocities
+        theoretical_velocities[0] = fitted_velocities[0]
+        theoretical_velocities[-1] = fitted_velocities[-1]
+        
+        # 5. Special processing for the imaging time period
+        if img_start_sec is not None and img_stop_sec is not None:
+            img_mask = (full_time >= img_start_sec) & (full_time <= img_stop_sec)
+            if np.any(img_mask):
+                # For non-original data points in the imaging period, use fitted results
+                img_non_original = np.where(img_mask & ~original_data_mask)[0]
+                if len(img_non_original) > 0:
+                    theoretical_velocities[img_non_original] = fitted_velocities[img_non_original]
+        
+        # 6. Merge fitted velocities and theoretical velocities
+        filtered_velocities = np.zeros_like(theoretical_velocities)
+        for i in range(3):
+            if img_start_sec is not None and img_stop_sec is not None:
+                img_mask = (full_time >= img_start_sec) & (full_time <= img_stop_sec)
+                
+                # Create boundary points mask
+                boundary_mask = np.zeros_like(full_time, dtype=bool)
+                boundary_mask[0] = True  # Start point
+                boundary_mask[-1] = True  # End point
+                if len(large_gaps) > 0:
+                    # The start and end points of segments are also considered boundary points
+                    for gap_idx in large_gaps:
+                        if gap_idx > 0:
+                            boundary_mask[gap_idx] = True
+                        if gap_idx + 1 < len(boundary_mask):
+                            boundary_mask[gap_idx + 1] = True
+                
+                # Use img weights for imaging period
+                non_boundary_img = img_mask & ~boundary_mask
+                filtered_velocities[non_boundary_img, i] = (
+                    interp_velocities[non_boundary_img, i] * weights_img['original'] +
+                    fitted_velocities[non_boundary_img, i] * weights_img['fitted'] +
+                    theoretical_velocities[non_boundary_img, i] * weights_img['theory']
+                )
+                
+                # Use non_img weights for non-imaging period
+                non_boundary_non_img = ~img_mask & ~boundary_mask
+                filtered_velocities[non_boundary_non_img, i] = (
+                    interp_velocities[non_boundary_non_img, i] * weights_non_img['original'] +
+                    fitted_velocities[non_boundary_non_img, i] * weights_non_img['fitted'] +
+                    theoretical_velocities[non_boundary_non_img, i] * weights_non_img['theory']
+                )
+                
+                # Use special weights for boundary points
+                filtered_velocities[boundary_mask, i] = (
+                    interp_velocities[boundary_mask, i] * weights_boundary['original'] +
+                    fitted_velocities[boundary_mask, i] * weights_boundary['fitted'] +
+                    theoretical_velocities[boundary_mask, i] * weights_boundary['theory']
+                )
+            else:
+                # If no imaging time information, use non_img weights for non-boundary points
+                boundary_mask = np.zeros_like(full_time, dtype=bool)
+                boundary_mask[0] = True
+                boundary_mask[-1] = True
+                if len(large_gaps) > 0:
+                    for gap_idx in large_gaps:
+                        if gap_idx > 0:
+                            boundary_mask[gap_idx] = True
+                        if gap_idx + 1 < len(boundary_mask):
+                            boundary_mask[gap_idx + 1] = True
+                
+                # Non-boundary points
+                non_boundary = ~boundary_mask
+                filtered_velocities[non_boundary, i] = (
+                    interp_velocities[non_boundary, i] * weights_non_img['original'] +
+                    fitted_velocities[non_boundary, i] * weights_non_img['fitted'] +
+                    theoretical_velocities[non_boundary, i] * weights_non_img['theory']
+                )
+                
+                # Boundary points
+                filtered_velocities[boundary_mask, i] = (
+                    interp_velocities[boundary_mask, i] * weights_boundary['original'] +
+                    fitted_velocities[boundary_mask, i] * weights_boundary['fitted'] +
+                    theoretical_velocities[boundary_mask, i] * weights_boundary['theory']
+                )
+        
+        # Return the data at the original time points
+        output_positions = fitted_positions[original_data_mask]
+        output_velocities = filtered_velocities[original_data_mask]
+        
+        return output_positions, output_velocities
 
     def extractOrbitFromAnnotation(self):
-        '''从xml注释中提取轨道信息并进行滤波'''
+        '''Extract orbit information from xml annotation and apply filtering'''
         try:
             fp = open(self.xml, 'r')
         except IOError as strerr:
@@ -551,7 +662,6 @@ class Lutan1(Sensor):
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
         
-        # 收集轨道数据
         timestamps = []
         positions = []
         velocities = []
@@ -572,25 +682,29 @@ class Lutan1(Sensor):
         
         fp.close()
 
-        # 转换为numpy数组
         positions = np.array(positions)
         velocities = np.array(velocities)
         
-        # 计算相对时间（秒）
         t0 = timestamps[0]
         time_seconds = np.array([(t - t0).total_seconds() for t in timestamps])
-        
-        # 获取成像时间的相对秒数
+
         img_start_sec = (self.frame.getSensingStart() - t0).total_seconds()
         img_stop_sec = (self.frame.getSensingStop() - t0).total_seconds()
         
-        # 应用物理约束滤波
-        filtered_pos, filtered_vel = self.physics_constrained_filter(
-            time_seconds, positions, velocities,
-            img_start_sec, img_stop_sec
-        )
+        if self.filterMethod == 'poly_filter':
+            filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
+        elif self.filterMethod == 'physics_filter':
+            filtered_pos, filtered_vel = self.physics_constrained_filter(
+                time_seconds, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
+        else:  # default to combined_weighted_filter
+            filtered_pos, filtered_vel = self.combined_weighted_filter(
+                time_seconds, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
         
-        # 创建轨道状态向量
+        # Create orbit state vectors
         for i, timestamp in enumerate(timestamps):
             vec = StateVector()
             vec.setTime(timestamp)
