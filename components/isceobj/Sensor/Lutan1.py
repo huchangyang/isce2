@@ -1074,15 +1074,18 @@ class Lutan1(Sensor):
 
     def createOrbit(self):
         """
-        Create orbit from multiple frames.
+        Create orbit from multiple frames using filtering techniques.
+        
+        This method collects state vectors from all frames, filters them 
+        and creates a consistent orbit for the entire data stack.
         """
         from isceobj.Orbit.Orbit import Orbit, StateVector
         
-        # 创建新的轨道对象
+        # Create new orbit object
         orbit = Orbit()
         orbit.configure()
         
-        # 收集所有帧的轨道状态向量
+        # Collect orbit state vectors from all frames
         all_vectors = []
         for frame in self.frameList:
             if frame.orbit and frame.orbit._stateVectors:
@@ -1092,10 +1095,10 @@ class Lutan1(Sensor):
             self.logger.error("No orbit state vectors found in any frames")
             raise RuntimeError("No orbit state vectors found in any frames")
             
-        # 按时间排序
+        # Sort by time
         all_vectors.sort(key=lambda x: x.getTime())
         
-        # 移除重复的状态向量
+        # Remove duplicate state vectors
         unique_vectors = []
         prev_time = None
         for sv in all_vectors:
@@ -1104,20 +1107,20 @@ class Lutan1(Sensor):
                 unique_vectors.append(sv)
                 prev_time = curr_time
         
-        # 确保至少有4个状态向量
+        # Ensure we have at least 4 state vectors for polynomial fitting
         if len(unique_vectors) < 4:
             self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
             
-            # 获取第一个和最后一个向量的时间
+            # Get the times of first and last vectors
             t_start = unique_vectors[0].getTime()
             t_end = unique_vectors[-1].getTime()
             
-            # 扩展时间范围
+            # Extend time range
             margin = datetime.timedelta(minutes=60)
             t_start_extended = t_start - margin
             t_end_extended = t_end + margin
             
-            # 重新收集扩展时间范围内的状态向量
+            # Recollect state vectors within extended time range
             extended_vectors = []
             for frame in self.frameList:
                 if frame.orbit and frame.orbit._stateVectors:
@@ -1126,7 +1129,7 @@ class Lutan1(Sensor):
                         if t_start_extended <= t <= t_end_extended:
                             extended_vectors.append(sv)
             
-            # 重新排序和去重
+            # Re-sort and remove duplicates
             extended_vectors.sort(key=lambda x: x.getTime())
             unique_vectors = []
             prev_time = None
@@ -1140,14 +1143,64 @@ class Lutan1(Sensor):
             self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
             raise RuntimeError("Insufficient orbit state vectors for interpolation")
         
-        # 添加到轨道对象
+        # Extract timestamps, positions, and velocities
+        timestamps = []
+        positions = []
+        velocities = []
+        
         for sv in unique_vectors:
-            orbit.addStateVector(sv)
+            timestamps.append(sv.getTime())
+            positions.append(sv.getPosition())
+            velocities.append(sv.getVelocity())
         
-        self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
-        self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
+        # Convert to numpy arrays for filtering
+        positions = np.array(positions)
+        velocities = np.array(velocities)
         
-        return orbit
+        # Determine sensing start and stop times by finding min/max from all frames
+        sensing_start = min([frame.getSensingStart() for frame in self.frameList if hasattr(frame, 'getSensingStart')])
+        sensing_stop = max([frame.getSensingStop() for frame in self.frameList if hasattr(frame, 'getSensingStop')])
+        
+        # Calculate relative time in seconds for filtering
+        t0 = timestamps[0]
+        time_seconds = np.array([(t - t0).total_seconds() for t in timestamps])
+        
+        # Get imaging time in seconds relative to t0
+        img_start_sec = (sensing_start - t0).total_seconds()
+        img_stop_sec = (sensing_stop - t0).total_seconds()
+        
+        # Apply orbit filtering based on selected method
+        if self.filterMethod == 'poly_filter':
+            self.logger.info("Applying polynomial filter to orbit data")
+            filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
+        elif self.filterMethod == 'physics_filter':
+            self.logger.info("Applying physics-constrained filter to orbit data")
+            filtered_pos, filtered_vel = self.physics_constrained_filter(
+                time_seconds, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
+        else:  # default to combined_weighted_filter
+            self.logger.info("Applying combined weighted filter to orbit data")
+            filtered_pos, filtered_vel = self.combined_weighted_filter(
+                time_seconds, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
+        
+        # Create and add filtered state vectors to orbit
+        filtered_orbit = Orbit()
+        filtered_orbit.configure()
+        
+        for i, timestamp in enumerate(timestamps):
+            vec = StateVector()
+            vec.setTime(timestamp)
+            vec.setPosition(filtered_pos[i].tolist())
+            vec.setVelocity(filtered_vel[i].tolist())
+            filtered_orbit.addStateVector(vec)
+        
+        self.logger.info(f"Created filtered orbit with {len(filtered_orbit._stateVectors)} state vectors")
+        self.logger.info(f"Orbit time range: {timestamps[0]} to {timestamps[-1]}")
+        
+        return filtered_orbit
 
     def extractImage(self):
         """提取图像数据"""

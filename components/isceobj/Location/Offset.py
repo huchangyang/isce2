@@ -409,7 +409,7 @@ class OffsetField(Component):
                     numCoeff = 10
 
 
-        inArr = np.array(self.unpackOffsets())
+        inArr = np.array(self.unpackOffsets(), dtype=np.float64)
         azmin = np.min(inArr[:,2])
         inArr[:,2] -= azmin
 
