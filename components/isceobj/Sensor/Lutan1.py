@@ -233,17 +233,18 @@ class Lutan1(Sensor):
 
         if self._orbitFile:
             # Check if orbit file exists or not
-            if os.path.isfile(self._orbitFile) == True:
+            if os.path.isfile(self._orbitFile):
                 orb = self.extractOrbit()
                 self.frame.orbit.setOrbitSource(os.path.basename(self._orbitFile))
             else:
                 self.logger.warning("Orbit file not found: %s" % self._orbitFile)
-                self.logger.warning("Using orbit from annotation file.")
-                orb = self.extractOrbitFromAnnotation()
+                self.logger.info("Using createOrbit() to process orbit data")
+                orb = self.createOrbit()
                 self.frame.orbit.setOrbitSource('Annotation')
         else:
-            self.logger.warning("No orbit file provided. Using orbit from annotation file.")
-            orb = self.extractOrbitFromAnnotation()
+            self.logger.warning("No orbit file provided.")
+            self.logger.info("Using createOrbit() to process orbit data")
+            orb = self.createOrbit()
             self.frame.orbit.setOrbitSource('Annotation')
 
         for sv in orb:
@@ -1101,7 +1102,7 @@ class Lutan1(Sensor):
         
         # If still not enough vectors, use annotation file
         if len(unique_vectors) < 4:
-            self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, using annotation file")
+            self.logger.warning(f"Only found {len(unique_vectors)} unique state vectors. Minimum required is 4.")
             return self.extractOrbitFromAnnotation()
         
         # Extract timestamps, positions, and velocities
@@ -1119,8 +1120,8 @@ class Lutan1(Sensor):
         velocities = np.array(velocities)
         
         # Determine sensing start and stop times by finding min/max from all frames
-        sensing_start = min([frame.getSensingStart() for frame in self.frameList if hasattr(frame, 'getSensingStart')])
-        sensing_stop = max([frame.getSensingStop() for frame in self.frameList if hasattr(frame, 'getSensingStop')])
+        sensing_start = min([frame.getSensingStart() for frame in self.frameList])
+        sensing_stop = max([frame.getSensingStop() for frame in self.frameList])
         
         # Calculate relative time in seconds for filtering
         t0 = timestamps[0]
@@ -1149,30 +1150,21 @@ class Lutan1(Sensor):
                 )
         except Exception as e:
             self.logger.error(f"Error during orbit filtering: {str(e)}")
-            self.logger.warning("Returning unfiltered orbit data")
-            
-            # Return original orbit in case of filtering errors
-            orbit = Orbit()
-            orbit.configure()
-            for sv in unique_vectors:
-                orbit.addStateVector(sv)
-            return orbit
+            self.logger.warning("Falling back to annotation file orbit")
+            return self.extractOrbitFromAnnotation()
         
-        # Create and add filtered state vectors to orbit
-        filtered_orbit = Orbit()
-        filtered_orbit.configure()
-        
+        # Create orbit state vectors
         for i, timestamp in enumerate(timestamps):
             vec = StateVector()
             vec.setTime(timestamp)
             vec.setPosition(filtered_pos[i].tolist())
             vec.setVelocity(filtered_vel[i].tolist())
-            filtered_orbit.addStateVector(vec)
+            orbit.addStateVector(vec)
         
-        self.logger.info(f"Created filtered orbit with {len(filtered_orbit._stateVectors)} state vectors")
+        self.logger.info(f"Created orbit with {len(timestamps)} state vectors")
         self.logger.info(f"Orbit time range: {timestamps[0]} to {timestamps[-1]}")
         
-        return filtered_orbit
+        return orbit
 
     def extractImage(self):
         """提取图像数据"""
