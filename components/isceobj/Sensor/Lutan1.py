@@ -687,7 +687,7 @@ class Lutan1(Sensor):
         
         t0 = timestamps[0]
         time_seconds = np.array([(t - t0).total_seconds() for t in timestamps])
-
+        
         img_start_sec = (self.frame.getSensingStart() - t0).total_seconds()
         img_stop_sec = (self.frame.getSensingStop() - t0).total_seconds()
         
@@ -695,9 +695,9 @@ class Lutan1(Sensor):
             filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
         elif self.filterMethod == 'physics_filter':
             filtered_pos, filtered_vel = self.physics_constrained_filter(
-                time_seconds, positions, velocities,
-                img_start_sec, img_stop_sec
-            )
+            time_seconds, positions, velocities,
+            img_start_sec, img_stop_sec
+        )
         else:  # default to combined_weighted_filter
             filtered_pos, filtered_vel = self.combined_weighted_filter(
                 time_seconds, positions, velocities,
