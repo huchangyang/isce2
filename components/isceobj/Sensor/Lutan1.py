@@ -19,12 +19,7 @@ from isceobj.Scene.Frame import Frame
 from isceobj.Orbit.Orbit import StateVector, Orbit
 from isceobj.Planet.AstronomicalHandbook import Const
 from iscesys.DateTimeUtil.DateTimeUtil import DateTimeUtil as DTUtil
-from isceobj.Orbit.OrbitExtender import OrbitExtender
-from osgeo import gdal
-import warnings
-from scipy.interpolate import UnivariateSpline
 from isceobj.Sensor import tkfunc
-from isceobj.Image.SlcImage import SlcImage
 
 
 lookMap = { 'RIGHT' : -1,
@@ -96,8 +91,7 @@ class Lutan1(Sensor):
         self._xmlFileList = []
         self.frame = None
         self.doppler_coeff = None
-        self.filterMethod = 'combined_weighted_filter'
-        self.filterMethod = 'weighted'
+        self.filterMethod = 'physics_constrained_filter'
         self._tiff = None
         self._orbitFile = None
         self._xml = None
