@@ -70,7 +70,7 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'combined_weighted_filter',
+                            default = 'physics_constrained_filter',
                             type=str,
                             doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter)')
 
@@ -549,20 +549,20 @@ class Lutan1(Sensor):
                 all_vectors = []
                 for line in fid:
                     try:
-                        fields = line.split()
-                        if len(fields) >= 13:
-                            year = int(fields[0])
-                            month = int(fields[1])
-                            day = int(fields[2])
-                            hour = int(fields[3])
-                            minute = int(fields[4])
-                            second = float(fields[5])
-                            
-                            int_second = int(second)
-                            microsecond = int((second - int_second) * 1e6)
-                            # Convert to datetime   
-                            timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
-                            
+                    fields = line.split()
+                    if len(fields) >= 13:
+                        year = int(fields[0])
+                        month = int(fields[1])
+                        day = int(fields[2])
+                        hour = int(fields[3])
+                        minute = int(fields[4])
+                        second = float(fields[5])
+                        
+                        int_second = int(second)
+                        microsecond = int((second - int_second) * 1e6)
+                        # Convert to datetime   
+                        timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
+                        
                             # 只处理时间范围内的状态向量
                             if timestamp < tstart or timestamp > tend:
                                 continue
@@ -672,11 +672,11 @@ class Lutan1(Sensor):
                 self.logger.info(f"Created orbit with {len(unique_vectors)} state vectors")
                 self.logger.info(f"Orbit time range: {unique_vectors[0].getTime()} to {unique_vectors[-1].getTime()}")
                 
-                return orb
+        return orb
         else:
             self.logger.error(f"Unsupported orbit file extension: {file_ext}")
             return None
-
+        
     def filter_orbit(self, times, positions, velocities):
         """使用标准多项式拟合滤波轨道数据"""
         t0 = times[0]
@@ -691,7 +691,7 @@ class Lutan1(Sensor):
             
             vel_coef = np.polyfit(seconds, velocities[:,i], 4)
             filtered_vel[:,i] = np.polyval(vel_coef, seconds)
-        
+            
         return filtered_pos, filtered_vel
 
     def physics_constrained_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
@@ -972,7 +972,7 @@ class Lutan1(Sensor):
         theoretical_velocities[-1] = fitted_velocities[-1]
         
         # 5. Special processing for the imaging time period
-        if img_start_sec is not None and img_stop_sec is not None:
+            if img_start_sec is not None and img_stop_sec is not None:
             img_mask = (full_time >= img_start_sec) & (full_time <= img_stop_sec)
             if np.any(img_mask):
                 # For non-original data points in the imaging period, use fitted results
@@ -1132,10 +1132,10 @@ class Lutan1(Sensor):
                 filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
             elif self.filterMethod == 'physics_filter':
                 self.logger.info("Applying physics-constrained filter to orbit data")
-                filtered_pos, filtered_vel = self.physics_constrained_filter(
-                    time_seconds, positions, velocities,
-                    img_start_sec, img_stop_sec
-                )
+        filtered_pos, filtered_vel = self.physics_constrained_filter(
+            time_seconds, positions, velocities,
+            img_start_sec, img_stop_sec
+        )
             else:  # default to combined_weighted_filter
                 self.logger.info("Applying combined weighted filter to orbit data")
                 filtered_pos, filtered_vel = self.combined_weighted_filter(
@@ -1159,7 +1159,7 @@ class Lutan1(Sensor):
         self.logger.info(f"Orbit time range: {timestamps[0]} to {timestamps[-1]}")
         
         return orbit
-
+    
     def extractImage(self):
         """提取图像数据"""
         # 验证用户输入
@@ -1206,7 +1206,7 @@ class Lutan1(Sensor):
             
             try:
                 # 解析元数据和轨道信息
-                self.parse()
+        self.parse()
                 
                 # 提取图像数据
                 outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
@@ -1242,19 +1242,19 @@ class Lutan1(Sensor):
             # 确保图像被正确设置
             if not self.frame.image:
                 # 创建SLC图像对象
-                slcImage = isceobj.createSlcImage()
-                slcImage.setByteOrder('l')
-                slcImage.setFilename(self.output)
-                slcImage.setAccessMode('read')
-                slcImage.setWidth(self.frame.getNumberOfSamples())
-                slcImage.setLength(self.frame.getNumberOfLines())
-                slcImage.setXmin(0)
-                slcImage.setXmax(self.frame.getNumberOfSamples())
+        slcImage = isceobj.createSlcImage()
+        slcImage.setByteOrder('l')
+        slcImage.setFilename(self.output)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(self.frame.getNumberOfSamples())
+        slcImage.setLength(self.frame.getNumberOfLines())
+        slcImage.setXmin(0)
+        slcImage.setXmax(self.frame.getNumberOfSamples())
                 slcImage.setDataType('CFLOAT')
                 slcImage.setImageType('slc')
                 
                 # 设置图像
-                self.frame.setImage(slcImage)
+        self.frame.setImage(slcImage)
                 
                 # 生成头文件和VRT文件
                 slcImage.renderHdr()
