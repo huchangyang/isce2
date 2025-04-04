@@ -191,52 +191,54 @@ class Track(object):
     #width = width of the files
     #frameNum1,2 number of the frames in the sequence of frames to stitch
     #returns a more accurate line1
-    def findOverlapLine(self, file1, file2, line1,width,frameNum1,frameNum2):
+    def findOverlapLine(self, file1, file2, line1, width, frameNum1, frameNum2):
         import numpy as np
         import array
-        fin2 = open(file2,'rb')
-        arr2 = array.array('b')
-        #read full line at the beginning of second file
-        arr2.fromfile(fin2,width)
-        buf2 = np.array(arr2,dtype = np.int8)
-        numTries = 30
-        # start around line1 and try numTries around line1
-        # see searchlist to see which lines it searches
-        searchNumLines = 2
-        #make a sliding window that search for the searchSize samples inside buf2
-        searchSize = 500
-        max = 0
-        indx = None
-        fin1 = open(file1,'rb')
-        for i in range(numTries):
-            # example line1 = 0,searchNumLine = 2 and i = 0 search = [-2,-1,0,1], i = 1, serach =  [-4,-3,2,3]
-            search = list(range(line1 - (i+1)*searchNumLines,line1 - i*searchNumLines))
-            search.extend(list(range(line1 + i*searchNumLines,line1 + (i+1)*searchNumLines)))
-            for k in search:
+        
+        # 增加搜索范围
+        searchNumLines = 10  # 增加搜索行数
+        searchSize = width  # 使用整行进行匹配
+        numTries = 50      # 增加尝试次数
+        
+        # 读取第二帧的前几行作为参考
+        with open(file2, 'rb') as fin2:
+            arr2 = array.array('b')
+            arr2.fromfile(fin2, width * searchNumLines)
+            buf2 = np.array(arr2, dtype=np.int8).reshape(-1, width)
+        
+        max_correlation = 0
+        best_offset = None
+        
+        with open(file1, 'rb') as fin1:
+            # 在第一帧的末尾附近搜索
+            for i in range(-numTries, numTries):
+                test_line = line1 + i
+                if test_line < 0:
+                    continue
+                    
+                # 读取第一帧的对应行
+                fin1.seek(test_line * width, 0)
                 arr1 = array.array('b')
-                #seek to the line k and read +- searchSize/2 samples from the middle of the line
-                fin1.seek(k*width + (width - searchSize)//2,0)
-                arr1.fromfile(fin1,searchSize)
-                buf1 = np.array(arr1,dtype = np.int8)
-                found = False
-                for i in np.arange(width-searchSize):
-                    lenSame =len(np.nonzero(buf1 == buf2[i:i+searchSize])[0])
-                    if  lenSame > max:
-                        max = lenSame
-                        indx = k
-                        if(lenSame == searchSize):
-                            found = True
-                            break
-                if(found):
-                    break
-            if(found):
-                break
-        if not found:
-            self.logger.warning("Cannot find perfect overlap between frame %d and frame %d. Using acquisition time to find overlap position."%(frameNum1,frameNum2))
-        fin1.close()
-        fin2.close()
-        print('Match found: ', indx)
-        return indx
+                try:
+                    arr1.fromfile(fin1, width * searchNumLines)
+                except EOFError:
+                    continue
+                    
+                buf1 = np.array(arr1, dtype=np.int8).reshape(-1, width)
+                
+                # 计算相关性
+                correlation = np.abs(np.corrcoef(buf1.flatten(), buf2.flatten())[0,1])
+                
+                if correlation > max_correlation:
+                    max_correlation = correlation
+                    best_offset = test_line
+        
+        if best_offset is None:
+            self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
+            return line1
+        
+        self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation}")
+        return best_offset
 
     def reAdjustStartLine(self, sortedList, width):
         """ Computed the adjusted starting lines based on matching in overlapping regions """
@@ -357,19 +359,39 @@ class Track(object):
                     self.logger.info(f"   Data shape: {frame_data.shape}")
                     self.logger.info(f"   Data range: {np.min(np.abs(frame_data))} to {np.max(np.abs(frame_data))}")
                     
-                    # calculate the target area
                     if i < len(sorted_frames) - 1:
                         next_start = startLine[i+1]
-                        copy_lines = next_start - frame_start
-                        copy_lines = min(copy_lines, frame_lines)
-                        copy_lines = min(copy_lines, total_lines - frame_start)
+                        overlap_size = frame_start + frame_lines - next_start
+                        
+                        if overlap_size > 0:
+                            # 在重叠区域进行渐变过渡
+                            overlap_region = np.zeros((overlap_size, width), dtype=np.complex64)
+                            weight1 = np.linspace(1, 0, overlap_size)[:, np.newaxis]
+                            weight2 = np.linspace(0, 1, overlap_size)[:, np.newaxis]
+                            
+                            # 第一帧的重叠区域
+                            overlap_region1 = frame_data[-overlap_size:]
+                            # 第二帧的重叠区域
+                            with open(outputs[i+1], 'rb') as f:
+                                next_frame_data = np.fromfile(f, dtype=np.complex64)
+                                next_frame_data = next_frame_data.reshape(-1, width)
+                                overlap_region2 = next_frame_data[:overlap_size]
+                            
+                            # 加权平均
+                            overlap_region = overlap_region1 * weight1 + overlap_region2 * weight2
+                            
+                            # 写入合并数据
+                            merged_data[next_start:next_start+overlap_size] = overlap_region
+                            
+                            # 复制非重叠区域
+                            merged_data[frame_start:next_start] = frame_data[:-overlap_size]
+                        else:
+                            # 如果没有重叠，直接复制
+                            copy_lines = min(frame_lines, total_lines - frame_start)
+                            merged_data[frame_start:frame_start+copy_lines] = frame_data[:copy_lines]
                     else:
-                        copy_lines = frame_lines
-                        copy_lines = min(copy_lines, total_lines - frame_start)
-                    
-                    self.logger.info(f"   Number of lines copied: {copy_lines}")
-                    
-                    if copy_lines > 0:
+                        # 最后一帧直接复制
+                        copy_lines = min(frame_lines, total_lines - frame_start)
                         merged_data[frame_start:frame_start+copy_lines] = frame_data[:copy_lines]
                 
             except Exception as e:
