@@ -24,6 +24,7 @@ from isceobj.Orbit.Orbit import Orbit
 from isceobj.Attitude.Attitude import Attitude
 from iscesys.DateTimeUtil.DateTimeUtil import DateTimeUtil as DTU
 from isceobj.Util.decorators import type_check, logged, pickled
+from isceobj import Constants as CN
 import isceobj
 import numpy as np
 import traceback
