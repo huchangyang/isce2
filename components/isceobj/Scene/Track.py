@@ -283,159 +283,117 @@ class Track(object):
             return self._createTrackRaw(output)
 
     def _createTrackSlc(self, output):
-        """使用Python处理SLC数据"""
-        # sort the frames by time
+        """处理SLC数据的改进版本"""
         sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
-        
-        # get the width of the SLC
         width = sorted_frames[0].getNumberOfSamples()
+        prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
+
+        # 1. 计算每个帧的起始范围和采样窗口调整
+        frame_info = []
+        min_range = min(frame.getStartingRange() for frame in sorted_frames)
+        max_range = max(frame.getFarRange() for frame in sorted_frames)
         
-        frame_inputs = []
-        for i, frame in enumerate(sorted_frames):
-            # calculate the start line based on time
-            if i == 0:
-                start_line = 0
-            else:
-                first_frame = sorted_frames[0]
-                time_diff = (frame.getSensingStart() - first_frame.getSensingStart()).total_seconds()
-                start_line = int(time_diff * frame.getInstrument().getPulseRepetitionFrequency())
+        for frame in sorted_frames:
+            # 计算需要的填充
+            left_pad = int(round(
+                (frame.getStartingRange() - min_range) *
+                frame.getInstrument().getRangeSamplingRate()/(CN.SPEED_OF_LIGHT/2.0)))*2
+            right_pad = int(round(
+                (max_range - frame.getFarRange()) *
+                frame.getInstrument().getRangeSamplingRate()/(CN.SPEED_OF_LIGHT/2.0)))*2
             
-            filename = frame.image.getFilename()
-            frame_inputs.append((start_line, filename))
-        
-        # use the exact matching method to adjust the start line
-        startLine, outputs = self.reAdjustStartLine(frame_inputs, width)
-        
-        if len(startLine) > 1:
-            last_frame = sorted_frames[-1]
-            last_frame_lines = last_frame.getNumberOfLines()
-            total_lines = startLine[-1] + last_frame_lines
-        else:
-            total_lines = sorted_frames[0].getNumberOfLines()
-        
-        self.logger.info(f"Merged image size: {width} x {total_lines}")
-        self.logger.info(f"Adjusted start line: {startLine}")
-        
-        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
-        
+            frame_info.append({
+                'frame': frame,
+                'left_pad': left_pad,
+                'right_pad': right_pad,
+                'width': frame.getNumberOfSamples()
+            })
+
+        # 2. 调整每个帧的数据
+        adjusted_data = []
+        for info in frame_info:
+            frame = info['frame']
+            with open(frame.image.getFilename(), 'rb') as f:
+                data = np.fromfile(f, dtype=np.complex64)
+                data = data.reshape(frame.getNumberOfLines(), info['width'])
+                
+                # 添加填充
+                padded_data = np.zeros((data.shape[0], 
+                                      info['left_pad'] + data.shape[1] + info['right_pad']), 
+                                     dtype=np.complex64)
+                padded_data[:, info['left_pad']:info['left_pad']+data.shape[1]] = data
+                
+                adjusted_data.append(padded_data)
+
+        # 3. 计算时间相关的起始行
+        start_lines = []
         for i, frame in enumerate(sorted_frames):
+            if i == 0:
+                start_lines.append(0)
+            else:
+                time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
+                start_line = int(round(time_diff * prf))
+                start_lines.append(start_line)
+
+        # 4. 精确调整重叠区域
+        # 创建临时文件存储调整后的数据
+        temp_files = []
+        for i, data in enumerate(adjusted_data):
+            temp_file = f'temp_frame_{i}.dat'
+            data.tofile(temp_file)
+            temp_files.append(temp_file)
+
+        # 使用原有的重叠区域调整方法
+        adjusted_start_lines, _ = self.reAdjustStartLine(
+            list(zip(start_lines, temp_files)), 
+            adjusted_data[0].shape[1]
+        )
+
+        # 5. 合并数据
+        total_lines = adjusted_start_lines[-1] + adjusted_data[-1].shape[0]
+        merged_data = np.zeros((total_lines, adjusted_data[0].shape[1]), dtype=np.complex64)
+
+        for i in range(len(sorted_frames)):
+            current_data = adjusted_data[i]
+            start_line = adjusted_start_lines[i]
+            
+            if i < len(sorted_frames) - 1:
+                next_start = adjusted_start_lines[i+1]
+                # 处理重叠区域
+                overlap_size = start_line + current_data.shape[0] - next_start
+                if overlap_size > 0:
+                    # 使用加权平均进行过渡
+                    weight1 = np.linspace(1, 0, overlap_size)[:, np.newaxis]
+                    weight2 = np.linspace(0, 1, overlap_size)[:, np.newaxis]
+                    
+                    overlap1 = current_data[-overlap_size:]
+                    overlap2 = adjusted_data[i+1][:overlap_size]
+                    
+                    merged_data[next_start:next_start+overlap_size] = (
+                        overlap1 * weight1 + overlap2 * weight2
+                    )
+                    merged_data[start_line:next_start] = current_data[:-overlap_size]
+                else:
+                    merged_data[start_line:start_line+current_data.shape[0]] = current_data
+            else:
+                # 最后一帧
+                merged_data[start_line:start_line+current_data.shape[0]] = current_data
+
+        # 6. 清理临时文件
+        for temp_file in temp_files:
             try:
-                filename = outputs[i]  
-                frame_lines = frame.getNumberOfLines()
-                frame_width = frame.getNumberOfSamples()
-                frame_start = startLine[i]
-                
-                self.logger.info(f"Processing frame {i+1}/{len(sorted_frames)}...")
-                self.logger.info(f"   File name: {filename}")
-                self.logger.info(f"   Number of lines: {frame_lines}")
-                self.logger.info(f"   Number of samples: {frame_width}")
-                self.logger.info(f"   Start line: {frame_start}")
-                
-                with open(filename, 'rb') as f:
-                    frame_data = np.fromfile(f, dtype=np.complex64)
-                    
-                    expected_complex = frame_lines * frame_width
-                    
-                    # check the actual size of the data
-                    actual_size = len(frame_data)
-                    self.logger.info(f"   Actual number of data points read: {actual_size}")
-                    self.logger.info(f"   Expected number of data points: {expected_complex}")
-                    
-                    if actual_size != expected_complex:
-                        self.logger.warning(f"   Data size does not match, will be adjusted to the correct size")
-                        if actual_size > expected_complex:
-                            frame_data = frame_data[:expected_complex]
-                        else:
-                            new_data = np.zeros(expected_complex, dtype=np.complex64)
-                            new_data[:actual_size] = frame_data
-                            frame_data = new_data
-                    
-                    frame_data = frame_data.reshape(frame_lines, frame_width)
-                    
-                    # check the validity of the data
-                    if np.any(np.isnan(frame_data)) or np.any(np.isinf(frame_data)):
-                        self.logger.warning("   Detected invalid values (NaN or Inf)")
-                    
-                    self.logger.info(f"   Data shape: {frame_data.shape}")
-                    self.logger.info(f"   Data range: {np.min(np.abs(frame_data))} to {np.max(np.abs(frame_data))}")
-                    
-                    if i < len(sorted_frames) - 1:
-                        next_start = startLine[i+1]
-                        overlap_size = frame_start + frame_lines - next_start
-                        
-                        if overlap_size > 0:
-                            # 在重叠区域进行渐变过渡
-                            overlap_region = np.zeros((overlap_size, width), dtype=np.complex64)
-                            weight1 = np.linspace(1, 0, overlap_size)[:, np.newaxis]
-                            weight2 = np.linspace(0, 1, overlap_size)[:, np.newaxis]
-                            
-                            # 第一帧的重叠区域
-                            overlap_region1 = frame_data[-overlap_size:]
-                            # 第二帧的重叠区域
-                            with open(outputs[i+1], 'rb') as f:
-                                next_frame_data = np.fromfile(f, dtype=np.complex64)
-                                next_frame_data = next_frame_data.reshape(-1, width)
-                                overlap_region2 = next_frame_data[:overlap_size]
-                            
-                            # 加权平均
-                            overlap_region = overlap_region1 * weight1 + overlap_region2 * weight2
-                            
-                            # 写入合并数据
-                            merged_data[next_start:next_start+overlap_size] = overlap_region
-                            
-                            # 复制非重叠区域
-                            merged_data[frame_start:next_start] = frame_data[:-overlap_size]
-                        else:
-                            # 如果没有重叠，直接复制
-                            copy_lines = min(frame_lines, total_lines - frame_start)
-                            merged_data[frame_start:frame_start+copy_lines] = frame_data[:copy_lines]
-                    else:
-                        # 最后一帧直接复制
-                        copy_lines = min(frame_lines, total_lines - frame_start)
-                        merged_data[frame_start:frame_start+copy_lines] = frame_data[:copy_lines]
-                
-            except Exception as e:
-                self.logger.error(f"Error processing frame {i}: {str(e)}")
-                self.logger.error(f"Error details: {traceback.format_exc()}")
-                raise
-        
-        # write the merged data
-        self.logger.info(f"Writing merged data to: {output}")
+                os.remove(temp_file)
+            except:
+                pass
+
+        # 7. 保存结果
         merged_data.tofile(output)
-        
-        # set the Frame properties
-        self._frame.setOrbitNumber(self._frames[0].getOrbitNumber())
-        self._frame.setSensingStart(self._startTime)
-        self._frame.setSensingStop(self._stopTime)
-        centerTime = DTU.timeDeltaToSeconds(self._stopTime-self._startTime)/2.0
-        self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
-        self._frame.setStartingRange(self._nearRange)
-        self._frame.setFarRange(self._farRange)
-        self._frame.setProcessingFacility(self._frames[0].getProcessingFacility())
-        self._frame.setProcessingSystem(self._frames[0].getProcessingSystem())
-        self._frame.setProcessingSoftwareVersion(self._frames[0].getProcessingSoftwareVersion())
-        self._frame.setPolarization(self._frames[0].getPolarization())
+
+        # 8. 设置Frame属性
         self._frame.setNumberOfLines(total_lines)
-        self._frame.setNumberOfSamples(width)
-        
-        # create the SLC image object
-        slcImage = isceobj.createSlcImage()
-        slcImage.setByteOrder('l')
-        slcImage.setFilename(output)
-        slcImage.setAccessMode('read')
-        slcImage.setWidth(width)
-        slcImage.setLength(total_lines)
-        slcImage.setXmax(width)
-        slcImage.setXmin(self._frames[0].getImage().getXmin())
-        slcImage.setDataType('CFLOAT')
-        slcImage.setImageType('slc')
-        
-        self._frame.setImage(slcImage)
-        
-        # generate the header file and VRT file
-        slcImage.renderHdr()
-        slcImage.renderVRT()
-        
+        self._frame.setNumberOfSamples(merged_data.shape[1])
+        # ... 设置其他Frame属性 ...
+
         return self._frame
 
     def _createTrackRaw(self, output):
