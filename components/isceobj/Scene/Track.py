@@ -285,6 +285,8 @@ class Track(object):
 
     def _createTrackSlc(self, output):
         """处理SLC数据的改进版本"""
+        from isceobj import Constants as CN
+        
         sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
         width = sorted_frames[0].getNumberOfSamples()
         prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
@@ -393,7 +395,40 @@ class Track(object):
         # 8. 设置Frame属性
         self._frame.setNumberOfLines(total_lines)
         self._frame.setNumberOfSamples(merged_data.shape[1])
-        # ... 设置其他Frame属性 ...
+        
+        # 设置其他必要的Frame属性
+        self._frame.setOrbitNumber(sorted_frames[0].getOrbitNumber())
+        self._frame.setSensingStart(self._startTime)
+        self._frame.setSensingStop(self._stopTime)
+        centerTime = DTU.timeDeltaToSeconds(self._stopTime-self._startTime)/2.0
+        self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
+        self._frame.setStartingRange(self._nearRange)
+        self._frame.setFarRange(self._farRange)
+        self._frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
+        self._frame.setProcessingSystem(sorted_frames[0].getProcessingSystem())
+        self._frame.setProcessingSoftwareVersion(sorted_frames[0].getProcessingSoftwareVersion())
+        self._frame.setPolarization(sorted_frames[0].getPolarization())
+        
+        # 创建并设置SLC图像对象
+        slcImage = isceobj.createSlcImage()
+        slcImage.setFilename(output)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(merged_data.shape[1])
+        slcImage.setLength(total_lines)
+        slcImage.setXmin(0)
+        slcImage.setXmax(merged_data.shape[1])
+        slcImage.setDataType('CFLOAT')
+        slcImage.scheme = 'BIP'
+        slcImage.setByteOrder('l')
+        slcImage.imageType = 'slc'
+        slcImage.filename = output
+        
+        # 设置图像到Frame
+        self._frame.setImage(slcImage)
+        
+        # 生成头文件和VRT文件
+        slcImage.renderHdr()
+        slcImage.renderVRT()
 
         return self._frame
 
