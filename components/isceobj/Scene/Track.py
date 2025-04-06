@@ -284,7 +284,7 @@ class Track(object):
             return self._createTrackRaw(output)
 
     def _createTrackSlc(self, output):
-        """处理SLC数据的简化版本，直接通过成像时间确定起始行进行合并"""
+        """处理SLC数据的改进版本"""
         from isceobj import Constants as CN
         
         # 1. 按照成像时间排序所有帧
@@ -292,25 +292,39 @@ class Track(object):
         width = sorted_frames[0].getNumberOfSamples()
         prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 2. 计算每帧的起始行
+        # 2. 计算每帧的起始行和实际使用的行数
         start_lines = []
+        frame_lengths = []
+        current_line = 0
+        
         for i, frame in enumerate(sorted_frames):
             if i == 0:
+                # 第一帧完整使用
                 start_lines.append(0)
+                frame_lengths.append(frame.getNumberOfLines())
+                current_line = frame.getNumberOfLines()
             else:
-                # 根据成像时间差计算起始行
+                # 计算与前一帧的重叠
                 time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
-                # 不进行四舍五入，使用floor确保不会出现重叠
                 start_line = int(time_diff * prf)
-                # 确保起始行是偶数
-                start_line = (start_line // 2) * 2
+                
+                # 检查重叠
+                if start_line < current_line:
+                    overlap = current_line - start_line
+                    self.logger.warning(f"Frame {i} overlaps with previous frame by {overlap} lines")
+                    # 调整起始位置到前一帧结束处
+                    start_line = current_line
+                
                 start_lines.append(start_line)
+                frame_length = frame.getNumberOfLines()
+                frame_lengths.append(frame_length)
+                current_line = start_line + frame_length
         
-        # 3. 计算总行数
-        total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
+        # 3. 分配内存
+        total_lines = start_lines[-1] + frame_lengths[-1]
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
-        # 4. 逐帧合并数据，添加重叠检查
+        # 4. 逐帧合并数据
         for i, frame in enumerate(sorted_frames):
             # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
@@ -318,32 +332,26 @@ class Track(object):
                 data = data.reshape(frame.getNumberOfLines(), width)
             
             start_line = start_lines[i]
+            end_line = start_line + frame_lengths[i]
             
-            # 检查是否与前一帧有重叠
-            if i > 0:
-                prev_end = start_lines[i-1] + sorted_frames[i-1].getNumberOfLines()
-                if start_line < prev_end:
-                    # 如果有重叠，调整起始行
-                    overlap = prev_end - start_line
-                    self.logger.warning(f"Frame {i} overlaps with previous frame by {overlap} lines")
-                    start_line = prev_end
-                    start_lines[i] = start_line
+            # 确保不会超出边界
+            if end_line > total_lines:
+                end_line = total_lines
+                data = data[:(end_line - start_line)]
             
             # 写入数据
-            end_line = start_line + frame.getNumberOfLines()
-            merged_data[start_line:end_line] = data
+            merged_data[start_line:end_line] = data[:(end_line - start_line)]
             
-            # 记录拼接信息
-            self.logger.info(f"Frame {i}: start_line={start_line}, end_line={end_line}")
+            self.logger.info(f"Frame {i}: start_line={start_line}, end_line={end_line}, data_shape={data.shape}")
         
-        # 5. 保存合并结果
+        # 5. 保存结果
         merged_data.tofile(output)
         
         # 6. 设置Frame属性
         self._frame.setNumberOfLines(total_lines)
         self._frame.setNumberOfSamples(width)
         
-        # 设置基本属性
+        # 设置其他Frame属性（保持不变）
         self._frame.setOrbitNumber(sorted_frames[0].getOrbitNumber())
         self._frame.setSensingStart(self._startTime)
         self._frame.setSensingStop(self._stopTime)
@@ -351,8 +359,6 @@ class Track(object):
         self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
         self._frame.setStartingRange(self._nearRange)
         self._frame.setFarRange(self._farRange)
-        
-        # 设置处理信息
         self._frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
         self._frame.setProcessingSystem(sorted_frames[0].getProcessingSystem())
         self._frame.setProcessingSoftwareVersion(sorted_frames[0].getProcessingSoftwareVersion())
