@@ -300,23 +300,41 @@ class Track(object):
             else:
                 # 根据成像时间差计算起始行
                 time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
-                start_line = int(round(time_diff * prf))
+                # 不进行四舍五入，使用floor确保不会出现重叠
+                start_line = int(time_diff * prf)
+                # 确保起始行是偶数
+                start_line = (start_line // 2) * 2
                 start_lines.append(start_line)
         
         # 3. 计算总行数
         total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
-        # 4. 逐帧合并数据
+        # 4. 逐帧合并数据，添加重叠检查
         for i, frame in enumerate(sorted_frames):
             # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
                 data = np.fromfile(f, dtype=np.complex64)
                 data = data.reshape(frame.getNumberOfLines(), width)
             
-            # 将当前帧数据写入对应位置
             start_line = start_lines[i]
-            merged_data[start_line:start_line + frame.getNumberOfLines()] = data
+            
+            # 检查是否与前一帧有重叠
+            if i > 0:
+                prev_end = start_lines[i-1] + sorted_frames[i-1].getNumberOfLines()
+                if start_line < prev_end:
+                    # 如果有重叠，调整起始行
+                    overlap = prev_end - start_line
+                    self.logger.warning(f"Frame {i} overlaps with previous frame by {overlap} lines")
+                    start_line = prev_end
+                    start_lines[i] = start_line
+            
+            # 写入数据
+            end_line = start_line + frame.getNumberOfLines()
+            merged_data[start_line:end_line] = data
+            
+            # 记录拼接信息
+            self.logger.info(f"Frame {i}: start_line={start_line}, end_line={end_line}")
         
         # 5. 保存合并结果
         merged_data.tofile(output)
