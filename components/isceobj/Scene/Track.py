@@ -270,79 +270,72 @@ class Track(object):
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
-    def createTrack(self, output):
-        """Create the actual Track data by concatenating data from all of the Frames objects together"""
-        
-        # check the data type of the first frame
-        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
-        
-        if is_slc:
-            self.logger.info("Processing SLC data using Python")
-            return self._createTrackSlc(output)
-        else:
-            self.logger.info("Processing RAW data using C")
-            return self._createTrackRaw(output)
-
     def _createTrackSlc(self, output):
         """处理SLC数据的改进版本"""
         from isceobj import Constants as CN
         
-        # 1. 按照成像时间排序所有帧
+        # 1. 按照成像时间排序所有帧，并确保时间顺序正确
         sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
-        width = sorted_frames[0].getNumberOfSamples()
-        prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 2. 计算每帧的起始行和实际使用的行数
-        start_lines = []
-        frame_lengths = []
-        current_line = 0
+        # 验证时间顺序
+        for i in range(len(sorted_frames)-1):
+            if sorted_frames[i].getSensingStop() > sorted_frames[i+1].getSensingStart():
+                self.logger.warning(f"检测到时间顺序异常：Frame {i} 结束时间晚于 Frame {i+1} 开始时间")
+                self.logger.warning(f"Frame {i}: {sorted_frames[i].getSensingStart()} - {sorted_frames[i].getSensingStop()}")
+                self.logger.warning(f"Frame {i+1}: {sorted_frames[i+1].getSensingStart()} - {sorted_frames[i+1].getSensingStop()}")
+        
+        width = sorted_frames[0].getNumberOfSamples()
+        prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequence()
+        
+        # 2. 重新计算每帧的起始行和长度
+        total_lines = 0
+        frame_info = []
         
         for i, frame in enumerate(sorted_frames):
+            frame_length = frame.getNumberOfLines()
+            
             if i == 0:
-                # 第一帧完整使用
-                start_lines.append(0)
-                frame_lengths.append(frame.getNumberOfLines())
-                current_line = frame.getNumberOfLines()
+                start_line = 0
             else:
-                # 计算与前一帧的重叠
+                # 计算基于时间的理想起始行
                 time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
-                start_line = int(time_diff * prf)
+                ideal_start = int(time_diff * prf)
                 
-                # 检查重叠
-                if start_line < current_line:
-                    overlap = current_line - start_line
-                    self.logger.warning(f"Frame {i} overlaps with previous frame by {overlap} lines")
-                    # 调整起始位置到前一帧结束处
-                    start_line = current_line
+                # 使用前一帧的结束位置作为实际起始位置
+                prev_end = frame_info[-1]['end_line']
+                start_line = prev_end
                 
-                start_lines.append(start_line)
-                frame_length = frame.getNumberOfLines()
-                frame_lengths.append(frame_length)
-                current_line = start_line + frame_length
+                # 如果有重叠，记录日志
+                if ideal_start < prev_end:
+                    overlap = prev_end - ideal_start
+                    self.logger.info(f"Frame {i}: 理想起始行 {ideal_start}，实际起始行 {start_line}，重叠 {overlap} 行")
+            
+            frame_info.append({
+                'frame': frame,
+                'start_line': start_line,
+                'end_line': start_line + frame_length,
+                'length': frame_length
+            })
+            total_lines = start_line + frame_length
         
-        # 3. 分配内存
-        total_lines = start_lines[-1] + frame_lengths[-1]
+        # 3. 分配内存并合并数据
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
         # 4. 逐帧合并数据
-        for i, frame in enumerate(sorted_frames):
+        for info in frame_info:
+            frame = info['frame']
+            start_line = info['start_line']
+            end_line = info['end_line']
+            
             # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
                 data = np.fromfile(f, dtype=np.complex64)
                 data = data.reshape(frame.getNumberOfLines(), width)
             
-            start_line = start_lines[i]
-            end_line = start_line + frame_lengths[i]
-            
-            # 确保不会超出边界
-            if end_line > total_lines:
-                end_line = total_lines
-                data = data[:(end_line - start_line)]
-            
             # 写入数据
-            merged_data[start_line:end_line] = data[:(end_line - start_line)]
+            merged_data[start_line:end_line] = data
             
-            self.logger.info(f"Frame {i}: start_line={start_line}, end_line={end_line}, data_shape={data.shape}")
+            self.logger.info(f"合并帧数据: start_line={start_line}, end_line={end_line}, shape={data.shape}")
         
         # 5. 保存结果
         merged_data.tofile(output)
@@ -351,12 +344,14 @@ class Track(object):
         self._frame.setNumberOfLines(total_lines)
         self._frame.setNumberOfSamples(width)
         
-        # 设置其他Frame属性（保持不变）
+        # 设置其他Frame属性
         self._frame.setOrbitNumber(sorted_frames[0].getOrbitNumber())
-        self._frame.setSensingStart(self._startTime)
-        self._frame.setSensingStop(self._stopTime)
-        centerTime = DTU.timeDeltaToSeconds(self._stopTime-self._startTime)/2.0
-        self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
+        self._frame.setSensingStart(sorted_frames[0].getSensingStart())
+        self._frame.setSensingStop(sorted_frames[-1].getSensingStop())
+        
+        centerTime = DTU.timeDeltaToSeconds(self._frame.getSensingStop() - self._frame.getSensingStart())/2.0
+        self._frame.setSensingMid(self._frame.getSensingStart() + datetime.timedelta(microseconds=int(centerTime*1e6)))
+        
         self._frame.setStartingRange(self._nearRange)
         self._frame.setFarRange(self._farRange)
         self._frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
