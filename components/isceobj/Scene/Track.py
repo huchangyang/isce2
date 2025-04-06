@@ -284,7 +284,7 @@ class Track(object):
             return self._createTrackRaw(output)
 
     def _createTrackSlc(self, output):
-        """处理SLC数据的改进版本"""
+        """处理SLC数据的简化版本，直接通过成像时间确定起始行进行合并"""
         from isceobj import Constants as CN
         
         # 1. 按照成像时间排序所有帧
@@ -292,78 +292,55 @@ class Track(object):
         width = sorted_frames[0].getNumberOfSamples()
         prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 2. 计算每帧的起始行（添加精确计算）
+        # 2. 计算每帧的起始行，使用更精确的方式处理小数
         start_lines = []
+        actual_lines = []  # 记录实际使用的行数
         for i, frame in enumerate(sorted_frames):
             if i == 0:
                 start_lines.append(0)
+                actual_lines.append(frame.getNumberOfLines())
             else:
-                # 使用更精确的时间计算
+                # 使用高精度计算时间差对应的行数
                 time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
-                # 添加微调项以补偿可能的舍入误差
-                start_line = int(round(time_diff * prf + 0.5))  # 添加0.5以改进舍入
+                start_line_float = time_diff * prf
+                
+                # 检查是否需要调整以避免1行的间隙
+                if i > 0:
+                    prev_end = start_lines[i-1] + actual_lines[i-1]
+                    gap = int(round(start_line_float)) - prev_end
+                    
+                    if gap == 1:  # 如果有1行的间隙
+                        start_line = prev_end  # 直接接续前一帧
+                    elif gap == -1:  # 如果有1行的重叠
+                        start_line = prev_end - 1  # 略微重叠以保持连续性
+                    else:
+                        start_line = int(round(start_line_float))
+                else:
+                    start_line = int(round(start_line_float))
+                
                 start_lines.append(start_line)
+                actual_lines.append(frame.getNumberOfLines())
+                
+                self.logger.info(f"Frame {i}: start_line_float={start_line_float:.2f}, "
+                                f"actual_start_line={start_line}, gap={gap if i>0 else 0}")
         
-        # 3. 创建临时文件用于精确对齐
-        temp_files = []
-        for i, frame in enumerate(sorted_frames):
-            with open(frame.image.getFilename(), 'rb') as f:
-                data = np.fromfile(f, dtype=np.complex64)
-                data = data.reshape(frame.getNumberOfLines(), width)
-                temp_file = f'temp_frame_{i}.dat'
-                data.tofile(temp_file)
-                temp_files.append(temp_file)
-        
-        # 4. 使用findOverlapLine进行精确对齐
-        adjusted_start_lines = [start_lines[0]]
-        for i in range(1, len(sorted_frames)):
-            prev_end = adjusted_start_lines[i-1] + sorted_frames[i-1].getNumberOfLines()
-            overlap_line = self.findOverlapLine(
-                temp_files[i-1], 
-                temp_files[i],
-                prev_end - start_lines[i],  # 预期的重叠位置
-                width * 8,  # 因为是complex64，所以宽度要乘8
-                i-1, i
-            )
-            if overlap_line is not None:
-                adjusted_start_lines.append(overlap_line)
-            else:
-                adjusted_start_lines.append(start_lines[i])
-        
-        # 5. 合并数据（使用调整后的起始行）
-        total_lines = adjusted_start_lines[-1] + sorted_frames[-1].getNumberOfLines()
+        # 3. 计算总行数
+        total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
+        # 4. 逐帧合并数据
         for i, frame in enumerate(sorted_frames):
+            # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
                 data = np.fromfile(f, dtype=np.complex64)
                 data = data.reshape(frame.getNumberOfLines(), width)
-                
-                start_line = adjusted_start_lines[i]
-                if i < len(sorted_frames) - 1:
-                    next_start = adjusted_start_lines[i+1]
-                    # 处理重叠区域
-                    overlap_size = start_line + data.shape[0] - next_start
-                    if overlap_size > 0:
-                        # 使用线性权重进行过渡
-                        weights = np.linspace(1, 0, overlap_size)[:, np.newaxis]
-                        merged_data[start_line:next_start] = data[:-overlap_size]
-                        merged_data[next_start:next_start+overlap_size] = (
-                            data[-overlap_size:] * weights + 
-                            merged_data[next_start:next_start+overlap_size] * (1-weights)
-                        )
-                    else:
-                        merged_data[start_line:start_line + data.shape[0]] = data
-                else:
-                    # 最后一帧直接写入
-                    merged_data[start_line:start_line + data.shape[0]] = data
+            
+            # 将当前帧数据写入对应位置
+            start_line = start_lines[i]
+            merged_data[start_line:start_line + frame.getNumberOfLines()] = data
         
-        # 6. 清理临时文件
-        for temp_file in temp_files:
-            try:
-                os.remove(temp_file)
-            except:
-                pass
+        # 5. 保存合并结果
+        merged_data.tofile(output)
         
         # 6. 设置Frame属性
         self._frame.setNumberOfLines(total_lines)
