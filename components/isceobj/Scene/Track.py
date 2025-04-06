@@ -506,6 +506,19 @@ class Track(object):
         
         return self._frame
 
+    def createTrack(self, output):
+        """创建实际的Track数据，通过连接所有Frame对象的数据"""
+        
+        # 检查第一帧的数据类型
+        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
+        
+        if is_slc:
+            self.logger.info("Processing SLC data using Python")
+            return self._createTrackSlc(output)
+        else:
+            self.logger.info("Processing RAW data using C")
+            return self._createTrackRaw(output)
+
     # Extract the early, late, start and stop times from a Frame object
     # And use this information to update
     def _updateTrackTimes(self,frame):
