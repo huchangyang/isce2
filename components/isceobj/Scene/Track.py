@@ -307,22 +307,25 @@ class Track(object):
                 # 检查是否需要调整以避免1行的间隙
                 if i > 0:
                     prev_end = start_lines[i-1] + actual_lines[i-1]
-                    gap = int(round(start_line_float)) - prev_end
+                    # 使用floor而不是round，确保不会产生间隙
+                    current_start = int(np.floor(start_line_float))
+                    gap = current_start - prev_end
                     
-                    if gap == 1:  # 如果有1行的间隙
+                    if gap > 0:  # 如果有间隙
                         start_line = prev_end  # 直接接续前一帧
-                    elif gap == -1:  # 如果有1行的重叠
-                        start_line = prev_end - 1  # 略微重叠以保持连续性
+                    elif gap < 0:  # 如果有重叠
+                        # 保留一行重叠用于后续插值
+                        start_line = prev_end - 1
                     else:
-                        start_line = int(round(start_line_float))
+                        start_line = current_start
+                    
+                    self.logger.info(f"Frame {i}: float={start_line_float:.2f}, start={start_line}, "
+                                   f"prev_end={prev_end}, gap={gap}")
                 else:
-                    start_line = int(round(start_line_float))
+                    start_line = int(np.floor(start_line_float))
                 
                 start_lines.append(start_line)
                 actual_lines.append(frame.getNumberOfLines())
-                
-                self.logger.info(f"Frame {i}: start_line_float={start_line_float:.2f}, "
-                                f"actual_start_line={start_line}, gap={gap if i>0 else 0}")
         
         # 3. 计算总行数
         total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
