@@ -285,7 +285,7 @@ class Track(object):
                 self.logger.warning(f"Frame {i+1}: {sorted_frames[i+1].getSensingStart()} - {sorted_frames[i+1].getSensingStop()}")
         
         width = sorted_frames[0].getNumberOfSamples()
-        prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequence()
+        prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
         # 2. 重新计算每帧的起始行和长度
         total_lines = 0
