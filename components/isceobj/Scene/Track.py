@@ -274,74 +274,86 @@ class Track(object):
         """处理SLC数据的改进版本"""
         from isceobj import Constants as CN
         
-        # 1. 按照成像时间排序所有帧，并确保时间顺序正确
+        # 1. 按照成像时间排序所有帧
         sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
-        
-        # 验证时间顺序
-        for i in range(len(sorted_frames)-1):
-            if sorted_frames[i].getSensingStop() > sorted_frames[i+1].getSensingStart():
-                self.logger.warning(f"检测到时间顺序异常：Frame {i} 结束时间晚于 Frame {i+1} 开始时间")
-                self.logger.warning(f"Frame {i}: {sorted_frames[i].getSensingStart()} - {sorted_frames[i].getSensingStop()}")
-                self.logger.warning(f"Frame {i+1}: {sorted_frames[i+1].getSensingStart()} - {sorted_frames[i+1].getSensingStop()}")
-        
         width = sorted_frames[0].getNumberOfSamples()
         prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 2. 重新计算每帧的起始行和长度
-        total_lines = 0
+        # 2. 计算总行数和每帧的有效行数
         frame_info = []
+        expected_total_lines = 0
         
         for i, frame in enumerate(sorted_frames):
             frame_length = frame.getNumberOfLines()
+            sensing_start = frame.getSensingStart()
+            sensing_stop = frame.getSensingStop()
             
             if i == 0:
                 start_line = 0
+                valid_start = 0
+                valid_end = frame_length
             else:
-                # 计算基于时间的理想起始行
-                time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
-                ideal_start = int(time_diff * prf)
+                # 计算与前一帧的时间关系
+                time_diff = (sensing_start - sorted_frames[0].getSensingStart()).total_seconds()
+                start_line = int(time_diff * prf)
                 
-                # 使用前一帧的结束位置作为实际起始位置
-                prev_end = frame_info[-1]['end_line']
-                start_line = prev_end
+                # 计算与前一帧的重叠
+                prev_frame = sorted_frames[i-1]
+                overlap_time = (prev_frame.getSensingStop() - sensing_start).total_seconds()
+                overlap_lines = int(abs(overlap_time * prf))
                 
-                # 如果有重叠，记录日志
-                if ideal_start < prev_end:
-                    overlap = prev_end - ideal_start
-                    self.logger.info(f"Frame {i}: 理想起始行 {ideal_start}，实际起始行 {start_line}，重叠 {overlap} 行")
+                if overlap_time > 0:  # 有重叠
+                    valid_start = overlap_lines
+                    self.logger.info(f"Frame {i} 与前一帧重叠 {overlap_lines} 行")
+                else:
+                    valid_start = 0
+                
+                valid_end = frame_length
             
             frame_info.append({
                 'frame': frame,
                 'start_line': start_line,
-                'end_line': start_line + frame_length,
+                'valid_start': valid_start,
+                'valid_end': valid_end,
                 'length': frame_length
             })
-            total_lines = start_line + frame_length
+            
+            # 更新总行数（考虑有效数据）
+            expected_total_lines = start_line + (valid_end - valid_start)
         
-        # 3. 分配内存并合并数据
-        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
+        # 3. 分配内存
+        self.logger.info(f"预计总行数: {expected_total_lines}")
+        merged_data = np.zeros((expected_total_lines, width), dtype=np.complex64)
         
         # 4. 逐帧合并数据
-        for info in frame_info:
+        current_line = 0
+        for i, info in enumerate(frame_info):
             frame = info['frame']
-            start_line = info['start_line']
-            end_line = info['end_line']
+            valid_start = info['valid_start']
+            valid_end = info['valid_end']
             
             # 读取当前帧数据
             with open(frame.image.getFilename(), 'rb') as f:
                 data = np.fromfile(f, dtype=np.complex64)
                 data = data.reshape(frame.getNumberOfLines(), width)
             
-            # 写入数据
-            merged_data[start_line:end_line] = data
+            # 只使用有效部分
+            valid_data = data[valid_start:valid_end]
+            end_line = current_line + valid_data.shape[0]
             
-            self.logger.info(f"合并帧数据: start_line={start_line}, end_line={end_line}, shape={data.shape}")
+            # 写入数据
+            merged_data[current_line:end_line] = valid_data
+            
+            self.logger.info(f"合并帧 {i} 数据: start_line={current_line}, end_line={end_line}, "
+                            f"valid_shape={valid_data.shape}, original_shape={data.shape}")
+            
+            current_line = end_line
         
         # 5. 保存结果
         merged_data.tofile(output)
         
         # 6. 设置Frame属性
-        self._frame.setNumberOfLines(total_lines)
+        self._frame.setNumberOfLines(expected_total_lines)
         self._frame.setNumberOfSamples(width)
         
         # 设置其他Frame属性
@@ -364,7 +376,7 @@ class Track(object):
         slcImage.setFilename(output)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
-        slcImage.setLength(total_lines)
+        slcImage.setLength(expected_total_lines)
         slcImage.setXmin(0)
         slcImage.setXmax(width)
         slcImage.setDataType('CFLOAT')
