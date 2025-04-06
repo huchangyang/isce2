@@ -270,6 +270,19 @@ class Track(object):
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
+    def createTrack(self, output):
+        """Create the actual Track data by concatenating data from all of the Frames objects together"""
+        
+        # check the data type of the first frame
+        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
+        
+        if is_slc:
+            self.logger.info("Processing SLC data using Python")
+            return self._createTrackSlc(output)
+        else:
+            self.logger.info("Processing RAW data using C")
+            return self._createTrackRaw(output)
+
     def _createTrackSlc(self, output):
         """处理SLC数据的改进版本"""
         from isceobj import Constants as CN
@@ -279,93 +292,93 @@ class Track(object):
         width = sorted_frames[0].getNumberOfSamples()
         prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 2. 计算总行数和每帧的有效行数
-        frame_info = []
-        expected_total_lines = 0
-        
+        # 2. 计算每帧的起始行（添加精确计算）
+        start_lines = []
         for i, frame in enumerate(sorted_frames):
-            frame_length = frame.getNumberOfLines()
-            sensing_start = frame.getSensingStart()
-            sensing_stop = frame.getSensingStop()
-            
             if i == 0:
-                start_line = 0
-                valid_start = 0
-                valid_end = frame_length
+                start_lines.append(0)
             else:
-                # 计算与前一帧的时间关系
-                time_diff = (sensing_start - sorted_frames[0].getSensingStart()).total_seconds()
-                start_line = int(time_diff * prf)
-                
-                # 计算与前一帧的重叠
-                prev_frame = sorted_frames[i-1]
-                overlap_time = (prev_frame.getSensingStop() - sensing_start).total_seconds()
-                overlap_lines = int(abs(overlap_time * prf))
-                
-                if overlap_time > 0:  # 有重叠
-                    valid_start = overlap_lines
-                    self.logger.info(f"Frame {i} 与前一帧重叠 {overlap_lines} 行")
-                else:
-                    valid_start = 0
-                
-                valid_end = frame_length
-            
-            frame_info.append({
-                'frame': frame,
-                'start_line': start_line,
-                'valid_start': valid_start,
-                'valid_end': valid_end,
-                'length': frame_length
-            })
-            
-            # 更新总行数（考虑有效数据）
-            expected_total_lines = start_line + (valid_end - valid_start)
+                # 使用更精确的时间计算
+                time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
+                # 添加微调项以补偿可能的舍入误差
+                start_line = int(round(time_diff * prf + 0.5))  # 添加0.5以改进舍入
+                start_lines.append(start_line)
         
-        # 3. 分配内存
-        self.logger.info(f"预计总行数: {expected_total_lines}")
-        merged_data = np.zeros((expected_total_lines, width), dtype=np.complex64)
-        
-        # 4. 逐帧合并数据
-        current_line = 0
-        for i, info in enumerate(frame_info):
-            frame = info['frame']
-            valid_start = info['valid_start']
-            valid_end = info['valid_end']
-            
-            # 读取当前帧数据
+        # 3. 创建临时文件用于精确对齐
+        temp_files = []
+        for i, frame in enumerate(sorted_frames):
             with open(frame.image.getFilename(), 'rb') as f:
                 data = np.fromfile(f, dtype=np.complex64)
                 data = data.reshape(frame.getNumberOfLines(), width)
-            
-            # 只使用有效部分
-            valid_data = data[valid_start:valid_end]
-            end_line = current_line + valid_data.shape[0]
-            
-            # 写入数据
-            merged_data[current_line:end_line] = valid_data
-            
-            self.logger.info(f"合并帧 {i} 数据: start_line={current_line}, end_line={end_line}, "
-                            f"valid_shape={valid_data.shape}, original_shape={data.shape}")
-            
-            current_line = end_line
+                temp_file = f'temp_frame_{i}.dat'
+                data.tofile(temp_file)
+                temp_files.append(temp_file)
         
-        # 5. 保存结果
-        merged_data.tofile(output)
+        # 4. 使用findOverlapLine进行精确对齐
+        adjusted_start_lines = [start_lines[0]]
+        for i in range(1, len(sorted_frames)):
+            prev_end = adjusted_start_lines[i-1] + sorted_frames[i-1].getNumberOfLines()
+            overlap_line = self.findOverlapLine(
+                temp_files[i-1], 
+                temp_files[i],
+                prev_end - start_lines[i],  # 预期的重叠位置
+                width * 8,  # 因为是complex64，所以宽度要乘8
+                i-1, i
+            )
+            if overlap_line is not None:
+                adjusted_start_lines.append(overlap_line)
+            else:
+                adjusted_start_lines.append(start_lines[i])
+        
+        # 5. 合并数据（使用调整后的起始行）
+        total_lines = adjusted_start_lines[-1] + sorted_frames[-1].getNumberOfLines()
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
+        
+        for i, frame in enumerate(sorted_frames):
+            with open(frame.image.getFilename(), 'rb') as f:
+                data = np.fromfile(f, dtype=np.complex64)
+                data = data.reshape(frame.getNumberOfLines(), width)
+                
+                start_line = adjusted_start_lines[i]
+                if i < len(sorted_frames) - 1:
+                    next_start = adjusted_start_lines[i+1]
+                    # 处理重叠区域
+                    overlap_size = start_line + data.shape[0] - next_start
+                    if overlap_size > 0:
+                        # 使用线性权重进行过渡
+                        weights = np.linspace(1, 0, overlap_size)[:, np.newaxis]
+                        merged_data[start_line:next_start] = data[:-overlap_size]
+                        merged_data[next_start:next_start+overlap_size] = (
+                            data[-overlap_size:] * weights + 
+                            merged_data[next_start:next_start+overlap_size] * (1-weights)
+                        )
+                    else:
+                        merged_data[start_line:start_line + data.shape[0]] = data
+                else:
+                    # 最后一帧直接写入
+                    merged_data[start_line:start_line + data.shape[0]] = data
+        
+        # 6. 清理临时文件
+        for temp_file in temp_files:
+            try:
+                os.remove(temp_file)
+            except:
+                pass
         
         # 6. 设置Frame属性
-        self._frame.setNumberOfLines(expected_total_lines)
+        self._frame.setNumberOfLines(total_lines)
         self._frame.setNumberOfSamples(width)
         
-        # 设置其他Frame属性
+        # 设置基本属性
         self._frame.setOrbitNumber(sorted_frames[0].getOrbitNumber())
-        self._frame.setSensingStart(sorted_frames[0].getSensingStart())
-        self._frame.setSensingStop(sorted_frames[-1].getSensingStop())
-        
-        centerTime = DTU.timeDeltaToSeconds(self._frame.getSensingStop() - self._frame.getSensingStart())/2.0
-        self._frame.setSensingMid(self._frame.getSensingStart() + datetime.timedelta(microseconds=int(centerTime*1e6)))
-        
+        self._frame.setSensingStart(self._startTime)
+        self._frame.setSensingStop(self._stopTime)
+        centerTime = DTU.timeDeltaToSeconds(self._stopTime-self._startTime)/2.0
+        self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
         self._frame.setStartingRange(self._nearRange)
         self._frame.setFarRange(self._farRange)
+        
+        # 设置处理信息
         self._frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
         self._frame.setProcessingSystem(sorted_frames[0].getProcessingSystem())
         self._frame.setProcessingSoftwareVersion(sorted_frames[0].getProcessingSoftwareVersion())
@@ -376,7 +389,7 @@ class Track(object):
         slcImage.setFilename(output)
         slcImage.setAccessMode('read')
         slcImage.setWidth(width)
-        slcImage.setLength(expected_total_lines)
+        slcImage.setLength(total_lines)
         slcImage.setXmin(0)
         slcImage.setXmax(width)
         slcImage.setDataType('CFLOAT')
@@ -517,19 +530,6 @@ class Track(object):
         self._frame.setImage(rawImage)
         
         return self._frame
-
-    def createTrack(self, output):
-        """创建实际的Track数据，通过连接所有Frame对象的数据"""
-        
-        # 检查第一帧的数据类型
-        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
-        
-        if is_slc:
-            self.logger.info("Processing SLC data using Python")
-            return self._createTrackSlc(output)
-        else:
-            self.logger.info("Processing RAW data using C")
-            return self._createTrackRaw(output)
 
     # Extract the early, late, start and stop times from a Frame object
     # And use this information to update
