@@ -254,7 +254,7 @@ class Track(object):
             endLine = sortedList[i][0] - sortedList[i-1][0]
             indx = self.findOverlapLine(sortedList[i-1][1],sortedList[i][1],endLine,width,i-1,i)
             #if indx is not None than indx is the new start line
-            #otherwise we use startLine  computed from acquisition time
+            #otherwise we use startLine computed from acquisition time
             #no need to do this for ALOS; otherwise there will be problems when there are multiple prfs and the data are interpolated. C. Liang, 20-dec-2021
             if (self._frames[0].instrument.platform._mission != 'ALOS') and (indx is not None) and (indx + sortedList[i-1][0] != sortedList[i][0]):
                 startLine.append(indx + sortedList[i-1][0])
@@ -307,25 +307,22 @@ class Track(object):
                 # 检查是否需要调整以避免1行的间隙
                 if i > 0:
                     prev_end = start_lines[i-1] + actual_lines[i-1]
-                    # 使用floor而不是round，确保不会产生间隙
-                    current_start = int(np.floor(start_line_float))
-                    gap = current_start - prev_end
+                    gap = int(round(start_line_float)) - prev_end
                     
-                    if gap > 0:  # 如果有间隙
+                    if gap == 1:  # 如果有1行的间隙
                         start_line = prev_end  # 直接接续前一帧
-                    elif gap < 0:  # 如果有重叠
-                        # 保留一行重叠用于后续插值
-                        start_line = prev_end - 1
+                    elif gap == -1:  # 如果有1行的重叠
+                        start_line = prev_end - 1  # 略微重叠以保持连续性
                     else:
-                        start_line = current_start
-                    
-                    self.logger.info(f"Frame {i}: float={start_line_float:.2f}, start={start_line}, "
-                                   f"prev_end={prev_end}, gap={gap}")
+                        start_line = int(round(start_line_float))
                 else:
-                    start_line = int(np.floor(start_line_float))
+                    start_line = int(round(start_line_float))
                 
                 start_lines.append(start_line)
                 actual_lines.append(frame.getNumberOfLines())
+                
+                self.logger.info(f"Frame {i}: start_line_float={start_line_float:.2f}, "
+                                f"actual_start_line={start_line}, gap={gap if i>0 else 0}")
         
         # 3. 计算总行数
         total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
@@ -339,8 +336,12 @@ class Track(object):
                 data = data.reshape(frame.getNumberOfLines(), width)
             
             # 将当前帧数据写入对应位置
-            start_line = start_lines[i]
-            merged_data[start_line:start_line + frame.getNumberOfLines()] = data
+            if i == 0:
+                start_line = start_lines[i]
+                merged_data[start_line:start_line + frame.getNumberOfLines()] = data
+            else:
+                start_line = start_lines[i] - 1
+                merged_data[start_line:start_line + frame.getNumberOfLines()] = data
         
         # 5. 保存合并结果
         merged_data.tofile(output)
