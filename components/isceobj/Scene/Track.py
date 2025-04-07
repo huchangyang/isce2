@@ -336,12 +336,8 @@ class Track(object):
                 data = data.reshape(frame.getNumberOfLines(), width)
             
             # 将当前帧数据写入对应位置
-            if i == 0:
-                start_line = start_lines[i]
-                merged_data[start_line:start_line + frame.getNumberOfLines()] = data
-            else:
-                start_line = start_lines[i] - 1
-                merged_data[start_line:start_line + frame.getNumberOfLines()] = data
+            start_line = start_lines[i] - i
+            merged_data[start_line:start_line + frame.getNumberOfLines()] = data
         
         # 5. 保存合并结果
         merged_data.tofile(output)
