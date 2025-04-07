@@ -304,25 +304,24 @@ class Track(object):
                 time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
                 start_line_float = time_diff * prf
                 
-                # 检查是否需要调整以避免1行的间隙
-                if i > 0:
-                    prev_end = start_lines[i-1] + actual_lines[i-1]
-                    gap = int(round(start_line_float)) - prev_end
+                # # 检查是否需要调整以避免1行的间隙
+                # if i > 0:
+                #     prev_end = start_lines[i-1] + actual_lines[i-1]
+                #     gap = int(round(start_line_float)) - prev_end
                     
-                    if gap == 1:  # 如果有1行的间隙
-                        start_line = prev_end  # 直接接续前一帧
-                    elif gap == -1:  # 如果有1行的重叠
-                        start_line = prev_end - 1  # 略微重叠以保持连续性
-                    else:
-                        start_line = int(round(start_line_float))
-                else:
-                    start_line = int(round(start_line_float))
+                #     if gap == 1:  # 如果有1行的间隙
+                #         start_line = prev_end  # 直接接续前一帧
+                #     elif gap == -1:  # 如果有1行的重叠
+                #         start_line = prev_end - 1  # 略微重叠以保持连续性
+                #     else:
+                #         start_line = int(round(start_line_float))
+                # else:
+                start_line = int(start_line_float)
                 
                 start_lines.append(start_line)
                 actual_lines.append(frame.getNumberOfLines())
                 
-                self.logger.info(f"Frame {i}: start_line_float={start_line_float:.2f}, "
-                                f"actual_start_line={start_line}, gap={gap if i>0 else 0}")
+                self.logger.info(f"Frame {i}: start_line_float={start_line_float:.2f}")
         
         # 3. 计算总行数
         total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
@@ -336,7 +335,7 @@ class Track(object):
                 data = data.reshape(frame.getNumberOfLines(), width)
             
             # 将当前帧数据写入对应位置
-            start_line = start_lines[i] - i
+            start_line = start_lines[i] - 1
             merged_data[start_line:start_line + frame.getNumberOfLines()] = data
         
         # 5. 保存合并结果
