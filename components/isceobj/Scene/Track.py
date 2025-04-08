@@ -266,7 +266,53 @@ class Track(object):
 
         return startLine,outputs
 
-
+    def findBestOverlap(self, file1, file2, start_line, width, frameNum1, frameNum2):
+        import numpy as np
+        import array
+        
+        # 减小搜索范围
+        searchNumLines = 1     # 每次只读取1行进行匹配
+        numTries = 5          # 前后5行
+        
+        # 读取第二帧的第一行作为参考
+        with open(file2, 'rb') as fin2:
+            arr2 = array.array('b')
+            arr2.fromfile(fin2, width * searchNumLines)
+            buf2 = np.array(arr2, dtype=np.complex64)  # 使用complex64因为是SLC数据
+        
+        max_correlation = 0
+        best_offset = None
+        
+        with open(file1, 'rb') as fin1:
+            # 在给定行号前后5行范围内搜索
+            for i in range(-numTries, numTries + 1):
+                test_line = start_line + i
+                if test_line < 0:
+                    continue
+                    
+                # 读取第一帧的对应行
+                fin1.seek(test_line * width * 8, 0)  # complex64是8字节，所以乘8
+                arr1 = array.array('b')
+                try:
+                    arr1.fromfile(fin1, width * searchNumLines * 8)  # 同样乘8
+                except EOFError:
+                    continue
+                    
+                buf1 = np.array(arr1, dtype=np.complex64)
+                
+                # 计算相关性
+                correlation = np.abs(np.corrcoef(np.abs(buf1), np.abs(buf2))[0,1])  # 使用幅度进行相关
+                
+                if correlation > max_correlation:
+                    max_correlation = correlation
+                    best_offset = test_line
+        
+        if best_offset is None:
+            self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
+            return start_line
+        
+        self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation}")
+        return best_offset
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
@@ -318,10 +364,20 @@ class Track(object):
                 # else:
                 start_line = int(start_line_float)
                 
+                # 添加相关性搜索来微调 start_line
+                start_line = self.findBestOverlap(
+                    sorted_frames[i-1].image.getFilename(),
+                    frame.image.getFilename(),
+                    start_line,
+                    width,
+                    i-1,
+                    i
+                )
+                
                 start_lines.append(start_line)
                 actual_lines.append(frame.getNumberOfLines())
                 
-                self.logger.info(f"Frame {i}: start_line_float={start_line_float:.2f}")
+                self.logger.info(f"Frame {i}: start_line={start_line}")
         
         # 3. 计算总行数
         total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
