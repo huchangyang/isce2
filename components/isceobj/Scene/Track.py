@@ -270,15 +270,17 @@ class Track(object):
         import numpy as np
         import array
         
-        # 减小搜索范围
-        searchNumLines = 1     # 每次只读取1行进行匹配
+        # 设置搜索参数
+        searchNumLines = 5     # 每次读取5行进行匹配
         numTries = 5          # 前后5行
+        bytes_per_pixel = 8   # complex64是8字节
         
-        # 读取第二帧的第一行作为参考
+        # 读取第二帧的前5行作为参考
         with open(file2, 'rb') as fin2:
+            fin2.seek(0, 0)  # 确保从文件开始读取
             arr2 = array.array('b')
-            arr2.fromfile(fin2, width * searchNumLines)
-            buf2 = np.array(arr2, dtype=np.complex64)  # 使用complex64因为是SLC数据
+            arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
+            buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
         
         max_correlation = 0
         best_offset = None
@@ -291,27 +293,33 @@ class Track(object):
                     continue
                     
                 # 读取第一帧的对应行
-                fin1.seek(test_line * width * 8, 0)  # complex64是8字节，所以乘8
-                arr1 = array.array('b')
                 try:
-                    arr1.fromfile(fin1, width * searchNumLines * 8)  # 同样乘8
-                except EOFError:
-                    continue
+                    fin1.seek(test_line * width * bytes_per_pixel, 0)
+                    arr1 = array.array('b')
+                    arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
+                    buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
                     
-                buf1 = np.array(arr1, dtype=np.complex64)
-                
-                # 计算相关性
-                correlation = np.abs(np.corrcoef(np.abs(buf1), np.abs(buf2))[0,1])  # 使用幅度进行相关
-                
-                if correlation > max_correlation:
-                    max_correlation = correlation
-                    best_offset = test_line
+                    # 计算相关性 - 使用幅度进行计算
+                    # 将每一行展平并连接
+                    amp1 = np.abs(buf1).flatten()
+                    amp2 = np.abs(buf2).flatten()
+                    
+                    # 计算相关系数
+                    correlation = np.abs(np.corrcoef(amp1, amp2)[0,1])
+                    
+                    if correlation > max_correlation:
+                        max_correlation = correlation
+                        best_offset = test_line
+                    
+                except (EOFError, IOError):
+                    self.logger.debug(f"Failed to read data at line {test_line}")
+                    continue
         
         if best_offset is None:
             self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
             return start_line
         
-        self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation}")
+        self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
         return best_offset
 
     # Create the actual Track data by concatenating data from
