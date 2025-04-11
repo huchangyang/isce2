@@ -275,15 +275,22 @@ class Track(object):
         numTries = 5          # 前后5行
         bytes_per_pixel = 8   # complex64是8字节
         
-        # 获取文件1的总行数
+        # 获取两个文件的总行数
         with open(file1, 'rb') as f:
-            f.seek(0, 2)  # 移动到文件末尾
-            total_bytes = f.tell()
-            total_lines = total_bytes // (width * bytes_per_pixel)
+            f.seek(0, 2)
+            total_bytes1 = f.tell()
+            total_lines1 = total_bytes1 // (width * bytes_per_pixel)
         
-        # 读取第二帧的前5行作为参考
+        with open(file2, 'rb') as f:
+            f.seek(0, 2)
+            total_bytes2 = f.tell()
+            total_lines2 = total_bytes2 // (width * bytes_per_pixel)
+        
+        # 读取第二帧的起始位置附近的5行作为参考
         with open(file2, 'rb') as fin2:
-            fin2.seek(0, 0)  # 确保从文件开始读取
+            # 计算第二帧的起始位置（相对于第一帧的start_line）
+            ref_line = 0  # 第二帧的起始位置
+            fin2.seek(ref_line * width * bytes_per_pixel, 0)
             arr2 = array.array('b')
             arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
             buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
@@ -295,8 +302,9 @@ class Track(object):
             # 在给定行号前后5行范围内搜索
             for i in range(-numTries, numTries + 1):
                 test_line = start_line + i
-                if test_line < 0 or test_line + searchNumLines > total_lines:
-                    continue  # 跳过超出范围的行
+                if test_line < 0 or test_line + searchNumLines > total_lines1:
+                    self.logger.debug(f"Line {test_line} out of range [0, {total_lines1}]")
+                    continue
                     
                 # 读取第一帧的对应行
                 try:
@@ -321,6 +329,7 @@ class Track(object):
         
         if best_offset is None:
             self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
+            self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines1}")
             return start_line
         
         self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
