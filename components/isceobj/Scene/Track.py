@@ -286,32 +286,34 @@ class Track(object):
             total_bytes2 = f.tell()
             total_lines2 = total_bytes2 // (width * bytes_per_pixel)
         
-        # 读取第二帧的起始位置附近的5行作为参考
-        with open(file2, 'rb') as fin2:
-            # 计算第二帧的起始位置（相对于第一帧的start_line）
-            ref_line = 0  # 第二帧的起始位置
-            fin2.seek(ref_line * width * bytes_per_pixel, 0)
-            arr2 = array.array('b')
-            arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
-            buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
+        # 计算第一帧的结束位置（相对于文件的行号）
+        # 这里假设第一帧是从文件开头开始的
+        frame1_end = total_lines1 - searchNumLines  # 留出足够的空间读取最后几行
+        
+        # 读取第一帧的最后5行作为参考
+        with open(file1, 'rb') as fin1:
+            fin1.seek(frame1_end * width * bytes_per_pixel, 0)
+            arr1 = array.array('b')
+            arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
+            buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
         
         max_correlation = 0
         best_offset = None
         
-        with open(file1, 'rb') as fin1:
-            # 在给定行号前后5行范围内搜索
-            for i in range(-numTries, numTries + 1):
-                test_line = start_line + i
-                if test_line < 0 or test_line + searchNumLines > total_lines1:
-                    self.logger.debug(f"Line {test_line} out of range [0, {total_lines1}]")
+        # 读取第二帧的前面部分进行搜索
+        with open(file2, 'rb') as fin2:
+            # 在第二帧的前面部分搜索
+            for i in range(numTries + 1):  # 只需要搜索前面部分
+                test_line = i
+                if test_line + searchNumLines > total_lines2:
                     continue
                     
-                # 读取第一帧的对应行
+                # 读取第二帧的对应行
                 try:
-                    fin1.seek(test_line * width * bytes_per_pixel, 0)
-                    arr1 = array.array('b')
-                    arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
-                    buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
+                    fin2.seek(test_line * width * bytes_per_pixel, 0)
+                    arr2 = array.array('b')
+                    arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
+                    buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
                     
                     # 计算相关性 - 使用幅度进行计算
                     amp1 = np.abs(buf1).flatten()
@@ -322,18 +324,19 @@ class Track(object):
                     if correlation > max_correlation:
                         max_correlation = correlation
                         best_offset = test_line
-                    
+                        
                 except (EOFError, IOError):
                     self.logger.debug(f"Failed to read data at line {test_line}")
                     continue
         
         if best_offset is None:
             self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
-            self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines1}")
+            self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines2}")
             return start_line
         
+        # 返回相对于整个track的行号
         self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
-        return best_offset
+        return start_line - (frame1_end - best_offset)
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
