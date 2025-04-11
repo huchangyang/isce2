@@ -287,7 +287,6 @@ class Track(object):
             total_lines2 = total_bytes2 // (width * bytes_per_pixel)
         
         # 计算第一帧的结束位置（相对于文件的行号）
-        # 这里假设第一帧是从文件开头开始的
         frame1_end = total_lines1 - searchNumLines  # 留出足够的空间读取最后几行
         
         # 读取第一帧的最后5行作为参考
@@ -334,9 +333,14 @@ class Track(object):
             self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines2}")
             return start_line
         
-        # 返回相对于整个track的行号
+        # 计算新的起始行
+        # 如果找到了最佳匹配位置，我们应该让第二帧从这个位置开始
+        # 第一帧的末尾（frame1_end）应该与第二帧的起始位置（best_offset）对齐
+        new_start_line = start_line + (total_lines1 - frame1_end)
+        
         self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
-        return start_line - (frame1_end - best_offset)
+        self.logger.info(f"Original start_line: {start_line}, New start_line: {new_start_line}")
+        return new_start_line
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
