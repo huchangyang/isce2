@@ -271,9 +271,15 @@ class Track(object):
         import array
         
         # 设置搜索参数
-        searchNumLines = 10     # 每次读取5行进行匹配
-        numTries = 20          # 前后5行
+        searchNumLines = 5     # 每次读取5行进行匹配
+        numTries = 5          # 前后5行
         bytes_per_pixel = 8   # complex64是8字节
+        
+        # 获取文件1的总行数
+        with open(file1, 'rb') as f:
+            f.seek(0, 2)  # 移动到文件末尾
+            total_bytes = f.tell()
+            total_lines = total_bytes // (width * bytes_per_pixel)
         
         # 读取第二帧的前5行作为参考
         with open(file2, 'rb') as fin2:
@@ -289,8 +295,8 @@ class Track(object):
             # 在给定行号前后5行范围内搜索
             for i in range(-numTries, numTries + 1):
                 test_line = start_line + i
-                if test_line < 0:
-                    continue
+                if test_line < 0 or test_line + searchNumLines > total_lines:
+                    continue  # 跳过超出范围的行
                     
                 # 读取第一帧的对应行
                 try:
@@ -300,11 +306,9 @@ class Track(object):
                     buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
                     
                     # 计算相关性 - 使用幅度进行计算
-                    # 将每一行展平并连接
                     amp1 = np.abs(buf1).flatten()
                     amp2 = np.abs(buf2).flatten()
                     
-                    # 计算相关系数
                     correlation = np.abs(np.corrcoef(amp1, amp2)[0,1])
                     
                     if correlation > max_correlation:
