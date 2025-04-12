@@ -266,13 +266,13 @@ class Track(object):
 
         return startLine,outputs
 
-    def findBestOverlap(self, file1, file2, start_line, width, frameNum1, frameNum2):
+    def findBestOverlap(self, file1, file2, start_line, start_line_prev, width, frameNum1, frameNum2):
         import numpy as np
         import array
         
         # 设置搜索参数
-        searchNumLines = 5     # 每次读取5行进行匹配
-        numTries = 5          # 前后5行
+        searchNumLines = 5     # 搜索行数
+        numTries = 5          # 搜索范围
         bytes_per_pixel = 8   # complex64是8字节
         
         # 获取两个文件的总行数
@@ -286,43 +286,39 @@ class Track(object):
             total_bytes2 = f.tell()
             total_lines2 = total_bytes2 // (width * bytes_per_pixel)
         
-        # 计算第一帧的结束位置（相对于文件的行号）
-        frame1_end = total_lines1 - searchNumLines  # 留出足够的空间读取最后几行
-        
-        # 读取第一帧的最后5行作为参考
-        with open(file1, 'rb') as fin1:
-            fin1.seek(frame1_end * width * bytes_per_pixel, 0)
-            arr1 = array.array('b')
-            arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
-            buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
+        # 读取第二帧的前几行作为参考
+        with open(file2, 'rb') as fin2:
+            arr2 = array.array('b')
+            arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
+            buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
         
         max_correlation = 0
         best_offset = None
         
-        # 读取第二帧的前面部分进行搜索
-        with open(file2, 'rb') as fin2:
-            # 在第二帧的前面部分搜索
-            for i in range(numTries + 1):  # 只需要搜索前面部分
-                test_line = i
-                if test_line + searchNumLines > total_lines2:
+        # 在第一帧的start_line附近搜索
+        with open(file1, 'rb') as fin1:
+            # 在start_line附近搜索
+            for i in range(-numTries, numTries + 1):
+                test_line = start_line - start_line_prev + i
+                if test_line < 0 or test_line + searchNumLines > total_lines1:
                     continue
                     
-                # 读取第二帧的对应行
+                # 读取第一帧的对应行
                 try:
-                    fin2.seek(test_line * width * bytes_per_pixel, 0)
-                    arr2 = array.array('b')
-                    arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
-                    buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
+                    fin1.seek(test_line * width * bytes_per_pixel, 0)
+                    arr1 = array.array('b')
+                    arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
+                    buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
                     
                     # 计算相关性 - 使用幅度进行计算
                     amp1 = np.abs(buf1).flatten()
                     amp2 = np.abs(buf2).flatten()
-                    
                     correlation = np.abs(np.corrcoef(amp1, amp2)[0,1])
                     
                     if correlation > max_correlation:
                         max_correlation = correlation
-                        best_offset = test_line
+                        best_offset = test_line - start_line  # 计算相对于start_line的偏移
+                        self.logger.debug(f"Found better correlation {correlation:.3f} at line {test_line}")
                         
                 except (EOFError, IOError):
                     self.logger.debug(f"Failed to read data at line {test_line}")
@@ -330,13 +326,11 @@ class Track(object):
         
         if best_offset is None:
             self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
-            self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines2}")
+            self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines1}")
             return start_line
         
         # 计算新的起始行
-        # 如果找到了最佳匹配位置，我们应该让第二帧从这个位置开始
-        # 第一帧的末尾（frame1_end）应该与第二帧的起始位置（best_offset）对齐
-        new_start_line = start_line + (total_lines1 - frame1_end)
+        new_start_line = start_line + best_offset
         
         self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
         self.logger.info(f"Original start_line: {start_line}, New start_line: {new_start_line}")
@@ -385,6 +379,7 @@ class Track(object):
                     sorted_frames[i-1].image.getFilename(),
                     frame.image.getFilename(),
                     start_line,
+                    start_lines[i-1],
                     width,
                     i-1,
                     i
