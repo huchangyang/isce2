@@ -318,7 +318,7 @@ class Track(object):
                     
                     if correlation > max_correlation:
                         max_correlation = correlation
-                        best_offset = test_line - start_line  # 计算相对于start_line的偏移
+                        best_offset = test_line - (start_line - start_line_prev)  # 计算相对于start_line的偏移
                         self.logger.debug(f"Found better correlation {correlation:.3f} at line {test_line}")
                         
                 except (EOFError, IOError):
