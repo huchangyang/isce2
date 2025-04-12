@@ -300,6 +300,7 @@ class Track(object):
             # 在start_line附近搜索
             for i in range(-numTries, numTries + 1):
                 test_line = start_line - start_line_prev + i
+                self.logger.info(f"test_line: {test_line}")
                 if test_line < 0 or test_line + searchNumLines > total_lines1:
                     continue
                     
