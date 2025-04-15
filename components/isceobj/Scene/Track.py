@@ -65,12 +65,12 @@ class Track(object):
         self.createOrbit()
         if attitudeOk:
             self.createAttitude()
-        # 添加重叠区域检查
+
         for i in range(len(frames)-1):
             current_frame = frames[i]
             next_frame = frames[i+1]
             
-            # 计算重叠区域
+            # Calculate overlap time between current frame and next frame
             current_end = current_frame.getSensingStop()
             next_start = next_frame.getSensingStart()
             overlap_time = (next_start - current_end).total_seconds()
@@ -196,12 +196,12 @@ class Track(object):
         import numpy as np
         import array
         
-        # 增加搜索范围
-        searchNumLines = 10  # 增加搜索行数
-        searchSize = width  # 使用整行进行匹配
-        numTries = 50      # 增加尝试次数
+        # Increase the search range
+        searchNumLines = 10  # Increase the search number of lines
+        searchSize = width  # Use the entire row for matching
+        numTries = 50      # Increase the number of tries
         
-        # 读取第二帧的前几行作为参考
+        # Read the first few lines of the second frame as reference
         with open(file2, 'rb') as fin2:
             arr2 = array.array('b')
             arr2.fromfile(fin2, width * searchNumLines)
@@ -211,13 +211,13 @@ class Track(object):
         best_offset = None
         
         with open(file1, 'rb') as fin1:
-            # 在第一帧的末尾附近搜索
+            # Search for the best overlap line
             for i in range(-numTries, numTries):
                 test_line = line1 + i
                 if test_line < 0:
                     continue
                     
-                # 读取第一帧的对应行
+                # Read the corresponding line of the first frame
                 fin1.seek(test_line * width, 0)
                 arr1 = array.array('b')
                 try:
@@ -227,7 +227,7 @@ class Track(object):
                     
                 buf1 = np.array(arr1, dtype=np.int8).reshape(-1, width)
                 
-                # 计算相关性
+                # Calculate the correlation
                 correlation = np.abs(np.corrcoef(buf1.flatten(), buf2.flatten())[0,1])
                 
                 if correlation > max_correlation:
@@ -270,12 +270,12 @@ class Track(object):
         import numpy as np
         import array
         
-        # 设置搜索参数
-        searchNumLines = 5     # 搜索行数
-        numTries = 5          # 搜索范围
-        bytes_per_pixel = 8   # complex64是8字节
+        # Set search parameters
+        searchNumLines = 5     # Search number of lines
+        numTries = 5          # Search range
+        bytes_per_pixel = 8   # complex64 is 8 bytes
         
-        # 获取两个文件的总行数
+        # Get the total number of lines of the two files
         with open(file1, 'rb') as f:
             f.seek(0, 2)
             total_bytes1 = f.tell()
@@ -286,7 +286,7 @@ class Track(object):
             total_bytes2 = f.tell()
             total_lines2 = total_bytes2 // (width * bytes_per_pixel)
         
-        # 读取第二帧的前几行作为参考
+        # Read the first few lines of the second frame as reference
         with open(file2, 'rb') as fin2:
             arr2 = array.array('b')
             arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
@@ -295,30 +295,30 @@ class Track(object):
         max_correlation = 0
         best_offset = None
         
-        # 在第一帧的start_line附近搜索
+        # Search in the start_line of the first frame
         with open(file1, 'rb') as fin1:
-            # 在start_line附近搜索
+            # Search in the start_line
             for i in range(-numTries, numTries + 1):
                 test_line = start_line - start_line_prev + i
                 self.logger.info(f"test_line: {test_line}")
                 if test_line < 0 or test_line + searchNumLines > total_lines1:
                     continue
                     
-                # 读取第一帧的对应行
+                # Read the corresponding line of the first frame
                 try:
                     fin1.seek(test_line * width * bytes_per_pixel, 0)
                     arr1 = array.array('b')
                     arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
                     buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
                     
-                    # 计算相关性 - 使用幅度进行计算
+                    # Calculate the correlation - use the amplitude for calculation
                     amp1 = np.abs(buf1).flatten()
                     amp2 = np.abs(buf2).flatten()
                     correlation = np.abs(np.corrcoef(amp1, amp2)[0,1])
                     
                     if correlation > max_correlation:
                         max_correlation = correlation
-                        best_offset = test_line - (start_line - start_line_prev)  # 计算相对于start_line的偏移
+                        best_offset = test_line - (start_line - start_line_prev)  # Calculate the offset relative to start_line
                         self.logger.debug(f"Found better correlation {correlation:.3f} at line {test_line}")
                         
                 except (EOFError, IOError):
@@ -330,7 +330,7 @@ class Track(object):
             self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines1}")
             return start_line
         
-        # 计算新的起始行
+        # Calculate the new start line
         new_start_line = start_line + best_offset
         
         self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
@@ -356,26 +356,26 @@ class Track(object):
         """处理SLC数据的简化版本，直接通过成像时间确定起始行进行合并"""
         from isceobj import Constants as CN
         
-        # 1. 按照成像时间排序所有帧
+        # 1. Sort all frames by imaging time
         sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
         width = sorted_frames[0].getNumberOfSamples()
         prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
         
-        # 2. 计算每帧的起始行，使用更精确的方式处理小数
+        # 2. Calculate the start line of each frame, using a more precise method to handle decimals
         start_lines = []
-        actual_lines = []  # 记录实际使用的行数
+        actual_lines = []  # Record the actual number of lines used
         for i, frame in enumerate(sorted_frames):
             if i == 0:
                 start_lines.append(0)
                 actual_lines.append(frame.getNumberOfLines())
             else:
-                # 使用高精度计算时间差对应的行数
+                # Use high precision to calculate the number of lines corresponding to the time difference
                 time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
                 start_line_float = time_diff * prf
                 
                 start_line = int(start_line_float)
                 
-                # 添加相关性搜索来微调 start_line
+                # Add correlation search to fine-tune start_line
                 start_line = self.findBestOverlap(
                     sorted_frames[i-1].image.getFilename(),
                     frame.image.getFilename(),
@@ -391,29 +391,29 @@ class Track(object):
                 
                 self.logger.info(f"Frame {i}: start_line={start_line}")
         
-        # 3. 计算总行数
+        # 3. Calculate the total number of lines
         total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         
-        # 4. 逐帧合并数据
+        # 4. Merge data frame by frame
         for i, frame in enumerate(sorted_frames):
-            # 读取当前帧数据
+            # Read the current frame data
             with open(frame.image.getFilename(), 'rb') as f:
                 data = np.fromfile(f, dtype=np.complex64)
                 data = data.reshape(frame.getNumberOfLines(), width)
             
-            # 将当前帧数据写入对应位置
+            # Write the current frame data to the corresponding position
             start_line = start_lines[i]
             merged_data[start_line:start_line + frame.getNumberOfLines()] = data
         
-        # 5. 保存合并结果
+        # 5. Save the merged result
         merged_data.tofile(output)
         
-        # 6. 设置Frame属性
+        # 6. Set the Frame attributes
         self._frame.setNumberOfLines(total_lines)
         self._frame.setNumberOfSamples(width)
         
-        # 设置基本属性
+        # Set the basic attributes
         self._frame.setOrbitNumber(sorted_frames[0].getOrbitNumber())
         self._frame.setSensingStart(self._startTime)
         self._frame.setSensingStop(self._stopTime)
@@ -422,13 +422,13 @@ class Track(object):
         self._frame.setStartingRange(self._nearRange)
         self._frame.setFarRange(self._farRange)
         
-        # 设置处理信息
+        # Set the processing information
         self._frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
         self._frame.setProcessingSystem(sorted_frames[0].getProcessingSystem())
         self._frame.setProcessingSoftwareVersion(sorted_frames[0].getProcessingSoftwareVersion())
         self._frame.setPolarization(sorted_frames[0].getPolarization())
         
-        # 创建并设置SLC图像对象
+        # Create and set the SLC image object
         slcImage = isceobj.createSlcImage()
         slcImage.setFilename(output)
         slcImage.setAccessMode('read')
@@ -441,10 +441,10 @@ class Track(object):
         slcImage.setByteOrder('l')
         slcImage.imageType = 'slc'
         
-        # 设置图像到Frame
+        # Set the image to Frame
         self._frame.setImage(slcImage)
         
-        # 生成头文件和VRT文件
+        # Generate the header file and VRT file
         slcImage.renderHdr()
         slcImage.renderVRT()
         
