@@ -32,68 +32,88 @@ def unpack(hdf5, slcname, deskew=False, polarization='HH', orbitfile=None):
     '''
     Unpack HDF5 to binary SLC file.
     '''
-
-    tiffname = glob.glob(os.path.join(hdf5, '*.tiff'))[0]
-    xmlname = glob.glob(os.path.join(hdf5, '*.meta.xml'))[0]
-
+    # Find all TIFF files and corresponding metadata files
+    tiffnames = sorted(glob.glob(os.path.join(hdf5, '*.tiff')))
+    xmlnames = sorted(glob.glob(os.path.join(hdf5, '*.meta.xml')))
     
+    if not tiffnames:
+        raise Exception(f"No TIFF files found in {hdf5}")
+    
+    if not xmlnames:
+        raise Exception(f"No XML metadata files found in {hdf5}")
+    
+    # Ensure the output directory exists
     if not os.path.isdir(slcname):
         os.mkdir(slcname)
-
+    
     date = os.path.basename(slcname)
+    
+    # Create Lutan1 object
     obj = createSensor('LUTAN1')
     obj.configure()
-    obj.xml = xmlname
-    obj.tiff = tiffname
-
+    
+    # Set TIFF and XML file lists
+    obj._tiffList = tiffnames
+    obj._xmlFileList = xmlnames
+    
+    # If the orbit file is provided, find and set the orbit file list
     if orbitfile:
         try:
-            orbname = glob.glob(os.path.join(hdf5, '*ABSORBIT_SCIE.xml'), recursive=True)[0]
+            orbnames = sorted(glob.glob(os.path.join(hdf5, '*ABSORBIT_SCIE.xml'), recursive=True))
+            if not orbnames:
+                orbnames = sorted(glob.glob(os.path.join(hdf5, '*.txt'), recursive=True))
         except IndexError:
-            try:
-                orbname = glob.glob(os.path.join(hdf5, '*.txt'), recursive=True)[0]
-            except IndexError:
-                orbname = None
-        obj.orbitFile = orbname
-        print(obj.orbitFile)
-
+            orbnames = []
+        
+        if orbnames:
+            obj._orbitFileList = orbnames
+            print("Found orbit files:", orbnames)
+    
+    # Set the output file path
     if deskew:
-        obj.output = os.path.join(slcname, date+'_orig.slc')
+        obj.output = os.path.join(slcname, date + '_orig.slc')
     else:
         obj.output = os.path.join(slcname, date + '.slc')
-
-    print(obj.xml)
-    print(obj.tiff)
-    print(obj.output)
+    
+    print("Processing files:")
+    print("TIFF files:", obj._tiffList)
+    print("XML files:", obj._xmlFileList)
+    print("Output file:", obj.output)
+    
+    # Extract image data
     obj.extractImage()
-    obj.frame.getImage().renderHdr()
-
-    coeffs = obj.doppler_coeff
-    dr = obj.frame.getInstrument().getRangePixelSize()
-    r0 = obj.frame.getStartingRange()
-
-
+    
+    # Get the processed frame
+    frame = obj.frame
+    
+    # Generate the image header file
+    frame.getImage().renderHdr()
+    
+    # Get the Doppler coefficients
+    coeffs = obj.doppler_coeff if hasattr(obj, 'doppler_coeff') else [0.0, 0.0, 0.0]
+    
+    # Set the Doppler and FM rate polynomials
     poly = Poly1D.Poly1D()
     poly.initPoly(order=1)
     poly.setCoeffs([0.0, 0.0])
-
-
+    
     fpoly = Poly1D.Poly1D()
     fpoly.initPoly(order=1)
     fpoly.setCoeffs([0.0, 0.0])
-    dop = [0., 0., 0.]
-    obj.frame._dopplerVsPixel = dop
-    if deskew:
-        pickName = os.path.join(slcname, 'original')
-    else:
-        pickName = os.path.join(slcname, 'data')
+    
+    # Set the Doppler parameters
+    frame._dopplerVsPixel = coeffs if coeffs else [0., 0., 0.]
+    
+    # Save the processing results
+    pickName = os.path.join(slcname, 'original' if deskew else 'data')
     with shelve.open(pickName) as db:
-        db['frame'] = obj.frame
+        db['frame'] = frame
         db['doppler'] = poly
         db['fmrate'] = fpoly
     
-    print("Doppler coefficients: ", poly._coeffs)
-    print("FM rate coefficients: ", fpoly._coeffs)
+    print("Doppler coefficients:", poly._coeffs)
+    print("FM rate coefficients:", fpoly._coeffs)
+    
     return obj
 
 if __name__ == '__main__':
