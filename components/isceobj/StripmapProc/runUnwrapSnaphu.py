@@ -205,38 +205,36 @@ def runUnwrap(self, igramSpectrum = "full"):
     if width > 32000 or length > 32000:
         print("Large image detected. Using tiled unwrapping...")
         
-        # Calculate number of tiles and tile size
-        # Target tile size is about 20000 pixels for efficient processing
-        target_tile_size = 20000
+        # Calculate tiling parameters
+        tile_rows = min(20000, length)
+        tile_cols = min(20000, width)
         
-        # Calculate required number of tiles (round up)
-        num_tiles_x = (width + target_tile_size - 1) // target_tile_size
-        num_tiles_y = (length + target_tile_size - 1) // target_tile_size
+        num_tiles_y = (length + tile_rows - 1) // tile_rows
+        num_tiles_x = (width + tile_cols - 1) // tile_cols
         
-        # Calculate actual tile size (ensure full image coverage)
-        tile_width = width // num_tiles_x
-        tile_length = length // num_tiles_y
+        # Calculate actual tile sizes
+        tile_rows = length // num_tiles_y
+        tile_cols = width // num_tiles_x
         
-        # Set overlap region (minimum of 10% tile size and 300 pixels)
-        overlap_x = min(int(tile_width * 0.1), 300)
-        overlap_y = min(int(tile_length * 0.1), 300)
+        # Calculate overlap region (10% with minimum of 300 pixels)
+        overlap_row = min(int(tile_rows * 0.1), 300)
+        overlap_col = min(int(tile_cols * 0.1), 300)
         
-        print(f"Tiling parameters:")
+        print("Tiling parameters:")
         print(f"Number of tiles: {num_tiles_x}x{num_tiles_y}")
-        print(f"Tile size: {tile_width}x{tile_length}")
-        print(f"Overlap size: {overlap_x}x{overlap_y}")
-        
-        # Use tiled processing
-        runSnaphuWithTiling(
-            self,
+        print(f"Tile size: {tile_cols}x{tile_rows}")
+        print(f"Overlap size: {overlap_col}x{overlap_row}")
+
+        self.runSnaphuWithTiling(
             igramSpectrum=igramSpectrum,
             costMode='SMOOTH',
             initMethod='MCF',
             defomax=2,
-            tile_rows=num_tiles_y,  # Note: passing number of tiles, not tile size
-            tile_cols=num_tiles_x,
-            overlap_row=overlap_y,
-            overlap_col=overlap_x
+            initOnly=True,
+            tile_rows=tile_rows,
+            tile_cols=tile_cols,
+            overlap_row=overlap_row,
+            overlap_col=overlap_col
         )
     else:
         print("Using standard unwrapping...")
@@ -252,37 +250,40 @@ def runUnwrap(self, igramSpectrum = "full"):
     
     return
 
-def runSnaphuWithTiling(self, igramSpectrum="full", costMode=None, initMethod=None, defomax=None, 
-                       tile_rows=None, tile_cols=None, overlap_row=None, overlap_col=None):
+def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, defomax=None, initOnly=None, 
+                       tile_rows=1000, tile_cols=1000, overlap_row=100, overlap_col=100):
     """
-    Run snaphu with tiling for large interferograms
+    Run Snaphu with tiling for large images
     
-    Parameters:
-    -----------
+    Parameters
+    ----------
     igramSpectrum : str
-        Spectrum type ('full', 'low', or 'high')
-    costMode : str
-        Cost mode for unwrapping ('DEFO', 'SMOOTH', or 'TOPO')
-    initMethod : str
-        Initialization method ('MST' or 'MCF')
-    defomax : float
+        Path to the interferogram
+    costMode : str, optional
+        Cost mode (TOPO/DEFO/SMOOTH)
+    initMethod : str, optional
+        Initialization method (MCF/MST)
+    defomax : float, optional
         Maximum deformation in cycles
+    initOnly : bool, optional
+        Whether to only perform initialization
     tile_rows : int
-        Number of tiles in row direction
+        Size of tiles in row direction
     tile_cols : int
-        Number of tiles in column direction
+        Size of tiles in column direction
     overlap_row : int
-        Overlap size in row direction
+        Number of overlapping pixels in row direction
     overlap_col : int
-        Overlap size in column direction
+        Number of overlapping pixels in column direction
     """
-    
     if costMode is None:
         costMode = 'DEFO'
     if initMethod is None:
         initMethod = 'MST'
     if defomax is None:
         defomax = 4.0
+    if initOnly is None:
+        initOnly = False
     if tile_rows is None or tile_cols is None:
         raise ValueError("Tile dimensions must be specified")
     if overlap_row is None or overlap_col is None:
@@ -312,46 +313,44 @@ def runSnaphuWithTiling(self, igramSpectrum="full", costMode=None, initMethod=No
     width = img1.getWidth()
     length = img1.getLength()
 
-    # Create snaphu configuration file
-    conf_file = "snaphu.conf"
-    with open(conf_file, 'w') as f:
-        # Basic parameters
-        f.write(f"INFILE {wrapName}\n")
+    # Generate snaphu configuration file
+    with open('snaphu.conf', 'w') as f:
+        f.write(f"INFILE {igramSpectrum}\n")
         f.write(f"OUTFILE {unwrapName}\n")
-        f.write(f"CORRFILE {corName}\n")
+        if corName:
+            f.write(f"CORRFILE {corName}\n")
         f.write(f"LINELENGTH {width}\n")
-        f.write(f"NLINES {length}\n")
+        f.write(f"NROWS {length}\n")
         
-        # Tile parameters
+        # Add tiling parameters
         f.write(f"NTILEROW {tile_rows}\n")
         f.write(f"NTILECOL {tile_cols}\n")
         f.write(f"ROWOVRLP {overlap_row}\n")
         f.write(f"COLOVRLP {overlap_col}\n")
         
-        # Cost mode setting
-        if costMode.upper() == 'DEFO':
-            f.write("STATCOSTMODE DEFO\n")
-        elif costMode.upper() == 'SMOOTH':
-            f.write("STATCOSTMODE SMOOTH\n")
-        elif costMode.upper() == 'TOPO':
-            f.write("STATCOSTMODE TOPO\n")
-            
-        # Initialization method
-        if initMethod.upper() == 'MCF':
-            f.write("INITMETHOD MCF\n")
-        else:
-            f.write("INITMETHOD MST\n")
-            
-        # Deformation maximum cycles
+        # Add optional parameters
+        if costMode:
+            f.write(f"COSTMODE {costMode}\n")
+        if initMethod:
+            f.write(f"INITMETHOD {initMethod}\n")
         if defomax:
             f.write(f"DEFOMAX_CYCLE {defomax}\n")
+        if initOnly:
+            f.write("INITONLY TRUE\n")
 
-    # Build and execute snaphu command
-    cmd = f"snaphu -f {conf_file}"
+    # Execute snaphu command
+    cmd = f"snaphu -f snaphu.conf"
     print(f"Executing command: {cmd}")
-    status = os.system(cmd)
+    
+    # Add error output redirection for debugging
+    status = os.system(cmd + " 2>&1")
     
     if status != 0:
+        print(f"Snaphu failed with status {status}")
+        # Print configuration file contents for debugging
+        with open('snaphu.conf', 'r') as f:
+            print("Snaphu configuration file contents:")
+            print(f.read())
         raise Exception('Snaphu execution failed')
 
     # Create output image metadata
