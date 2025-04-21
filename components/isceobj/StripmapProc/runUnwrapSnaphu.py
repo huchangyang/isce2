@@ -228,6 +228,7 @@ def runUnwrap(self, igramSpectrum = "full"):
         
         # Use tiled processing
         runSnaphuWithTiling(
+            self,
             igramSpectrum=igramSpectrum,
             costMode='SMOOTH',
             initMethod='MCF',
