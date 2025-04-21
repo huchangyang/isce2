@@ -206,12 +206,10 @@ def runUnwrap(self, igramSpectrum = "full"):
         print("Large image detected. Using tiled unwrapping...")
         
         # Calculate number of tiles needed to make each dimension < 32000
-        # Add 1 to ensure the division always results in tiles smaller than 32000
         num_tiles_x = (width + 31999) // 32000
         num_tiles_y = (length + 31999) // 32000
         
         # Calculate overlap size (10% of tile size, maximum 300 pixels)
-        # Average tile sizes
         avg_tile_width = width // num_tiles_x
         avg_tile_length = length // num_tiles_y
         
@@ -219,15 +217,12 @@ def runUnwrap(self, igramSpectrum = "full"):
         overlap_row = min(int(avg_tile_length * 0.1), 300)
         
         # Verify that tiles + overlap satisfy SNAPHU constraints
-        # 1. num_tiles + overlap <= dimension
-        # 2. num_tiles * num_tiles <= dimension
         if (num_tiles_y + overlap_row > length or 
             num_tiles_x + overlap_col > width or
             num_tiles_y * num_tiles_y > length or
             num_tiles_x * num_tiles_x > width):
             print("Warning: Adjusting overlap sizes to meet SNAPHU constraints")
             
-            # Adjust overlap sizes if needed
             if num_tiles_y + overlap_row > length:
                 overlap_row = max(0, length - num_tiles_y)
             if num_tiles_x + overlap_col > width:
@@ -244,11 +239,11 @@ def runUnwrap(self, igramSpectrum = "full"):
             costMode='SMOOTH',
             initMethod='MCF',
             defomax=2,
-            initOnly=True,
-            tile_rows=num_tiles_y,    # Number of tiles in row direction
-            tile_cols=num_tiles_x,    # Number of tiles in column direction
-            overlap_row=overlap_row,  # Overlap in row direction
-            overlap_col=overlap_col   # Overlap in column direction
+            initOnly=False,
+            tile_rows=num_tiles_y,
+            tile_cols=num_tiles_x,
+            overlap_row=overlap_row,
+            overlap_col=overlap_col
         )
     else:
         print("Using standard unwrapping...")
@@ -263,7 +258,7 @@ def runUnwrap(self, igramSpectrum = "full"):
     
     return
 
-def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, defomax=None, initOnly=None, 
+def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, defomax=None, initOnly=False, 
                        tile_rows=1000, tile_cols=1000, overlap_row=100, overlap_col=100):
     """
     Run Snaphu with tiling for large images
@@ -279,11 +274,11 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     defomax : float, optional
         Maximum deformation in cycles
     initOnly : bool, optional
-        Whether to only perform initialization
+        Whether to only perform initialization (Note: not compatible with tile mode)
     tile_rows : int
-        Size of tiles in row direction
+        Number of tiles in row direction
     tile_cols : int
-        Size of tiles in column direction
+        Number of tiles in column direction
     overlap_row : int
         Number of overlapping pixels in row direction
     overlap_col : int
@@ -346,9 +341,8 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     altitude = sch[2]
 
     # Build snaphu command
-    cmd = f"snaphu {wrapName} {width}"  # Basic command with input file and line length
+    cmd = f"snaphu {wrapName} {width}"
     
-    # Add cost mode
     if costMode == 'DEFO':
         cmd += " -d"
     elif costMode == 'SMOOTH':
@@ -356,30 +350,23 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     elif costMode == 'TOPO':
         cmd += " -t"
     
-    # Add initialization method
     if initMethod == 'MCF':
         cmd += " --mcf"
     
     # Add tile parameters
     cmd += f" --tile {tile_rows} {tile_cols} {overlap_row} {overlap_col}"
     
-    # Add correlation file if available
     if os.path.exists(corName):
         cmd += f" -c {corName}"
     
-    # Add other parameters
     cmd += f" -o {unwrapName}"
-    cmd += f" -b {earthRadius}"  # baseline
-    cmd += f" -a {altitude}"     # altitude
-    cmd += f" -w {wavelength}"   # wavelength
+    cmd += f" -b {earthRadius}"
+    cmd += f" -a {altitude}"
+    cmd += f" -w {wavelength}"
     
     if defomax is not None and costMode == 'DEFO':
         cmd += f" -C \"DEFOMAX_CYCLE {defomax}\""
-    
-    if initOnly:
-        cmd += " -i"
 
-    # Execute snaphu command
     print(f"Executing command: {cmd}")
     status = os.system(cmd)
     
