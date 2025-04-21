@@ -176,7 +176,7 @@ def runUnwrap(self, igramSpectrum = "full"):
     Automatically choose appropriate unwrapping method based on image size.
     Use tiled processing when either dimension exceeds 32000 pixels.
     """
-    # Get interferogram directory
+    # Get interferogram directory and filename
     if igramSpectrum == "full":
         ifgDirname = self.insar.ifgDirname
     elif igramSpectrum == "low":
@@ -205,24 +205,37 @@ def runUnwrap(self, igramSpectrum = "full"):
     if width > 32000 or length > 32000:
         print("Large image detected. Using tiled unwrapping...")
         
-        # Calculate tiling parameters
-        tile_rows = min(20000, length)
-        tile_cols = min(20000, width)
+        # Calculate number of tiles needed to make each dimension < 32000
+        # Add 1 to ensure the division always results in tiles smaller than 32000
+        num_tiles_x = (width + 31999) // 32000
+        num_tiles_y = (length + 31999) // 32000
         
-        num_tiles_y = (length + tile_rows - 1) // tile_rows
-        num_tiles_x = (width + tile_cols - 1) // tile_cols
+        # Calculate overlap size (10% of tile size, maximum 300 pixels)
+        # Average tile sizes
+        avg_tile_width = width // num_tiles_x
+        avg_tile_length = length // num_tiles_y
         
-        # Calculate actual tile sizes
-        tile_rows = length // num_tiles_y
-        tile_cols = width // num_tiles_x
+        overlap_col = min(int(avg_tile_width * 0.1), 300)
+        overlap_row = min(int(avg_tile_length * 0.1), 300)
         
-        # Calculate overlap region (10% with minimum of 300 pixels)
-        overlap_row = min(int(tile_rows * 0.1), 300)
-        overlap_col = min(int(tile_cols * 0.1), 300)
+        # Verify that tiles + overlap satisfy SNAPHU constraints
+        # 1. num_tiles + overlap <= dimension
+        # 2. num_tiles * num_tiles <= dimension
+        if (num_tiles_y + overlap_row > length or 
+            num_tiles_x + overlap_col > width or
+            num_tiles_y * num_tiles_y > length or
+            num_tiles_x * num_tiles_x > width):
+            print("Warning: Adjusting overlap sizes to meet SNAPHU constraints")
+            
+            # Adjust overlap sizes if needed
+            if num_tiles_y + overlap_row > length:
+                overlap_row = max(0, length - num_tiles_y)
+            if num_tiles_x + overlap_col > width:
+                overlap_col = max(0, width - num_tiles_x)
         
         print("Tiling parameters:")
         print(f"Number of tiles: {num_tiles_x}x{num_tiles_y}")
-        print(f"Tile size: {tile_cols}x{tile_rows}")
+        print(f"Average tile size: {avg_tile_width}x{avg_tile_length}")
         print(f"Overlap size: {overlap_col}x{overlap_row}")
 
         runSnaphuWithTiling(
@@ -232,14 +245,13 @@ def runUnwrap(self, igramSpectrum = "full"):
             initMethod='MCF',
             defomax=2,
             initOnly=True,
-            tile_rows=tile_rows,
-            tile_cols=tile_cols,
-            overlap_row=overlap_row,
-            overlap_col=overlap_col
+            tile_rows=num_tiles_y,    # Number of tiles in row direction
+            tile_cols=num_tiles_x,    # Number of tiles in column direction
+            overlap_row=overlap_row,  # Overlap in row direction
+            overlap_col=overlap_col   # Overlap in column direction
         )
     else:
         print("Using standard unwrapping...")
-        # Use standard processing
         runSnaphu(
             self,
             igramSpectrum=igramSpectrum,
@@ -395,5 +407,3 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         connImage.renderVRT()
 
     return
-
-
