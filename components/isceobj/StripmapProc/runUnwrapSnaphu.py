@@ -172,8 +172,194 @@ def runUnwrapMcf(self):
 '''
 
 def runUnwrap(self, igramSpectrum = "full"):
+    """
+    Automatically choose appropriate unwrapping method based on image size.
+    Use tiled processing when either dimension exceeds 32000 pixels.
+    """
+    # Get interferogram directory
+    if igramSpectrum == "full":
+        ifgDirname = self.insar.ifgDirname
+    elif igramSpectrum == "low":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+    elif igramSpectrum == "high":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
 
-    runSnaphu(self, igramSpectrum = igramSpectrum, costMode = 'SMOOTH',initMethod = 'MCF', defomax = 2, initOnly = True)
+    # Get interferogram filename
+    wrapName = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename)
+    
+    # Read image dimensions
+    img1 = isceobj.createImage()
+    img1.load(wrapName + '.xml')
+    width = img1.getWidth()
+    length = img1.getLength()
+    
+    print(f"Image dimensions: width={width}, length={length}")
+    
+    # Choose processing method based on image size
+    if width > 32000 or length > 32000:
+        print("Large image detected. Using tiled unwrapping...")
+        
+        # Calculate number of tiles and tile size
+        # Target tile size is about 20000 pixels for efficient processing
+        target_tile_size = 20000
+        
+        # Calculate required number of tiles (round up)
+        num_tiles_x = (width + target_tile_size - 1) // target_tile_size
+        num_tiles_y = (length + target_tile_size - 1) // target_tile_size
+        
+        # Calculate actual tile size (ensure full image coverage)
+        tile_width = width // num_tiles_x
+        tile_length = length // num_tiles_y
+        
+        # Set overlap region (minimum of 10% tile size and 300 pixels)
+        overlap_x = min(int(tile_width * 0.1), 300)
+        overlap_y = min(int(tile_length * 0.1), 300)
+        
+        print(f"Tiling parameters:")
+        print(f"Number of tiles: {num_tiles_x}x{num_tiles_y}")
+        print(f"Tile size: {tile_width}x{tile_length}")
+        print(f"Overlap size: {overlap_x}x{overlap_y}")
+        
+        # Use tiled processing
+        self.runSnaphuWithTiling(
+            igramSpectrum=igramSpectrum,
+            costMode='SMOOTH',
+            initMethod='MCF',
+            defomax=2,
+            tile_rows=num_tiles_y,  # Note: passing number of tiles, not tile size
+            tile_cols=num_tiles_x,
+            overlap_row=overlap_y,
+            overlap_col=overlap_x
+        )
+    else:
+        print("Using standard unwrapping...")
+        # Use standard processing
+        runSnaphu(
+            self,
+            igramSpectrum=igramSpectrum,
+            costMode='SMOOTH',
+            initMethod='MCF',
+            defomax=2,
+            initOnly=True
+        )
+    
+    return
+
+def runSnaphuWithTiling(self, igramSpectrum="full", costMode=None, initMethod=None, defomax=None, 
+                       tile_rows=None, tile_cols=None, overlap_row=None, overlap_col=None):
+    """
+    Run snaphu with tiling for large interferograms
+    
+    Parameters:
+    -----------
+    igramSpectrum : str
+        Spectrum type ('full', 'low', or 'high')
+    costMode : str
+        Cost mode for unwrapping ('DEFO', 'SMOOTH', or 'TOPO')
+    initMethod : str
+        Initialization method ('MST' or 'MCF')
+    defomax : float
+        Maximum deformation in cycles
+    tile_rows : int
+        Number of tiles in row direction
+    tile_cols : int
+        Number of tiles in column direction
+    overlap_row : int
+        Overlap size in row direction
+    overlap_col : int
+        Overlap size in column direction
+    """
+    
+    if costMode is None:
+        costMode = 'DEFO'
+    if initMethod is None:
+        initMethod = 'MST'
+    if defomax is None:
+        defomax = 4.0
+    if tile_rows is None or tile_cols is None:
+        raise ValueError("Tile dimensions must be specified")
+    if overlap_row is None or overlap_col is None:
+        raise ValueError("Overlap dimensions must be specified")
+
+    # Determine interferogram directory
+    if igramSpectrum == "full":
+        ifgDirname = self.insar.ifgDirname
+    elif igramSpectrum == "low":
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+    elif igramSpectrum == "high":
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
+
+    # Set file names
+    wrapName = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename)
+    if '.flat' in wrapName:
+        unwrapName = wrapName.replace('.flat', '.unw')
+    elif '.int' in wrapName:
+        unwrapName = wrapName.replace('.int', '.unw')
+    else:
+        unwrapName = wrapName + '.unw'
+    corName = os.path.join(ifgDirname, self.insar.coherenceFilename)
+
+    # Get image dimensions
+    img1 = isceobj.createImage()
+    img1.load(wrapName + '.xml')
+    width = img1.getWidth()
+    length = img1.getLength()
+
+    # Create snaphu configuration file
+    conf_file = "snaphu.conf"
+    with open(conf_file, 'w') as f:
+        # Basic parameters
+        f.write(f"INFILE {wrapName}\n")
+        f.write(f"OUTFILE {unwrapName}\n")
+        f.write(f"CORRFILE {corName}\n")
+        f.write(f"LINELENGTH {width}\n")
+        f.write(f"NLINES {length}\n")
+        
+        # Tile parameters
+        f.write(f"NTILEROW {tile_rows}\n")
+        f.write(f"NTILECOL {tile_cols}\n")
+        f.write(f"ROWOVRLP {overlap_row}\n")
+        f.write(f"COLOVRLP {overlap_col}\n")
+        
+        # Cost mode setting
+        if costMode.upper() == 'DEFO':
+            f.write("STATCOSTMODE DEFO\n")
+        elif costMode.upper() == 'SMOOTH':
+            f.write("STATCOSTMODE SMOOTH\n")
+        elif costMode.upper() == 'TOPO':
+            f.write("STATCOSTMODE TOPO\n")
+            
+        # Initialization method
+        if initMethod.upper() == 'MCF':
+            f.write("INITMETHOD MCF\n")
+        else:
+            f.write("INITMETHOD MST\n")
+            
+        # Deformation maximum cycles
+        if defomax:
+            f.write(f"DEFOMAX_CYCLE {defomax}\n")
+
+    # Build and execute snaphu command
+    cmd = f"snaphu -f {conf_file}"
+    print(f"Executing command: {cmd}")
+    status = os.system(cmd)
+    
+    if status != 0:
+        raise Exception('Snaphu execution failed')
+
+    # Create output image metadata
+    outImage = isceobj.Image.createUnwImage()
+    outImage.setFilename(unwrapName)
+    outImage.setWidth(width)
+    outImage.setAccessMode('read')
+    outImage.renderHdr()
+    outImage.renderVRT()
 
     return
 
