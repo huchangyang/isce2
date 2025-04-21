@@ -227,7 +227,7 @@ def runUnwrap(self, igramSpectrum = "full"):
         print(f"Overlap size: {overlap_x}x{overlap_y}")
         
         # Use tiled processing
-        self.runSnaphuWithTiling(
+        runSnaphuWithTiling(
             igramSpectrum=igramSpectrum,
             costMode='SMOOTH',
             initMethod='MCF',
