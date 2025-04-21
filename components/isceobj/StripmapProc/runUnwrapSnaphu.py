@@ -341,8 +341,10 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     altitude = sch[2]
 
     # Build snaphu command
+    # Input file and line length must come first
     cmd = f"snaphu {wrapName} {width}"
     
+    # Add cost mode
     if costMode == 'DEFO':
         cmd += " -d"
     elif costMode == 'SMOOTH':
@@ -350,23 +352,33 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     elif costMode == 'TOPO':
         cmd += " -t"
     
+    # Add initialization method
     if initMethod == 'MCF':
         cmd += " --mcf"
+    
+    # Add correlation file if available
+    if os.path.exists(corName):
+        cmd += f" -c {corName}"
+    
+    # Add output file
+    cmd += f" -o {unwrapName}"
     
     # Add tile parameters
     cmd += f" --tile {tile_rows} {tile_cols} {overlap_row} {overlap_col}"
     
-    if os.path.exists(corName):
-        cmd += f" -c {corName}"
+    # Add configuration parameters using -C option
+    if earthRadius is not None:
+        cmd += f" -C \"BASELINE_RATE {earthRadius}\""
     
-    cmd += f" -o {unwrapName}"
-    cmd += f" -b {earthRadius}"
-    cmd += f" -a {altitude}"
-    cmd += f" -w {wavelength}"
+    if altitude is not None:
+        cmd += f" -C \"ALTITUDE {altitude}\""
+        
+    if wavelength is not None:
+        cmd += f" -C \"WAVELENGTH {wavelength}\""
     
     if defomax is not None and costMode == 'DEFO':
         cmd += f" -C \"DEFOMAX_CYCLE {defomax}\""
-
+    
     print(f"Executing command: {cmd}")
     status = os.system(cmd)
     
