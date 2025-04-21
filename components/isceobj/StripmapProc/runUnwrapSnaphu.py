@@ -321,7 +321,7 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         if corName:
             f.write(f"CORRFILE {corName}\n")
         f.write(f"LINELENGTH {width}\n")
-        f.write(f"NROWS {length}\n")
+        f.write(f"NLINES {length}\n")
         
         # Add tiling parameters
         f.write(f"NTILEROW {tile_rows}\n")
