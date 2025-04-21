@@ -225,7 +225,8 @@ def runUnwrap(self, igramSpectrum = "full"):
         print(f"Tile size: {tile_cols}x{tile_rows}")
         print(f"Overlap size: {overlap_col}x{overlap_row}")
 
-        self.runSnaphuWithTiling(
+        runSnaphuWithTiling(
+            self,
             igramSpectrum=igramSpectrum,
             costMode='SMOOTH',
             initMethod='MCF',
