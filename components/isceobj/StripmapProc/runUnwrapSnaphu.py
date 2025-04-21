@@ -259,7 +259,7 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     Parameters
     ----------
     igramSpectrum : str
-        Path to the interferogram
+        Spectrum type ("full", "low", or "high")
     costMode : str, optional
         Cost mode (TOPO/DEFO/SMOOTH)
     initMethod : str, optional
@@ -277,6 +277,7 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     overlap_col : int
         Number of overlapping pixels in column direction
     """
+    # Set default parameters
     if costMode is None:
         costMode = 'DEFO'
     if initMethod is None:
@@ -285,17 +286,19 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         defomax = 4.0
     if initOnly is None:
         initOnly = False
-    if tile_rows is None or tile_cols is None:
-        raise ValueError("Tile dimensions must be specified")
-    if overlap_row is None or overlap_col is None:
-        raise ValueError("Overlap dimensions must be specified")
 
     # Determine interferogram directory
     if igramSpectrum == "full":
         ifgDirname = self.insar.ifgDirname
     elif igramSpectrum == "low":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
     elif igramSpectrum == "high":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
 
     # Set file names
@@ -308,50 +311,68 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         unwrapName = wrapName + '.unw'
     corName = os.path.join(ifgDirname, self.insar.coherenceFilename)
 
+    # Get reference frame parameters
+    referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
+    wavelength = referenceFrame.getInstrument().getRadarWavelength()
+    
     # Get image dimensions
     img1 = isceobj.createImage()
     img1.load(wrapName + '.xml')
     width = img1.getWidth()
     length = img1.getLength()
 
-    # Generate snaphu configuration file
-    with open('snaphu.conf', 'w') as f:
-        f.write(f"INFILE {igramSpectrum}\n")
-        f.write(f"OUTFILE {unwrapName}\n")
-        if corName:
-            f.write(f"CORRFILE {corName}\n")
-        f.write(f"LINELENGTH {width}\n")
-        f.write(f"NLINES {length}\n")
-        
-        # Add tiling parameters
-        f.write(f"NTILEROW {tile_rows}\n")
-        f.write(f"NTILECOL {tile_cols}\n")
-        f.write(f"ROWOVRLP {overlap_row}\n")
-        f.write(f"COLOVRLP {overlap_col}\n")
-        
-        # Add optional parameters
-        if costMode:
-            f.write(f"COSTMODE {costMode}\n")
-        if initMethod:
-            f.write(f"INITMETHOD {initMethod}\n")
-        if defomax:
-            f.write(f"DEFOMAX_CYCLE {defomax}\n")
-        if initOnly:
-            f.write("INITONLY TRUE\n")
+    # Calculate orbital parameters
+    orbit = referenceFrame.orbit
+    prf = referenceFrame.PRF
+    elp = copy.copy(referenceFrame.instrument.platform.planet.ellipsoid)
+    sv = orbit.interpolate(referenceFrame.sensingMid, method='hermite')
+    hdg = orbit.getHeading()
+    llh = elp.xyz_to_llh(sv.getPosition())
+    elp.setSCH(llh[0], llh[1], hdg)
+    earthRadius = elp.pegRadCur
+    sch, vsch = elp.xyzdot_to_schdot(sv.getPosition(), sv.getVelocity())
+    altitude = sch[2]
+
+    # Build snaphu command
+    cmd = f"snaphu {wrapName} {width}"  # Basic command with input file and line length
+    
+    # Add cost mode
+    if costMode == 'DEFO':
+        cmd += " -d"
+    elif costMode == 'SMOOTH':
+        cmd += " -s"
+    elif costMode == 'TOPO':
+        cmd += " -t"
+    
+    # Add initialization method
+    if initMethod == 'MCF':
+        cmd += " --mcf"
+    
+    # Add tile parameters
+    cmd += f" --tile {tile_rows} {tile_cols} {overlap_row} {overlap_col}"
+    
+    # Add correlation file if available
+    if os.path.exists(corName):
+        cmd += f" -c {corName}"
+    
+    # Add other parameters
+    cmd += f" -o {unwrapName}"
+    cmd += f" -b {earthRadius}"  # baseline
+    cmd += f" -a {altitude}"     # altitude
+    cmd += f" -w {wavelength}"   # wavelength
+    
+    if defomax is not None and costMode == 'DEFO':
+        cmd += f" -C \"DEFOMAX_CYCLE {defomax}\""
+    
+    if initOnly:
+        cmd += " -i"
 
     # Execute snaphu command
-    cmd = f"snaphu -f snaphu.conf"
     print(f"Executing command: {cmd}")
-    
-    # Add error output redirection for debugging
-    status = os.system(cmd + " 2>&1")
+    status = os.system(cmd)
     
     if status != 0:
         print(f"Snaphu failed with status {status}")
-        # Print configuration file contents for debugging
-        with open('snaphu.conf', 'r') as f:
-            print("Snaphu configuration file contents:")
-            print(f.read())
         raise Exception('Snaphu execution failed')
 
     # Create output image metadata
@@ -361,6 +382,17 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     outImage.setAccessMode('read')
     outImage.renderHdr()
     outImage.renderVRT()
+
+    # Check if connected components was created
+    if os.path.exists(unwrapName + '.conncomp'):
+        connImage = isceobj.Image.createImage()
+        connImage.setFilename(unwrapName + '.conncomp')
+        self.insar.connectedComponentsFilename = unwrapName + '.conncomp'
+        connImage.setWidth(width)
+        connImage.setAccessMode('read')
+        connImage.setDataType('BYTE')
+        connImage.renderHdr()
+        connImage.renderVRT()
 
     return
 
