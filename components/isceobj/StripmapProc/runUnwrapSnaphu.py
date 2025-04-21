@@ -209,12 +209,12 @@ def runUnwrap(self, igramSpectrum = "full"):
         num_tiles_x = (width + 31999) // 32000
         num_tiles_y = (length + 31999) // 32000
         
-        # Calculate overlap size (10% of tile size, maximum 300 pixels)
+        # Calculate overlap size (20% of tile size, minimum 500 pixels)
         avg_tile_width = width // num_tiles_x
         avg_tile_length = length // num_tiles_y
         
-        overlap_col = min(int(avg_tile_width * 0.1), 300)
-        overlap_row = min(int(avg_tile_length * 0.1), 300)
+        overlap_col = max(int(avg_tile_width * 0.2), 500)
+        overlap_row = max(int(avg_tile_length * 0.2), 500)
         
         # Verify that tiles + overlap satisfy SNAPHU constraints
         if (num_tiles_y + overlap_row > length or 
@@ -270,10 +270,8 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         initMethod = 'MST'
     if defomax is None:
         defomax = 4.0
-    if initOnly is None:
-        initOnly = False
 
-    # Determine interferogram directory
+    # Get interferogram directory and filenames
     if igramSpectrum == "full":
         ifgDirname = self.insar.ifgDirname
     elif igramSpectrum == "low":
@@ -297,17 +295,16 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         unwrapName = wrapName + '.unw'
     corName = os.path.join(ifgDirname, self.insar.coherenceFilename)
 
-    # Get reference frame parameters
-    referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
-    wavelength = referenceFrame.getInstrument().getRadarWavelength()
-    
-    # Get image dimensions
+    # Get image dimensions from XML file
     img1 = isceobj.createImage()
     img1.load(wrapName + '.xml')
     width = img1.getWidth()
     length = img1.getLength()
 
-    # Calculate orbital parameters
+    # Get reference frame parameters (same as in runSnaphu)
+    referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
+    wavelength = referenceFrame.getInstrument().getRadarWavelength()
+    
     orbit = referenceFrame.orbit
     prf = referenceFrame.PRF
     elp = copy.copy(referenceFrame.instrument.platform.planet.ellipsoid)
@@ -315,12 +312,58 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     hdg = orbit.getHeading()
     llh = elp.xyz_to_llh(sv.getPosition())
     elp.setSCH(llh[0], llh[1], hdg)
+
     earthRadius = elp.pegRadCur
     sch, vsch = elp.xyzdot_to_schdot(sv.getPosition(), sv.getVelocity())
     altitude = sch[2]
 
+    rangeLooks = 1
+    azimuthLooks = 1
+    maxComponents = 20
+    
+    # Create configuration file
+    configName = os.path.join(ifgDirname, 'snaphu.conf')
+    with open(configName, 'w') as f:
+        # File format settings
+        f.write('CORRFILEFORMAT  FLOAT_DATA\n')
+        
+        # Tile parameters
+        f.write(f'NTILEROW  {tile_rows}\n')
+        f.write(f'NTILECOL  {tile_cols}\n')
+        f.write(f'ROWOVRLP  {overlap_row}\n')
+        f.write(f'COLOVRLP  {overlap_col}\n')
+        
+        # Parameters from runSnaphu
+        f.write(f'EARTHRADIUS  {earthRadius}\n')
+        f.write(f'WAVELENGTH  {wavelength}\n')
+        f.write(f'ALTITUDE  {altitude}\n')
+        f.write(f'RANGERES  {rangeLooks}\n')
+        f.write(f'AZIMUTHRES  {azimuthLooks}\n')
+        f.write(f'MAXNCOMPS  {maxComponents}\n')
+        
+        if defomax is not None and costMode == 'DEFO':
+            f.write(f'DEFOMAX_CYCLE  {defomax}\n')
+        
+        # Other parameters (commented out)
+        f.write('\n# Cost parameters\n')
+        f.write('# MAXCOST  1000.0\n')
+        f.write('# COSTSCALE  100.0\n')
+        
+        f.write('\n# Tile specific parameters\n')
+        f.write('# TILECOSTTHRESH  500\n')
+        f.write('# TILEEDGEWEIGHT  2.5\n')
+        f.write('# SCNDRYARCFLOWMAX  8\n')
+        f.write('# NSHORTCYCLE  200\n')
+        
+        f.write('\n# Statistical cost parameters\n')
+        f.write('# INITDZSTEP  100.0\n')
+        f.write('# MAXFLOW  4.0\n')
+        
+        f.write('\n# Processing parameters\n')
+        f.write('# MAXNEWNODECONST  0.0008\n')
+        f.write('# MAXCYCLEFRACTION  0.00001\n')
+
     # Build snaphu command
-    # Input file and line length must come first
     cmd = f"snaphu {wrapName} {width}"
     
     # Add cost mode
@@ -335,16 +378,15 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     if initMethod == 'MCF':
         cmd += " --mcf"
     
-    # Add correlation file if available and set its format
+    # Add correlation file
     if os.path.exists(corName):
         cmd += f" -c {corName}"
-        cmd += ' -C "CORRFILEFORMAT FLOAT_DATA"'
+    
+    # Add configuration file
+    cmd += f" -f {configName}"
     
     # Add output file
     cmd += f" -o {unwrapName}"
-    
-    # Add tile parameters
-    cmd += f" --tile {tile_rows} {tile_cols} {overlap_row} {overlap_col}"
     
     print(f"Executing command: {cmd}")
     status = os.system(cmd)
