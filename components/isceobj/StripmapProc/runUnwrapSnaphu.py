@@ -262,27 +262,6 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
                        tile_rows=1000, tile_cols=1000, overlap_row=100, overlap_col=100):
     """
     Run Snaphu with tiling for large images
-    
-    Parameters
-    ----------
-    igramSpectrum : str
-        Spectrum type ("full", "low", or "high")
-    costMode : str, optional
-        Cost mode (TOPO/DEFO/SMOOTH)
-    initMethod : str, optional
-        Initialization method (MCF/MST)
-    defomax : float, optional
-        Maximum deformation in cycles
-    initOnly : bool, optional
-        Whether to only perform initialization (Note: not compatible with tile mode)
-    tile_rows : int
-        Number of tiles in row direction
-    tile_cols : int
-        Number of tiles in column direction
-    overlap_row : int
-        Number of overlapping pixels in row direction
-    overlap_col : int
-        Number of overlapping pixels in column direction
     """
     # Set default parameters
     if costMode is None:
@@ -365,19 +344,6 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     
     # Add tile parameters
     cmd += f" --tile {tile_rows} {tile_cols} {overlap_row} {overlap_col}"
-    
-    # Add configuration parameters using -C option
-    if earthRadius is not None:
-        cmd += f" -C \"BASELINE_RATE {earthRadius}\""
-    
-    if altitude is not None:
-        cmd += f" -C \"ALTITUDE {altitude}\""
-        
-    if wavelength is not None:
-        cmd += f" -C \"WAVELENGTH {wavelength}\""
-    
-    if defomax is not None and costMode == 'DEFO':
-        cmd += f" -C \"DEFOMAX_CYCLE {defomax}\""
     
     print(f"Executing command: {cmd}")
     status = os.system(cmd)
