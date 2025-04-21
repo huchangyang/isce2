@@ -335,10 +335,10 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         
         # Parameters from runSnaphu
         f.write(f'EARTHRADIUS  {earthRadius}\n')
-        f.write(f'WAVELENGTH  {wavelength}\n')
+        f.write(f'LAMBDA  {wavelength}\n')
         f.write(f'ALTITUDE  {altitude}\n')
         f.write(f'RANGERES  {rangeLooks}\n')
-        f.write(f'AZIMUTHRES  {azimuthLooks}\n')
+        f.write(f'AZRES  {azimuthLooks}\n')
         f.write(f'MAXNCOMPS  {maxComponents}\n')
         
         if defomax is not None and costMode == 'DEFO':
