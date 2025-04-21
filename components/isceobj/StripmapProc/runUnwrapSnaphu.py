@@ -320,7 +320,8 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     rangeLooks = 1
     azimuthLooks = 1
     maxComponents = 20
-    
+    minRegionSize = 500
+    tileCostThreshold = 500
     # Create configuration file
     configName = os.path.join(ifgDirname, 'snaphu.conf')
     with open(configName, 'w') as f:
@@ -340,6 +341,8 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         f.write(f'RANGERES  {rangeLooks}\n')
         f.write(f'AZRES  {azimuthLooks}\n')
         f.write(f'MAXNCOMPS  {maxComponents}\n')
+        f.write(f'MINREGIONSIZE  {minRegionSize}\n')
+        f.write(f'TILECOSTTHRESH  {tileCostThreshold}\n')
         
         if defomax is not None and costMode == 'DEFO':
             f.write(f'DEFOMAX_CYCLE  {defomax}\n')
