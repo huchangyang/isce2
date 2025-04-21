@@ -335,9 +335,10 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     if initMethod == 'MCF':
         cmd += " --mcf"
     
-    # Add correlation file if available
+    # Add correlation file if available and set its format
     if os.path.exists(corName):
         cmd += f" -c {corName}"
+        cmd += ' -C "CORRFILEFORMAT FLOAT_DATA"'
     
     # Add output file
     cmd += f" -o {unwrapName}"
