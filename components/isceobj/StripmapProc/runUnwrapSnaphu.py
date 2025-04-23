@@ -320,8 +320,8 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
     rangeLooks = 1
     azimuthLooks = 1
     maxComponents = 20
-    minRegionSize = 600
-    tileCostThreshold = 300
+    minRegionSize = 1000
+    tileCostThreshold = 200
     # Create configuration file
     configName = os.path.join(ifgDirname, 'snaphu.conf')
     with open(configName, 'w') as f:
