@@ -1228,15 +1228,22 @@ class Lutan1(Sensor):
         
         # 使用tkfunc处理多frame
         merged_frame = tkfunc(self)
-                # 如果有多个帧，先合并轨道
+        
+        # 处理轨道信息
         if len(self.frameList) > 1:
+            # 如果有多个帧，合并轨道
             merged_orbit = self.mergeOrbits([frame.orbit for frame in self.frameList])
             if merged_orbit:
                 self.logger.info("Successfully merged orbits from all frames")
+        else:
+            # 如果只有一个帧，直接使用其轨道
+            merged_orbit = self.frameList[0].orbit if self.frameList else None
+            
         # 确保frame和frameList被正确设置
         if merged_frame:
             self.frame = merged_frame
-            self.frame.orbit = merged_orbit
+            if merged_orbit:
+                self.frame.orbit = merged_orbit
             self.frameList = [merged_frame]
             
             # 确保图像被正确设置
