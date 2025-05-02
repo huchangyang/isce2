@@ -752,7 +752,6 @@ def selectPairs(inps,stackReference, secondaryDates, acuisitionDates,doBaselines
             db = np.abs(baselineDict[acuisitionDates[j]] - baselineDict[acuisitionDates[i]])
             dt = np.abs(timeDict[acuisitionDates[j]].days - timeDict[acuisitionDates[i]].days)
             if (db < inps.dbThr) and (dt < inps.dtThr):
-                print(acuisitionDates[i],acuisitionDates[j])
                 pairs.append((acuisitionDates[i],acuisitionDates[j]))
 
     plotNetwork(baselineDict, timeDict, pairs,os.path.join(inps.workDir,'pairs.pdf'))

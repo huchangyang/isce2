@@ -91,7 +91,7 @@ class Lutan1(Sensor):
         self._xmlFileList = []
         self.frame = None
         self.doppler_coeff = None
-        self.filterMethod = 'physics_constrained_filter'
+        self.filterMethod = 'combined_weighted_filter'
         self._tiff = None
         self._orbitFile = None
         self._xml = None
