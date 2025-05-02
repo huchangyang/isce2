@@ -70,7 +70,7 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'physics_filter',
+                            default = 'combined_weighted_filter',
                             type=str,
                             doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter)')
 
