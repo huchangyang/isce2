@@ -113,15 +113,15 @@ class Lutan1(Sensor):
 
     def validateUserInputs(self):
         '''
-        验证用户输入并自动查找文件
-        参考Sentinel1.py中的实现
+        Validate user inputs and automatically find files.
+        Refer to the implementation in Sentinel1.py.
         '''
-        # 如果提供了XML配置文件，从中读取
+        # If XML configuration file is provided, read from it
         if self._xmlConfig:
             self.loadFromXML()
             return
 
-        # 如果提供了SLC目录，自动查找TIFF文件
+        # If SLC directory is provided, automatically search for TIFF files
         if self._slcDir and not self._tiffList:
             self.logger.info(f"Searching for TIFF files in {self._slcDir}")
             self._tiffList = sorted(glob.glob(os.path.join(self._slcDir, "*.tiff")))
@@ -133,7 +133,7 @@ class Lutan1(Sensor):
                 for i, tiff in enumerate(self._tiffList):
                     self.logger.info(f"TIFF {i+1}: {tiff}")
 
-        # 如果提供了轨道目录，自动查找轨道文件
+        # If orbit directory is provided, automatically search for orbit files
         if self._orbitDir and not self._orbitFileList:
             self.logger.info(f"Searching for orbit files in {self._orbitDir}")
             self._orbitFileList = sorted(glob.glob(os.path.join(self._orbitDir, "*.xml")))
@@ -145,58 +145,58 @@ class Lutan1(Sensor):
                 for i, orbit in enumerate(self._orbitFileList):
                     self.logger.info(f"Orbit {i+1}: {orbit}")
 
-        # 检查是否提供了TIFF文件
+        # Check if TIFF files are provided
         if not self._tiffList:
             raise Exception("No TIFF files provided. Use TIFF, SLC_DIR or XML_CONFIG parameter.")
 
-        # 如果轨道文件数量与TIFF文件数量不匹配，尝试自动匹配
+        # If the number of orbit files does not match the number of TIFF files, try to match automatically
         if len(self._orbitFileList) > 0 and len(self._orbitFileList) != len(self._tiffList):
             self.logger.warning("Number of orbit files does not match number of TIFF files")
             self.logger.info("Attempting to match orbit files with TIFF files...")
             
-            # 尝试根据日期匹配轨道文件
-            # 对于同一日期的多景SLC，应该使用同一个轨道文件
+            # Try to match orbit files by date
+            # For multiple SLCs on the same date, the same orbit file should be used
             try:
-                # 提取每个TIFF文件名中的日期信息
+                # Extract date information from each TIFF file name
                 tiff_dates = []
                 for tiff in self._tiffList:
-                    # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
-                    # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第8个下划线之后）
+                    # Assume the file name contains the date, e.g. LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
+                    # Extract the date part (assume the date format is YYYYMMDD, at the 8th underscore)
                     basename = os.path.basename(tiff)
                     parts = basename.split('_')
                     if len(parts) >= 8:
-                        date_str = parts[7]  # 假设日期在第8个位置
-                        if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                        date_str = parts[7]  # Assume date is at the 8th position
+                        if len(date_str) == 8 and date_str.isdigit():  # Ensure it's 8 digits (YYYYMMDD)
                             tiff_dates.append(date_str)
                         else:
                             tiff_dates.append(None)
                     else:
                         tiff_dates.append(None)
                 
-                # 提取每个轨道文件名中的日期信息
+                # Extract date information from each orbit file name
                 orbit_dates = []
                 for orbit in self._orbitFileList:
-                    # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
-                    # 提取日期部分（这里假设日期格式为YYYYMMDD，位于文件名的第3个下划线之后）
+                    # Assume the orbit file name contains the date, e.g. LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
+                    # Extract the date part (assume the date format is YYYYMMDD, at the 3rd underscore)
                     basename = os.path.basename(orbit)
                     parts = basename.split('_')
                     if len(parts) >= 4:
-                        date_str = parts[2][1:9]  # 假设日期在第3个位置，格式为VYYYYMMDD...
-                        if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                        date_str = parts[2][1:9]  # Assume date is at the 3rd position, format VYYYYMMDD...
+                        if len(date_str) == 8 and date_str.isdigit():  # Ensure it's 8 digits (YYYYMMDD)
                             orbit_dates.append(date_str)
                         else:
                             orbit_dates.append(None)
                     else:
                         orbit_dates.append(None)
                 
-                # 为每个TIFF文件匹配对应的轨道文件
+                # Match each TIFF file with the corresponding orbit file
                 matched_orbit_files = []
                 for i, tiff_date in enumerate(tiff_dates):
                     if tiff_date is None:
                         matched_orbit_files.append(None)
                         continue
                     
-                    # 查找日期匹配的轨道文件
+                    # Find the orbit file with the matching date
                     matched = False
                     for j, orbit_date in enumerate(orbit_dates):
                         if orbit_date is not None and orbit_date == tiff_date:
@@ -207,12 +207,12 @@ class Lutan1(Sensor):
                     if not matched:
                         matched_orbit_files.append(None)
                 
-                # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
+                # If all TIFF files have matched orbit files, use the matching result
                 if all(orbit is not None for orbit in matched_orbit_files):
                     self.logger.info("Successfully matched orbit files based on date")
                     self._orbitFileList = matched_orbit_files
                 else:
-                    # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+                    # If there is only one orbit file, assume it applies to all TIFF files
                     if len(self._orbitFileList) == 1:
                         self.logger.info("Using the single orbit file for all TIFF files")
                         self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
@@ -221,7 +221,7 @@ class Lutan1(Sensor):
                         self._orbitFileList = []
             except Exception as e:
                 self.logger.warning(f"Error matching orbit files: {str(e)}")
-                # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+                # If there is only one orbit file, assume it applies to all TIFF files
                 if len(self._orbitFileList) == 1:
                     self.logger.info("Using the single orbit file for all TIFF files")
                     self._orbitFileList = [self._orbitFileList[0]] * len(self._tiffList)
@@ -260,18 +260,18 @@ class Lutan1(Sensor):
             self.frame.orbit.addStateVector(sv)
 
     def validate_orbit(self, orbit):
-        """验证轨道数据的有效性"""
+        """Validate the orbit data"""
         if not orbit._stateVectors:
             self.logger.error("No state vectors found in orbit")
             return False
         
-        # 转换为列表进行操作
+        # Convert to list for operations
         state_vectors = list(orbit._stateVectors)
         if len(state_vectors) < 4:
             self.logger.error(f"Insufficient state vectors: {len(state_vectors)}")
             return False
         
-        # 验证时间范围
+        # Validate time range
         times = [sv.getTime() for sv in state_vectors]
         min_time = min(times)
         max_time = max(times)
@@ -282,11 +282,11 @@ class Lutan1(Sensor):
             self.logger.error(f"Frame time range: {self.frame.getSensingStart()} to {self.frame.getSensingStop()}")
             return False
         
-        # 验证数据连续性
+        # Validate data continuity
         times.sort()
         for i in range(1, len(times)):
             dt = (times[i] - times[i-1]).total_seconds()
-            if dt > 2.0:  # 假设正常采样间隔为1秒
+            if dt > 2.0:  # Assume normal sampling interval is 1 second
                 self.logger.warning(f"Large gap ({dt} seconds) in orbit data between {times[i-1]} and {times[i]}")
         
         return True
@@ -298,8 +298,8 @@ class Lutan1(Sensor):
 
     def grab_from_xml(self, path):
         '''
-        从XML中获取指定路径的值
-        参考Sentinel1.py中的实现
+        Get value from XML based on the given path
+        Refer to the implementation in Sentinel1.py
         '''
         try:
             res = self._xml_root.find(path).text
@@ -367,8 +367,8 @@ class Lutan1(Sensor):
         instrument.setRangeSamplingRate(rangeSamplingRate)
         instrument.setPulseLength(pulseLength)
         
-        # 设置 inPhaseValue 和 quadratureValue，参考 ALOS.py
-        # 这些值用于 Track.py 中的 pad_value
+        # Set inPhaseValue and quadratureValue, refer to ALOS.py
+        # These values are used in Track.py for pad_value
         instrument.setInPhaseValue(63.5)
         instrument.setQuadratureValue(63.5)
 
@@ -398,8 +398,8 @@ class Lutan1(Sensor):
         orb = Orbit()
         orb.configure()
 
-        # 设置时间范围，只收集成像时间段附近的状态向量
-        margin = datetime.timedelta(minutes=30.0)  # 设置30分钟的时间余量
+        # Set time range to collect state vectors near the sensing time
+        margin = datetime.timedelta(minutes=30.0)  # Set 30 minutes time margin
         tstart = self.frame.getSensingStart() - margin
         tend = self.frame.getSensingStop() + margin
 
@@ -431,18 +431,18 @@ class Lutan1(Sensor):
             min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
             max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
             
-            # 只收集时间范围内的状态向量
+            # Collect state vectors within the time range
             all_vectors = []
             for child in node:
                 try:
                     timestamp_str = child.find('UTC').text
                     timestamp = self.convertToDateTime(timestamp_str)
                     
-                    # 只处理时间范围内的状态向量
+                    # Only process state vectors within the time range
                     if timestamp < tstart or timestamp > tend:
                         continue
                     
-                    # 更新最小和最大时间
+                    # Update min and max time
                     if timestamp < min_time:
                         min_time = timestamp
                     if timestamp > max_time:
@@ -478,10 +478,10 @@ class Lutan1(Sensor):
                 self.logger.error(f"Required time range: {tstart} to {tend}")
                 return None
 
-            # 按时间排序
+            # Sort by time
             all_vectors.sort(key=lambda x: x.getTime())
             
-            # 移除重复的状态向量
+            # Remove duplicate state vectors
             unique_vectors = []
             prev_time = None
             for sv in all_vectors:
@@ -490,20 +490,20 @@ class Lutan1(Sensor):
                     unique_vectors.append(sv)
                     prev_time = curr_time
             
-            # 确保至少有4个状态向量
+            # Ensure at least 4 state vectors
             if len(unique_vectors) < 4:
                 self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
                 
-                # 获取第一个和最后一个向量的时间
+                # Get time of first and last vectors
                 t_start = unique_vectors[0].getTime()
                 t_end = unique_vectors[-1].getTime()
                 
-                # 扩展时间范围
+                # Extend time range
                 margin = datetime.timedelta(minutes=30)
                 t_start_extended = t_start - margin
                 t_end_extended = t_end + margin
                 
-                # 重新收集扩展时间范围内的状态向量
+                # Recollect state vectors within the extended time range
                 extended_vectors = []
                 for child in node:
                     try:
@@ -527,7 +527,7 @@ class Lutan1(Sensor):
                         self.logger.warning(f"Error parsing orbit state vector: {e}")
                         continue
                 
-                # 重新排序和去重
+                # Resort and remove duplicates
                 extended_vectors.sort(key=lambda x: x.getTime())
                 unique_vectors = []
                 prev_time = None
@@ -541,7 +541,7 @@ class Lutan1(Sensor):
                 self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
                 return None
             
-            # 添加到轨道对象
+            # Add to orbit object
             for sv in unique_vectors:
                 orb.addStateVector(sv)
             
@@ -560,7 +560,7 @@ class Lutan1(Sensor):
                 min_time = datetime.datetime(year=datetime.MAXYEAR, month=1, day=1)
                 max_time = datetime.datetime(year=datetime.MINYEAR, month=1, day=1)
                 
-                # 只收集时间范围内的状态向量
+                # Collect state vectors within the time range
                 all_vectors = []
                 for line in fid:
                     try:
@@ -578,11 +578,11 @@ class Lutan1(Sensor):
                             # Convert to datetime   
                             timestamp = datetime.datetime(year, month, day, hour, minute, int_second, microsecond)
                             
-                            # 只处理时间范围内的状态向量
+                            # Only process state vectors within the time range
                             if timestamp < tstart or timestamp > tend:
                                 continue
                             
-                            # 更新最小和最大时间
+                            # Update min and max time
                             if timestamp < min_time:
                                 min_time = timestamp
                             if timestamp > max_time:
@@ -610,10 +610,10 @@ class Lutan1(Sensor):
                     self.logger.error(f"Required time range: {tstart} to {tend}")
                     return None
 
-                # 按时间排序
+                # Sort by time
                 all_vectors.sort(key=lambda x: x.getTime())
                 
-                # 移除重复的状态向量
+                # Remove duplicate state vectors
                 unique_vectors = []
                 prev_time = None
                 for sv in all_vectors:
@@ -622,21 +622,21 @@ class Lutan1(Sensor):
                         unique_vectors.append(sv)
                         prev_time = curr_time
                 
-                # 确保至少有4个状态向量
+                # Ensure at least 4 state vectors
                 if len(unique_vectors) < 4:
                     self.logger.warning(f"Only {len(unique_vectors)} unique state vectors found, attempting to extend time range")
                     
-                    # 获取第一个和最后一个向量的时间
+                    # Get time of first and last vectors
                     t_start = unique_vectors[0].getTime()
                     t_end = unique_vectors[-1].getTime()
                     
-                    # 扩展时间范围
+                    # Extend time range
                     margin = datetime.timedelta(minutes=30)
                     t_start_extended = t_start - margin
                     t_end_extended = t_end + margin
                     
-                    # 重新收集扩展时间范围内的状态向量
-                    fid.seek(0)  # 重置文件指针
+                    # Recollect state vectors within the extended time range
+                    fid.seek(0)  # Reset file pointer
                     for line in fid:
                         if line.startswith('#'):
                             continue
@@ -666,7 +666,7 @@ class Lutan1(Sensor):
                             self.logger.warning(f"Error parsing orbit state vector: {e}")
                             continue
                     
-                    # 重新排序和去重
+                    # Resort and remove duplicates
                     extended_vectors.sort(key=lambda x: x.getTime())
                     unique_vectors = []
                     prev_time = None
@@ -680,7 +680,7 @@ class Lutan1(Sensor):
                     self.logger.error(f"Still only found {len(unique_vectors)} unique state vectors after extending time range")
                     return None
                 
-                # 添加到轨道对象
+                # Add to orbit object
                 for sv in unique_vectors:
                     orb.addStateVector(sv)
                 
@@ -693,7 +693,7 @@ class Lutan1(Sensor):
             return None
 
     def filter_orbit(self, times, positions, velocities):
-        """使用标准多项式拟合滤波轨道数据"""
+        """Filter orbit data using standard polynomial fitting"""
         t0 = times[0]
         seconds = np.array([(t - t0).total_seconds() for t in times])
         
@@ -1127,32 +1127,6 @@ class Lutan1(Sensor):
         self.logger.info(f"Y: {vel_errors[1]:.6f}")
         self.logger.info(f"Z: {vel_errors[2]:.6f}")
         
-        # Special processing for imaging period
-        if img_start_sec is not None and img_stop_sec is not None:
-            img_mask = (seconds >= img_start_sec) & (seconds <= img_stop_sec)
-            
-            # Use stricter smoothing for imaging period
-            img_smoothing = smoothing * 0.5  # Reduce smoothing parameter for more precise fitting
-            self.logger.info(f"Using stricter smoothing parameter for imaging period: {img_smoothing:.3f}")
-            
-            for i in range(3):
-                # Re-fit positions during imaging period
-                img_pos_spline = splrep(seconds[img_mask], positions[img_mask,i], 
-                                      s=img_smoothing, k=self.splineDegree)
-                filtered_pos[img_mask,i] = BSpline(*img_pos_spline)(seconds[img_mask])
-                
-                # Re-fit velocities during imaging period
-                img_vel_spline = splrep(seconds[img_mask], velocities[img_mask,i], 
-                                      s=img_smoothing, k=self.splineDegree)
-                filtered_vel[img_mask,i] = BSpline(*img_vel_spline)(seconds[img_mask])
-                
-                # Calculate fitting errors during imaging period
-                img_pos_error = np.mean(np.abs(positions[img_mask,i] - filtered_pos[img_mask,i]))
-                img_vel_error = np.mean(np.abs(velocities[img_mask,i] - filtered_vel[img_mask,i]))
-                self.logger.info(f"Imaging period {['X', 'Y', 'Z'][i]} component:")
-                self.logger.info(f"  Position error: {img_pos_error:.6f} m")
-                self.logger.info(f"  Velocity error: {img_vel_error:.6f} m/s")
-        
         return filtered_pos, filtered_vel
 
     def createOrbit(self):
@@ -1269,11 +1243,11 @@ class Lutan1(Sensor):
         return orbit
 
     def extractImage(self):
-        """提取图像数据"""
-        # 验证用户输入
+        """Extract image data"""
+        # Validate user inputs
         self.validateUserInputs()
         
-        # 确保_xmlFileList和_imageFileList被正确设置
+        # Ensure _xmlFileList and _imageFileList are properly set
         if not self._xmlFileList:
             self._xmlFileList = [tiff[:-4] + "meta.xml" for tiff in self._tiffList]
             self.logger.info(f"Generated XML file list: {self._xmlFileList}")
@@ -1282,7 +1256,7 @@ class Lutan1(Sensor):
             self._imageFileList = self._tiffList
             self.logger.info(f"Using TIFF file list as image file list: {self._imageFileList}")
         
-        # 检查文件是否存在
+        # Check if files exist
         for xml_file, tiff_file in zip(self._xmlFileList, self._imageFileList):
             if not os.path.exists(xml_file):
                 self.logger.error(f"XML file not found: {xml_file}")
@@ -1291,20 +1265,20 @@ class Lutan1(Sensor):
                 self.logger.error(f"TIFF file not found: {tiff_file}")
                 raise RuntimeError(f"TIFF file not found: {tiff_file}")
         
-        # 清空frameList
+        # Clear frameList
         self.frameList = []
         
-        # 处理每个frame
+        # Process each frame
         for i, (xml_file, tiff_file) in enumerate(zip(self._xmlFileList, self._imageFileList)):
             self.logger.info(f"Processing frame {i+1}/{len(self._xmlFileList)}")
             self.logger.info(f"XML file: {xml_file}")
             self.logger.info(f"TIFF file: {tiff_file}")
             
-            # 创建新的frame
+            # Create new frame
             frame = Frame()
             frame.configure()
             
-            # 设置当前frame和文件
+            # Set current frame and file
             self.frame = frame
             self._tiff = tiff_file
             if self._orbitFileList and i < len(self._orbitFileList):
@@ -1313,14 +1287,14 @@ class Lutan1(Sensor):
                 self._orbitFile = None
             
             try:
-                # 解析元数据和轨道信息
+                # Parse metadata and orbit info
                 self.parse()
                 
-                # 提取图像数据
+                # Extract image data
                 outputNow = self.output + "_" + str(i) if len(self._xmlFileList) > 1 else self.output
                 self.extractFrameImage(tiff_file, outputNow)
                 
-                # 添加到frameList
+                # Add to frameList
                 self.frameList.append(frame)
                 self.logger.info(f"Successfully processed frame {i+1}")
                 
@@ -1328,35 +1302,35 @@ class Lutan1(Sensor):
                 self.logger.error(f"Error processing frame {i+1}: {str(e)}")
                 raise
         
-        # 确保frameList不为空
+        # Ensure frameList is not empty
         if not self.frameList:
             raise RuntimeError("No frames were processed")
         
         self.logger.info(f"Successfully processed {len(self.frameList)} frames")
         
-        # 使用tkfunc处理多frame
+        # Use tkfunc to process multiple frames
         merged_frame = tkfunc(self)
         
-        # 处理轨道信息
+        # Process orbit info
         if len(self.frameList) > 1:
-            # 如果有多个帧，合并轨道
+            # If multiple frames, merge orbits
             merged_orbit = self.mergeOrbits([frame.orbit for frame in self.frameList])
             if merged_orbit:
                 self.logger.info("Successfully merged orbits from all frames")
         else:
-            # 如果只有一个帧，直接使用其轨道
+            # If single frame, use its orbit
             merged_orbit = self.frameList[0].orbit if self.frameList else None
             
-        # 确保frame和frameList被正确设置
+        # Ensure frame and frameList are properly set
         if merged_frame:
             self.frame = merged_frame
             if merged_orbit:
                 self.frame.orbit = merged_orbit
             self.frameList = [merged_frame]
             
-            # 确保图像被正确设置
+            # Ensure image is properly set
             if not self.frame.image:
-                # 创建SLC图像对象
+                # Create SLC image object
                 slcImage = isceobj.createSlcImage()
                 slcImage.setByteOrder('l')
                 slcImage.setFilename(self.output)
@@ -1368,23 +1342,23 @@ class Lutan1(Sensor):
                 slcImage.setDataType('CFLOAT')
                 slcImage.setImageType('slc')
                 
-                # 设置图像
+                # Set image
                 self.frame.setImage(slcImage)
                 
-                # 生成头文件和VRT文件
+                # Generate header and VRT files
                 slcImage.renderHdr()
                 slcImage.renderVRT()
                 
-                # 保存轨道信息到单独文件
+                # Save orbit info to separate file
                 orbit_file = self.output + '.orb'
                 self.saveOrbitToFile(self.frame.orbit, orbit_file)
         else:
-            # 如果没有合并的frame，使用第一个frame并设置合并的轨道
+            # If no merged frame, use first frame and set merged orbit
             self.frame = self.frameList[0]
             self.frameList = [self.frame]
             if len(self.frameList) > 1 and merged_orbit:
                 self.frame.setOrbit(merged_orbit)
-                # 保存合并后的轨道信息
+                # Save merged orbit info
                 orbit_file = self.output + '.orb'
                 self.saveOrbitToFile(merged_orbit, orbit_file)
         
@@ -1392,68 +1366,68 @@ class Lutan1(Sensor):
 
     def extractFrameImage(self, tiff_file, output):
         """
-        提取单个帧的图像数据，正确处理复数SLC数据
+        Extract image data from a single frame, correctly handling complex SLC data
         """
         try:
             from osgeo import gdal
         except ImportError:
             raise Exception('GDAL python bindings not found.')
         
-        # 打开TIFF文件
+        # Open TIFF file
         src = gdal.Open(tiff_file.strip(), gdal.GA_ReadOnly)
         if src is None:
             raise Exception(f"Failed to open TIFF file: {tiff_file}")
         
         try:
-            # 获取图像信息
+            # Get image info
             width = self.frame.getNumberOfSamples()
             length = self.frame.getNumberOfLines()
             
-            # 确保TIFF文件有两个波段（实部和虚部）
+            # Ensure TIFF file has two bands (real and imaginary)
             if src.RasterCount != 2:
                 raise Exception(f"Expected 2 bands for complex data, found {src.RasterCount} bands")
             
-            # 获取实部和虚部波段
-            band1 = src.GetRasterBand(1)  # 实部
-            band2 = src.GetRasterBand(2)  # 虚部
+            # Get real and imaginary bands
+            band1 = src.GetRasterBand(1)  # Real part
+            band2 = src.GetRasterBand(2)  # Imaginary part
             
             self.logger.info(f"Reading complex data from {tiff_file}")
             self.logger.info(f"Image dimensions: {width} x {length}")
             
-            # 一次性读取所有数据
+            # Read all data at once
             real = band1.ReadAsArray(0, 0, width, length).astype(np.float32)
             imag = band2.ReadAsArray(0, 0, width, length).astype(np.float32)
             
-            # 验证数据形状
+            # Validate data shape
             if real.shape != (length, width) or imag.shape != (length, width):
-                raise ValueError(f"数据形状不匹配: real {real.shape}, imag {imag.shape}, 期望 ({length}, {width})")
+                raise ValueError(f"Data shape mismatch: real {real.shape}, imag {imag.shape}, expected ({length}, {width})")
             
-            # 创建复数数组
+            # Create complex array
             data = np.empty((length, width), dtype=np.complex64)
             data.real = real
             data.imag = imag
             
-            # 检查数据有效性
+            # Check for invalid values (NaN or Inf) in complex data
             if np.any(np.isnan(data)) or np.any(np.isinf(data)):
-                self.logger.warning("检测到无效值（NaN或Inf）在复数数据中")
+                self.logger.warning("Detected invalid values (NaN or Inf) in complex data")
             
-            # 记录数据统计信息
-            self.logger.info(f"数据统计: 最小幅度={np.min(np.abs(data)):.2f}, "
-                            f"最大幅度={np.max(np.abs(data)):.2f}, "
-                            f"均值幅度={np.mean(np.abs(data)):.2f}")
+            # Log data statistics
+            self.logger.info(f"Data statistics: min amplitude={np.min(np.abs(data)):.2f}, "
+                            f"max amplitude={np.max(np.abs(data)):.2f}, "
+                            f"mean amplitude={np.mean(np.abs(data)):.2f}")
             
-            # 写入SLC文件
+            # Write SLC file
             self.logger.info(f"Writing complex data to {output}")
             with open(output, 'wb') as fid:
                 data.tofile(fid)
             
-            # 验证输出文件大小
+            # Validate output file size
             expected_size = length * width * 8  # complex64 = 8 bytes
             actual_size = os.path.getsize(output)
             if actual_size != expected_size:
-                raise ValueError(f"输出文件大小不匹配: 实际={actual_size}, 期望={expected_size}")
+                raise ValueError(f"Output file size mismatch: actual={actual_size}, expected={expected_size}")
             
-            # 创建SLC图像对象
+            # Create SLC image object
             slcImage = isceobj.createSlcImage()
             slcImage.setByteOrder('l')
             slcImage.setFilename(output)
@@ -1465,14 +1439,14 @@ class Lutan1(Sensor):
             slcImage.setDataType('CFLOAT')
             slcImage.setImageType('slc')
             
-            # 设置图像
+            # Set image
             self.frame.setImage(slcImage)
             
-            # 生成头文件和VRT文件
+            # Generate header and VRT files
             slcImage.renderHdr()
             slcImage.renderVRT()
             
-            # 清理资源
+            # Clean up resources
             del real, imag, data
             src = None
             band1 = None
@@ -1484,24 +1458,24 @@ class Lutan1(Sensor):
             self.logger.error(f"Error extracting frame image: {str(e)}")
             raise
         finally:
-            # 确保GDAL资源被释放
+            # Ensure GDAL resources are released
             if src is not None:
                 src = None
 
 
     def mergeFrames(self):
         """
-        合并多个帧，同时处理frame和slc数据
+        Merge multiple frames and process frame and slc data simultaneously
         """
         if not self.frameList:
             return None
         
-        # 按时间排序帧
+        # Sort frames by time
         sorted_frames = sorted(self.frameList, key=lambda x: x.getSensingStart())
         
-        # 计算总行数和处理重叠
+        # Calculate total lines and handle overlaps
         total_lines = 0
-        overlap_info = []  # 存储重叠信息
+        overlap_info = []  # Store overlap information
         
         for i, frame in enumerate(sorted_frames):
             if i > 0:
@@ -1520,11 +1494,11 @@ class Lutan1(Sensor):
                 total_lines += frame.getNumberOfLines()
                 overlap_info.append((i, 0))
         
-        # 创建合并后的frame
+        # Create merged frame
         merged_frame = Frame()
         merged_frame.configure()
         
-        # 设置基本属性
+        # Set basic attributes
         merged_frame.setSensingStart(sorted_frames[0].getSensingStart())
         merged_frame.setSensingStop(sorted_frames[-1].getSensingStop())
         merged_frame.setStartingRange(sorted_frames[0].getStartingRange())
@@ -1532,49 +1506,49 @@ class Lutan1(Sensor):
         merged_frame.setNumberOfLines(total_lines)
         merged_frame.setNumberOfSamples(sorted_frames[0].getNumberOfSamples())
         
-        # 复制第一帧的仪器参数
+        # Copy instrument parameters from first frame
         merged_frame.setInstrument(sorted_frames[0].getInstrument().copy())
         
-        # 合并轨道信息
+        # Merge orbit information
         merged_orbit = self.mergeOrbits([frame.orbit for frame in sorted_frames])
         merged_frame.setOrbit(merged_orbit)
         
-        # 处理SLC数据
+        # Process SLC data
         width = sorted_frames[0].getNumberOfSamples()
         merged_data = np.zeros((total_lines, width), dtype=np.complex64)
         current_line = 0
         
         for i, frame in enumerate(sorted_frames):
-            # 读取当前帧数据
+            # Read current frame data
             with open(frame.image.getFilename(), 'rb') as f:
                 frame_data = np.fromfile(f, dtype=np.complex64).reshape(frame.getNumberOfLines(), width)
             
             if i == 0:
-                # 第一帧直接复制
+                # Copy first frame directly
                 merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                 current_line += frame.getNumberOfLines()
             else:
-                # 处理重叠区域
+                # Handle overlap area
                 overlap_lines = overlap_info[i][1]
                 if overlap_lines > 0:
-                    # 计算非重叠部分
+                    # Calculate non-overlap part
                     non_overlap_data = frame_data[overlap_lines:]
                     non_overlap_lines = len(non_overlap_data)
                     
-                    # 复制非重叠部分
+                    # Copy non-overlap part
                     merged_data[current_line:current_line+non_overlap_lines] = non_overlap_data
                     current_line += non_overlap_lines
                 else:
-                    # 无重叠,直接复制
+                    # No overlap, copy directly
                     merged_data[current_line:current_line+frame.getNumberOfLines()] = frame_data
                     current_line += frame.getNumberOfLines()
         
-        # 写入合并后的SLC数据
+        # Write merged SLC data
         output_file = self.output
         with open(output_file, 'wb') as f:
             merged_data.tofile(f)
         
-        # 设置合并后的图像
+        # Set merged image
         slcImage = isceobj.createSlcImage()
         slcImage.setByteOrder('l')
         slcImage.setFilename(output_file)
@@ -1588,37 +1562,37 @@ class Lutan1(Sensor):
         
         merged_frame.setImage(slcImage)
         
-        # 生成头文件和VRT文件
+        # Generate header and VRT files
         slcImage.renderHdr()
         slcImage.renderVRT()
         
-        # 生成辅助文件
+        # Generate auxiliary files
         self.makeFakeAux(output_file)
         
         return merged_frame
 
     def mergeOrbits(self, orbits):
-        """合并多个轨道的状态向量"""
+        """Merge state vectors from multiple orbits"""
         from isceobj.Orbit.Orbit import Orbit, StateVector
         
         merged_orbit = Orbit()
         merged_orbit.configure()
         
-        # 收集所有状态向量
+        # Collect all state vectors
         all_vectors = []
         for orbit in orbits:
             if orbit and orbit._stateVectors:
-                # 转换为列表后再扩展
+                # Convert to list before extending
                 all_vectors.extend(list(orbit._stateVectors))
         
         if not all_vectors:
             self.logger.warning("No orbit state vectors found in any frames")
             return None
         
-        # 按时间排序
+        # Sort by time
         all_vectors.sort(key=lambda x: x.getTime())
         
-        # 移除重复的状态向量
+        # Remove duplicate state vectors
         unique_vectors = []
         prev_time = None
         for sv in all_vectors:
@@ -1627,7 +1601,7 @@ class Lutan1(Sensor):
                 unique_vectors.append(sv)
                 prev_time = curr_time
         
-        # 添加到合并后的轨道
+        # Add to merged orbit
         for sv in unique_vectors:
             merged_orbit.addStateVector(sv)
         
@@ -1684,15 +1658,15 @@ class Lutan1(Sensor):
 
     def loadFromXML(self):
         """
-        从XML配置文件中读取SLC和轨道文件路径，并自动检索所有文件
-        支持多种XML格式
+        Load SLC and orbit file paths from XML configuration file and automatically discover all files
+        Supports multiple XML formats
         """
         if self._xmlConfig is None:
             self.logger.error("XML configuration file not provided")
             return False
             
         try:
-            # 处理可能的zip文件路径
+            # Handle possible zip file paths
             if self._xmlConfig.startswith('/vsizip'):
                 import zipfile
                 parts = self._xmlConfig.split(os.path.sep)
@@ -1709,17 +1683,17 @@ class Lutan1(Sensor):
                 tree = ET.parse(self._xmlConfig)
                 root = tree.getroot()
             
-            # 尝试不同的XML格式
-            # 格式1: <property name="SLC_DIR"><value>./SLC</value></property>
+            # Try different XML formats
+            # Format 1: <property name="SLC_DIR"><value>./SLC</value></property>
             slc_dir_element = root.find(".//property[@name='SLC_DIR']/value")
             if slc_dir_element is not None:
                 slc_dir = slc_dir_element.text
-                # 检索所有TIFF文件
+                # Discover all TIFF files
                 self._imageFileList = sorted(glob.glob(os.path.join(slc_dir, "*.tiff")))
                 if not self._imageFileList:
                     self.logger.warning(f"No TIFF files found in {slc_dir}")
             else:
-                # 格式2: <tiff>./SLC/file.tiff</tiff>
+                # Format 2: <tiff>./SLC/file.tiff</tiff>
                 tiff_element = root.find(".//tiff")
                 if tiff_element is not None:
                     self._imageFileList = [tiff_element.text]
@@ -1727,21 +1701,21 @@ class Lutan1(Sensor):
                     self.logger.error("No SLC_DIR or tiff element found in XML configuration")
                     return False
                 
-            # 获取轨道文件目录（可选）
+            # Get orbit file directory (optional)
             orbit_dir_element = root.find(".//property[@name='ORBIT_DIR']/value")
             if orbit_dir_element is not None:
                 orbit_dir = orbit_dir_element.text
-                # 检索所有XML轨道文件
+                # Discover all XML orbit files
                 self._xmlFileList = sorted(glob.glob(os.path.join(orbit_dir, "*.xml")))
                 if not self._xmlFileList:
                     self.logger.warning(f"No orbit XML files found in {orbit_dir}")
                     self._xmlFileList = []
             else:
-                # 格式2: <orbitFile>./orbits/file.xml</orbitFile> 或 <ORBITFILE>./orbits/file.xml</ORBITFILE>
-                # 尝试不同大小写的轨道文件标签
+                # Format 2: <orbitFile>./orbits/file.xml</orbitFile> or <ORBITFILE>./orbits/file.xml</ORBITFILE>
+                # Try different case orbitFile tags
                 orbit_element = root.find(".//orbitFile") or root.find(".//ORBITFILE")
                 
-                # 也尝试 property 格式的轨道文件
+                # Also try property format orbitFile
                 if orbit_element is None:
                     orbit_property = root.find(".//property[@name='orbitFile']/value") or root.find(".//property[@name='ORBITFILE']/value")
                     if orbit_element is not None:
@@ -1754,12 +1728,12 @@ class Lutan1(Sensor):
                     self.logger.warning("No ORBIT_DIR or orbitFile element found in XML configuration, proceeding without orbit files")
                     self._xmlFileList = []
                 
-            # 获取输出文件名
+            # Get output file name
             output_element = root.find(".//property[@name='OUTPUT']/value")
             if output_element is not None:
                 self.output = output_element.text
             else:
-                # 格式2: <OUTPUT>reference</OUTPUT>
+                # Format 2: <OUTPUT>reference</OUTPUT>
                 output_element = root.find(".//OUTPUT")
                 if output_element is not None:
                     self.output = output_element.text
@@ -1767,63 +1741,63 @@ class Lutan1(Sensor):
                     self.logger.error("OUTPUT not found in XML configuration")
                     return False
                 
-            # 打印找到的文件信息
+            # Print found file information
             self.logger.info(f"Found {len(self._imageFileList)} TIFF files and {len(self._xmlFileList)} orbit files")
             for i, tiff in enumerate(self._imageFileList):
                 self.logger.info(f"TIFF {i+1}: {tiff}")
             for i, orbit in enumerate(self._xmlFileList):
                 self.logger.info(f"Orbit {i+1}: {orbit}")
                 
-            # 如果轨道文件数量与TIFF文件数量不匹配，尝试自动匹配
+            # If number of orbit files does not match number of TIFF files, try to match orbit files
             if len(self._xmlFileList) > 0 and len(self._xmlFileList) != len(self._imageFileList):
                 self.logger.warning("Number of orbit files does not match number of TIFF files")
                 self.logger.info("Attempting to match orbit files with TIFF files...")
                 
-                # 如果只有一个轨道文件，假设它适用于所有TIFF文件
+                # If only one orbit file, assume it applies to all TIFF files
                 if len(self._xmlFileList) == 1:
                     self.logger.info("Using the single orbit file for all TIFF files")
                     self._xmlFileList = [self._xmlFileList[0]] * len(self._imageFileList)
                 else:
-                    # 尝试根据日期匹配轨道文件
+                    # Try to match orbit files based on date
                     try:
-                        # 提取每个TIFF文件名中的日期信息
+                        # Extract date information from each TIFF file name
                         tiff_dates = []
                         for tiff in self._imageFileList:
-                            # 假设文件名格式包含日期，例如：LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
+                            # Assume file name contains date, e.g.: LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
                             basename = os.path.basename(tiff)
                             parts = basename.split('_')
                             if len(parts) >= 8:
-                                date_str = parts[7]  # 假设日期在第8个位置
-                                if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                                date_str = parts[7]  # Assume date is in 8th position
+                                if len(date_str) == 8 and date_str.isdigit():  # Ensure it's 8 digits (YYYYMMDD)
                                     tiff_dates.append(date_str)
                                 else:
                                     tiff_dates.append(None)
                             else:
                                 tiff_dates.append(None)
                         
-                        # 提取每个轨道文件名中的日期信息
+                        # Extract date information from each orbit file name
                         orbit_dates = []
                         for orbit in self._xmlFileList:
-                            # 假设轨道文件名格式包含日期，例如：LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
+                            # Assume orbit file name contains date, e.g.: LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
                             basename = os.path.basename(orbit)
                             parts = basename.split('_')
                             if len(parts) >= 4:
-                                date_str = parts[2][1:9]  # 假设日期在第3个位置，格式为VYYYYMMDD...
-                                if len(date_str) == 8 and date_str.isdigit():  # 确保是8位数字（YYYYMMDD）
+                                date_str = parts[2][1:9]  # Assume date is in 3rd position, format VYYYYMMDD...
+                                if len(date_str) == 8 and date_str.isdigit():  # Ensure it's 8 digits (YYYYMMDD)
                                     orbit_dates.append(date_str)
                                 else:
                                     orbit_dates.append(None)
                             else:
                                 orbit_dates.append(None)
                         
-                        # 为每个TIFF文件匹配对应的轨道文件
+                        # Match each TIFF file with corresponding orbit file
                         matched_orbit_files = []
                         for i, tiff_date in enumerate(tiff_dates):
                             if tiff_date is None:
                                 matched_orbit_files.append(None)
                                 continue
                             
-                            # 查找日期匹配的轨道文件
+                            # Find orbit file with matching date
                             matched = False
                             for j, orbit_date in enumerate(orbit_dates):
                                 if orbit_date is not None and orbit_date == tiff_date:
@@ -1834,7 +1808,7 @@ class Lutan1(Sensor):
                             if not matched:
                                 matched_orbit_files.append(None)
                         
-                        # 如果所有TIFF文件都找到了匹配的轨道文件，使用匹配结果
+                        # If all TIFF files have matching orbit files, use the matched results
                         if all(orbit is not None for orbit in matched_orbit_files):
                             self.logger.info("Successfully matched orbit files based on date")
                             self._xmlFileList = matched_orbit_files
@@ -1853,7 +1827,7 @@ class Lutan1(Sensor):
             return False
 
     def saveOrbitToFile(self, orbit, filename):
-        """将轨道信息保存到单独的文件中"""
+        """Save orbit information to a separate file"""
         import pickle
         state_vectors_data = []
         for sv in orbit._stateVectors:
@@ -1872,7 +1846,7 @@ class Lutan1(Sensor):
             }, f)
 
     def loadOrbitFromFile(self, filename):
-        """从文件中恢复轨道信息"""
+        """Restore orbit information from file"""
         import pickle
         from isceobj.Orbit.Orbit import Orbit, StateVector
         
@@ -1882,12 +1856,12 @@ class Lutan1(Sensor):
         orbit = Orbit()
         orbit.configure()
         
-        # 恢复轨道属性
+        # Restore orbit attributes
         orbit.setOrbitQuality(data['orbit_quality'])
         orbit.setOrbitSource(data['orbit_source'])
         orbit.setReferenceFrame(data['reference_frame'])
         
-        # 恢复状态向量
+        # Restore state vectors
         for sv_data in data['state_vectors']:
             sv = StateVector()
             sv.setTime(sv_data['time'])
@@ -1934,18 +1908,18 @@ class Lutan1(Sensor):
         
         fp.close()
 
-        # 检查是否有足够的数据
+        # Check if there are enough data
         if len(timestamps) < 4:
             self.logger.warning(f"Only {len(timestamps)} state vectors found in annotation file. Minimum required is 4.")
             if hasattr(self, 'frame') and hasattr(self.frame, 'getSensingStart') and hasattr(self.frame, 'getSensingStop'):
-                # 尝试扩大时间范围
+                # Try to extend time range
                 margin = datetime.timedelta(minutes=30.0)
                 tstart = self.frame.getSensingStart() - margin
                 tend = self.frame.getSensingStop() + margin
                 
                 self.logger.info(f"Extending time range to {tstart} - {tend}")
                 
-                # 重新收集数据
+                # Recollect data
                 timestamps = []
                 positions = []
                 velocities = []
