@@ -20,6 +20,7 @@ from isceobj.Orbit.Orbit import StateVector, Orbit
 from isceobj.Planet.AstronomicalHandbook import Const
 from iscesys.DateTimeUtil.DateTimeUtil import DateTimeUtil as DTUtil
 from isceobj.Sensor import tkfunc
+from scipy.interpolate import splrep, BSpline
 
 
 lookMap = { 'RIGHT' : -1,
@@ -70,9 +71,21 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'combined_weighted_filter',
+                            default = 'spline_filter',
                             type=str,
-                            doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter)')
+                            doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter, spline_filter)')
+
+SPLINE_DEGREE = Component.Parameter('splineDegree',
+                            public_name ='SPLINE_DEGREE',
+                            default = 5,
+                            type=int,
+                            doc = 'Degree of the spline fit (1-5)')
+
+SPLINE_SMOOTHING = Component.Parameter('splineSmoothing',
+                            public_name ='SPLINE_SMOOTHING',
+                            default = None,
+                            type=float,
+                            doc = 'Smoothing parameter for spline fit (None for automatic)')
 
 
 class Lutan1(Sensor):
@@ -91,7 +104,9 @@ class Lutan1(Sensor):
         self._xmlFileList = []
         self.frame = None
         self.doppler_coeff = None
-        self.filterMethod = 'combined_weighted_filter'
+        self.filterMethod = 'spline_filter'
+        self.splineDegree = 5
+        self.splineSmoothing = None
         self._tiff = None
         self._orbitFile = None
         self._xml = None
@@ -1053,6 +1068,93 @@ class Lutan1(Sensor):
         
         return output_positions, output_velocities
 
+    def spline_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
+        """Filter orbit data using spline interpolation
+        
+        Args:
+        time_data: time sequence (seconds)
+        positions: position data (N x 3 numpy array)
+        velocities: velocity data (N x 3 numpy array)
+        img_start_sec: imaging start time (seconds)
+        img_stop_sec: imaging stop time (seconds)
+        """
+        from scipy.interpolate import splrep, BSpline
+        
+        # Calculate time sequence
+        t0 = time_data[0]
+        seconds = np.array([(t - t0).total_seconds() for t in time_data])
+        
+        # Auto-calculate smoothing parameter
+        n_state = len(time_data)
+        if self.splineSmoothing is None:
+            # Use the same auto-calculation method as ORB_filt_spline.py
+            smoothing = n_state - np.sqrt(2 * n_state)
+            self.logger.info(f"Auto-calculated smoothing parameter: {smoothing:.3f} (based on {n_state} state vectors)")
+        else:
+            smoothing = self.splineSmoothing
+            self.logger.info(f"Using user-specified smoothing parameter: {smoothing:.3f}")
+        
+        # Perform spline fitting for positions and velocities
+        filtered_pos = np.zeros_like(positions)
+        filtered_vel = np.zeros_like(velocities)
+        
+        # Calculate fitting errors for each component
+        pos_errors = []
+        vel_errors = []
+        
+        for i in range(3):  # X, Y, Z
+            # Position spline fitting
+            pos_spline = splrep(seconds, positions[:,i], s=smoothing, k=self.splineDegree)
+            filtered_pos[:,i] = BSpline(*pos_spline)(seconds)
+            
+            # Velocity spline fitting
+            vel_spline = splrep(seconds, velocities[:,i], s=smoothing, k=self.splineDegree)
+            filtered_vel[:,i] = BSpline(*vel_spline)(seconds)
+            
+            # Calculate fitting errors
+            pos_error = np.mean(np.abs(positions[:,i] - filtered_pos[:,i]))
+            vel_error = np.mean(np.abs(velocities[:,i] - filtered_vel[:,i]))
+            pos_errors.append(pos_error)
+            vel_errors.append(vel_error)
+        
+        # Log fitting errors
+        self.logger.info("Position fitting errors (m):")
+        self.logger.info(f"X: {pos_errors[0]:.6f}")
+        self.logger.info(f"Y: {pos_errors[1]:.6f}")
+        self.logger.info(f"Z: {pos_errors[2]:.6f}")
+        self.logger.info("Velocity fitting errors (m/s):")
+        self.logger.info(f"X: {vel_errors[0]:.6f}")
+        self.logger.info(f"Y: {vel_errors[1]:.6f}")
+        self.logger.info(f"Z: {vel_errors[2]:.6f}")
+        
+        # Special processing for imaging period
+        if img_start_sec is not None and img_stop_sec is not None:
+            img_mask = (seconds >= img_start_sec) & (seconds <= img_stop_sec)
+            
+            # Use stricter smoothing for imaging period
+            img_smoothing = smoothing * 0.5  # Reduce smoothing parameter for more precise fitting
+            self.logger.info(f"Using stricter smoothing parameter for imaging period: {img_smoothing:.3f}")
+            
+            for i in range(3):
+                # Re-fit positions during imaging period
+                img_pos_spline = splrep(seconds[img_mask], positions[img_mask,i], 
+                                      s=img_smoothing, k=self.splineDegree)
+                filtered_pos[img_mask,i] = BSpline(*img_pos_spline)(seconds[img_mask])
+                
+                # Re-fit velocities during imaging period
+                img_vel_spline = splrep(seconds[img_mask], velocities[img_mask,i], 
+                                      s=img_smoothing, k=self.splineDegree)
+                filtered_vel[img_mask,i] = BSpline(*img_vel_spline)(seconds[img_mask])
+                
+                # Calculate fitting errors during imaging period
+                img_pos_error = np.mean(np.abs(positions[img_mask,i] - filtered_pos[img_mask,i]))
+                img_vel_error = np.mean(np.abs(velocities[img_mask,i] - filtered_vel[img_mask,i]))
+                self.logger.info(f"Imaging period {['X', 'Y', 'Z'][i]} component:")
+                self.logger.info(f"  Position error: {img_pos_error:.6f} m")
+                self.logger.info(f"  Velocity error: {img_vel_error:.6f} m/s")
+        
+        return filtered_pos, filtered_vel
+
     def createOrbit(self):
         """
         Create orbit from multiple frames using filtering techniques.
@@ -1134,6 +1236,12 @@ class Lutan1(Sensor):
                 self.logger.info("Applying physics-constrained filter to orbit data")
                 filtered_pos, filtered_vel = self.physics_constrained_filter(
                     time_seconds, positions, velocities,
+                    img_start_sec, img_stop_sec
+                )
+            elif self.filterMethod == 'spline_filter':
+                self.logger.info("Applying spline filter to orbit data")
+                filtered_pos, filtered_vel = self.spline_filter(
+                    timestamps, positions, velocities,
                     img_start_sec, img_stop_sec
                 )
             else:  # default to combined_weighted_filter
