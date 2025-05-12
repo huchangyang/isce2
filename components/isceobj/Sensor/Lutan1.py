@@ -71,7 +71,7 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'spline_filter',
+                            default = 'combined_weighted_filter',
                             type=str,
                             doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter, spline_filter)')
 
@@ -104,7 +104,7 @@ class Lutan1(Sensor):
         self._xmlFileList = []
         self.frame = None
         self.doppler_coeff = None
-        self.filterMethod = 'spline_filter'
+        self.filterMethod = 'combined_weighted_filter'
         self.splineDegree = 5
         self.splineSmoothing = None
         self._tiff = None
