@@ -229,7 +229,7 @@ def runSnaphuWithTiling(infile, outfile, corfile, config, costMode=None, initMet
 def runUnwrap(infile, outfile, corfile, config, costMode=None, initMethod=None, defomax=None, initOnly=None):
     """
     Automatically choose appropriate unwrapping method based on image size.
-    Use tiled processing when either dimension exceeds 32000 pixels.
+    Use tiled processing when either dimension exceeds 30000 pixels.
     """
     # Read image dimensions
     img = isceobj.createImage()
@@ -240,12 +240,12 @@ def runUnwrap(infile, outfile, corfile, config, costMode=None, initMethod=None, 
     print(f"Image dimensions: width={width}, length={length}")
     
     # Choose processing method based on image size
-    if width > 32000 or length > 32000:
+    if width > 30000 or length > 30000:
         print("Large image detected. Using tiled unwrapping...")
         
-        # Calculate number of tiles needed to make each dimension < 32000
-        num_tiles_x = (width + 31999) // 32000
-        num_tiles_y = (length + 31999) // 32000
+        # Calculate number of tiles needed to make each dimension < 30000
+        num_tiles_x = (width + 29999) // 30000
+        num_tiles_y = (length + 29999) // 30000
         
         # Calculate overlap size (20% of tile size, minimum 500 pixels)
         avg_tile_width = width // num_tiles_x
@@ -482,3 +482,4 @@ def main(iargs=None):
 if __name__ == '__main__':
 
     main()
+
