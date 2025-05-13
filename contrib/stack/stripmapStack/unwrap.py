@@ -128,81 +128,219 @@ def extractInfoFromPickle(pckfile, inps):
 
     return data
 
-def runUnwrap(infile, outfile, corfile, config, costMode = None,initMethod = None, defomax = None, initOnly = None):
-
+def runSnaphuWithTiling(infile, outfile, corfile, config, costMode=None, initMethod=None, defomax=None, initOnly=False, 
+                       tile_rows=1000, tile_cols=1000, overlap_row=100, overlap_col=100):
+    """
+    Run Snaphu with tiling for large images
+    """
+    # Set default parameters
     if costMode is None:
-        costMode   = 'DEFO'
-    
+        costMode = 'DEFO'
     if initMethod is None:
         initMethod = 'MST'
-    
-    if  defomax is None:
+    if defomax is None:
         defomax = 4.0
-    
-    if initOnly is None:
-        initOnly = False
-    
-    wrapName = infile
-    unwrapName = outfile
 
+    # Get image dimensions
     img = isceobj.createImage()
     img.load(infile + '.xml')
+    width = img.getWidth()
+    length = img.getLength()
 
+    # Create configuration file
+    configName = os.path.join(os.path.dirname(infile), 'snaphu.conf')
+    with open(configName, 'w') as f:
+        # File format settings
+        f.write('CORRFILEFORMAT  FLOAT_DATA\n')
+        
+        # Tile parameters
+        f.write(f'NTILEROW  {tile_rows}\n')
+        f.write(f'NTILECOL  {tile_cols}\n')
+        f.write(f'ROWOVRLP  {overlap_row}\n')
+        f.write(f'COLOVRLP  {overlap_col}\n')
+        
+        # Basic parameters
+        f.write(f'EARTHRADIUS  {config["earthRadius"]}\n')
+        f.write(f'LAMBDA  {config["wavelength"]}\n')
+        f.write(f'ALTITUDE  {config["altitude"]}\n')
+        f.write(f'RANGERES  {config["rglooks"]}\n')
+        f.write(f'AZRES  {config["azlooks"]}\n')
+        f.write(f'MAXNCOMPS  20\n')
+        f.write(f'MINREGIONSIZE  1000\n')
+        f.write(f'TILECOSTTHRESH  200\n')
+        
+        if defomax is not None and costMode == 'DEFO':
+            f.write(f'DEFOMAX_CYCLE  {defomax}\n')
 
-    wavelength = config['wavelength']
-    width      = img.getWidth()
-    length     = img.getLength()
-    earthRadius = config['earthRadius'] 
-    altitude   = config['altitude']
-    rangeLooks = config['rglooks']
-    azimuthLooks = config['azlooks']
-    corrLooks = config['corrlooks']
-    maxComponents = 20
+    # Build snaphu command
+    cmd = f"snaphu {infile} {width}"
+    
+    # Add cost mode
+    if costMode == 'DEFO':
+        cmd += " -d"
+    elif costMode == 'SMOOTH':
+        cmd += " -s"
+    elif costMode == 'TOPO':
+        cmd += " -t"
+    
+    # Add initialization method
+    if initMethod == 'MCF':
+        cmd += " --mcf"
+    
+    # Add correlation file
+    if os.path.exists(corfile):
+        cmd += f" -c {corfile}"
+    
+    # Add configuration file
+    cmd += f" -f {configName}"
+    
+    # Add output file
+    cmd += f" -o {outfile}"
+    
+    print(f"Executing command: {cmd}")
+    status = os.system(cmd)
+    
+    if status != 0:
+        print(f"Snaphu execution failed with status: {status}")
+        raise Exception('Snaphu execution failed')
 
-    snp = Snaphu()
-    snp.setInitOnly(initOnly)
-    snp.setInput(wrapName)
-    snp.setOutput(unwrapName)
-    snp.setWidth(width)
-    snp.setCostMode(costMode)
-    snp.setEarthRadius(earthRadius)
-    snp.setWavelength(wavelength)
-    snp.setAltitude(altitude)
-    snp.setCorrfile(corfile)
-    snp.setInitMethod(initMethod)
-    snp.setCorrLooks(corrLooks)
-    snp.setMaxComponents(maxComponents)
-    snp.setDefoMaxCycles(defomax)
-    snp.setRangeLooks(rangeLooks)
-    snp.setAzimuthLooks(azimuthLooks)
-    snp.setCorFileFormat('FLOAT_DATA')
-    snp.prepare()
-    snp.unwrap()
-
-    ######Render XML
+    # Create output image metadata
     outImage = isceobj.Image.createUnwImage()
-    outImage.setFilename(unwrapName)
+    outImage.setFilename(outfile)
     outImage.setWidth(width)
     outImage.setLength(length)
     outImage.setAccessMode('read')
-    #outImage.createImage()
     outImage.renderHdr()
     outImage.renderVRT()
-    #outImage.finalizeImage()
 
-    #####Check if connected components was created
-    if snp.dumpConnectedComponents:
+    # Check if connected components file was created
+    if os.path.exists(outfile + '.conncomp'):
         connImage = isceobj.Image.createImage()
-        connImage.setFilename(unwrapName+'.conncomp')
-        #At least one can query for the name used
+        connImage.setFilename(outfile + '.conncomp')
         connImage.setWidth(width)
         connImage.setLength(length)
         connImage.setAccessMode('read')
         connImage.setDataType('BYTE')
-       # connImage.createImage()
         connImage.renderHdr()
         connImage.renderVRT()
-       # connImage.finalizeImage()
+
+    return
+
+def runUnwrap(infile, outfile, corfile, config, costMode=None, initMethod=None, defomax=None, initOnly=None):
+    """
+    Automatically choose appropriate unwrapping method based on image size.
+    Use tiled processing when either dimension exceeds 32000 pixels.
+    """
+    # Read image dimensions
+    img = isceobj.createImage()
+    img.load(infile + '.xml')
+    width = img.getWidth()
+    length = img.getLength()
+    
+    print(f"Image dimensions: width={width}, length={length}")
+    
+    # Choose processing method based on image size
+    if width > 32000 or length > 32000:
+        print("Large image detected. Using tiled unwrapping...")
+        
+        # Calculate number of tiles needed to make each dimension < 32000
+        num_tiles_x = (width + 31999) // 32000
+        num_tiles_y = (length + 31999) // 32000
+        
+        # Calculate overlap size (20% of tile size, minimum 500 pixels)
+        avg_tile_width = width // num_tiles_x
+        avg_tile_length = length // num_tiles_y
+        
+        overlap_col = max(int(avg_tile_width * 0.2), 500)
+        overlap_row = max(int(avg_tile_length * 0.2), 500)
+        
+        # Verify that tiles + overlap satisfy SNAPHU constraints
+        if (num_tiles_y + overlap_row > length or 
+            num_tiles_x + overlap_col > width or
+            num_tiles_y * num_tiles_y > length or
+            num_tiles_x * num_tiles_x > width):
+            print("Warning: Adjusting overlap sizes to meet SNAPHU constraints")
+            
+            if num_tiles_y + overlap_row > length:
+                overlap_row = max(0, length - num_tiles_y)
+            if num_tiles_x + overlap_col > width:
+                overlap_col = max(0, width - num_tiles_x)
+        
+        print("Tiling parameters:")
+        print(f"Number of tiles: {num_tiles_x}x{num_tiles_y}")
+        print(f"Average tile size: {avg_tile_width}x{avg_tile_length}")
+        print(f"Overlap size: {overlap_col}x{overlap_row}")
+
+        runSnaphuWithTiling(
+            infile, outfile, corfile, config,
+            costMode=costMode,
+            initMethod=initMethod,
+            defomax=defomax,
+            initOnly=initOnly,
+            tile_rows=num_tiles_y,
+            tile_cols=num_tiles_x,
+            overlap_row=overlap_row,
+            overlap_col=overlap_col
+        )
+    else:
+        print("Using standard unwrapping...")
+        # Original runUnwrap code
+        if costMode is None:
+            costMode = 'DEFO'
+        if initMethod is None:
+            initMethod = 'MST'
+        if defomax is None:
+            defomax = 4.0
+        if initOnly is None:
+            initOnly = False
+
+        wavelength = config['wavelength']
+        earthRadius = config['earthRadius']
+        altitude = config['altitude']
+        rangeLooks = config['rglooks']
+        azimuthLooks = config['azlooks']
+        corrLooks = config['corrlooks']
+        maxComponents = 20
+
+        snp = Snaphu()
+        snp.setInitOnly(initOnly)
+        snp.setInput(infile)
+        snp.setOutput(outfile)
+        snp.setWidth(width)
+        snp.setCostMode(costMode)
+        snp.setEarthRadius(earthRadius)
+        snp.setWavelength(wavelength)
+        snp.setAltitude(altitude)
+        snp.setCorrfile(corfile)
+        snp.setInitMethod(initMethod)
+        snp.setCorrLooks(corrLooks)
+        snp.setMaxComponents(maxComponents)
+        snp.setDefoMaxCycles(defomax)
+        snp.setRangeLooks(rangeLooks)
+        snp.setAzimuthLooks(azimuthLooks)
+        snp.setCorFileFormat('FLOAT_DATA')
+        snp.prepare()
+        snp.unwrap()
+
+        # Create output image metadata
+        outImage = isceobj.Image.createUnwImage()
+        outImage.setFilename(outfile)
+        outImage.setWidth(width)
+        outImage.setLength(length)
+        outImage.setAccessMode('read')
+        outImage.renderHdr()
+        outImage.renderVRT()
+
+        # Check connected components file
+        if snp.dumpConnectedComponents:
+            connImage = isceobj.Image.createImage()
+            connImage.setFilename(outfile + '.conncomp')
+            connImage.setWidth(width)
+            connImage.setLength(length)
+            connImage.setAccessMode('read')
+            connImage.setDataType('BYTE')
+            connImage.renderHdr()
+            connImage.renderVRT()
 
     return
 
