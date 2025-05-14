@@ -1965,7 +1965,11 @@ class Lutan1(Sensor):
         img_start_sec = (self.frame.getSensingStart() - t0).total_seconds()
         img_stop_sec = (self.frame.getSensingStop() - t0).total_seconds()
         
-        if self.filterMethod == 'poly_filter':
+        if self.filterMethod == 'raw_orbit':
+            self.logger.info("Using raw orbit data without filtering")
+            filtered_pos = positions
+            filtered_vel = velocities
+        elif self.filterMethod == 'poly_filter':
             self.logger.info("Applying polynomial filter to orbit data")
             filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
         elif self.filterMethod == 'physics_filter':
