@@ -71,7 +71,7 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'raw_orbit',
+                            default = 'poly_filter',
                             type=str,
                             doc = 'Orbit filter method (poly_filter, physics_filter, combined_weighted_filter, spline_filter, raw_orbit)')
 
@@ -104,7 +104,7 @@ class Lutan1(Sensor):
         self._xmlFileList = []
         self.frame = None
         self.doppler_coeff = None
-        self.filterMethod = 'raw_orbit'
+        self.filterMethod = 'poly_filter'
         self.splineDegree = 5
         self.splineSmoothing = None
         self._tiff = None
@@ -1209,7 +1209,7 @@ class Lutan1(Sensor):
                 filtered_vel = velocities
             elif self.filterMethod == 'poly_filter':
                 self.logger.info("Applying polynomial filter to orbit data")
-                filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
+                filtered_pos, filtered_vel = self.filter_orbit(timestamps, positions, velocities)
             elif self.filterMethod == 'physics_filter':
                 self.logger.info("Applying physics-constrained filter to orbit data")
                 filtered_pos, filtered_vel = self.physics_constrained_filter(
