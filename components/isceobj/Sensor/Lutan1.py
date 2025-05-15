@@ -1971,7 +1971,7 @@ class Lutan1(Sensor):
             filtered_vel = velocities
         elif self.filterMethod == 'poly_filter':
             self.logger.info("Applying polynomial filter to orbit data")
-            filtered_pos, filtered_vel = self.poly_filter(timestamps, positions, velocities)
+            filtered_pos, filtered_vel = self.filter_orbit(timestamps, positions, velocities)
         elif self.filterMethod == 'physics_filter':
             self.logger.info("Applying physics-constrained filter to orbit data")
             filtered_pos, filtered_vel = self.physics_constrained_filter(
