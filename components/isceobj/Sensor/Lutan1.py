@@ -95,16 +95,26 @@ class Lutan1(Sensor):
     family = 'l1sm'
     logging_name = 'isce.sensor.Lutan1'
 
-    parameter_list = (TIFF, ORBIT_FILE, FILTER_METHOD, XML_CONFIG, SLC_DIR, ORBIT_DIR) + Sensor.parameter_list
+    parameter_list = (
+        TIFF, 
+        ORBIT_FILE, 
+        FILTER_METHOD,  # Add filter method parameter
+        XML_CONFIG, 
+        SLC_DIR, 
+        ORBIT_DIR
+    ) + Sensor.parameter_list
 
     def __init__(self, name=''):
-        super().__init__(family=self.__class__.family, name=name)
+        super(Lutan1, self).__init__(family=self.__class__.family, name=name)
+        
+        # Add filter method parameter
+        self.filter_method = 'direction_magnitude'  # Default filter method
+        
         self.frameList = []
         self._imageFileList = []
         self._xmlFileList = []
         self.frame = None
         self.doppler_coeff = None
-        self.filterMethod = 'poly_filter'
         self.splineDegree = 5
         self.splineSmoothing = None
         self._tiff = None
@@ -228,6 +238,13 @@ class Lutan1(Sensor):
                 else:
                     self.logger.warning("Proceeding without orbit files")
                     self._orbitFileList = []
+
+        # Validate filter method
+        if hasattr(self, 'filter_method'):
+            valid_methods = ['direction_magnitude', 'polynomial', 'spline']
+            if self.filter_method not in valid_methods:
+                raise ValueError(f"Invalid filter method: {self.filter_method}. "
+                               f"Valid methods are: {', '.join(valid_methods)}")
 
     def parse(self):
         xmlFileName = self._tiff[:-4] + "meta.xml"
@@ -693,21 +710,32 @@ class Lutan1(Sensor):
             return None
 
     def filter_orbit(self, times, positions, velocities):
-        """Filter orbit data using standard polynomial fitting"""
-        t0 = times[0]
-        seconds = np.array([(t - t0).total_seconds() for t in times])
+        """
+        Filter orbit data using the specified method
         
-        filtered_pos = np.zeros_like(positions)
-        filtered_vel = np.zeros_like(velocities)
+        Parameters:
+        times: Time series
+        positions: Position data
+        velocities: Velocity data
         
-        for i in range(3):  # X, Y, Z
-            pos_coef = np.polyfit(seconds, positions[:,i], 4)
-            filtered_pos[:,i] = np.polyval(pos_coef, seconds)
-            
-            vel_coef = np.polyfit(seconds, velocities[:,i], 4)
-            filtered_vel[:,i] = np.polyval(vel_coef, seconds)
+        Returns:
+        filtered_positions: Filtered position data
+        filtered_velocities: Filtered velocity data
+        """
+        # Convert time to relative seconds
+        time_data = np.array([(t - times[0]).total_seconds() for t in times])
         
-        return filtered_pos, filtered_vel
+        # Use direction-constrained and magnitude polynomial fitting method as default
+        filtered_positions, filtered_velocities = self.direction_and_magnitude_filter(
+            time_data, 
+            positions, 
+            velocities,
+            window_size=5,  # Parameters can be adjusted as needed
+            smoothing=1.0,
+            fit_order=5
+        )
+        
+        return filtered_positions, filtered_velocities
 
     def physics_constrained_filter(self, time_data, positions, velocities, img_start_sec=None, img_stop_sec=None):
         """Filter based on physics constraints
@@ -1203,30 +1231,40 @@ class Lutan1(Sensor):
         
         # Apply orbit filtering based on selected method
         try:
-            if self.filterMethod == 'raw_orbit':
+            if self.filter_method == 'direction_magnitude':
+                self.logger.info("Applying direction and magnitude filter to orbit data")
+                filtered_pos, filtered_vel = self.direction_and_magnitude_filter(
+                    time_seconds, positions, velocities,
+                    window_size=5,
+                    smoothing=1.0,
+                    fit_order=5
+                )
+            elif self.filter_method == 'raw_orbit':
                 self.logger.info("Using raw orbit data without filtering")
                 filtered_pos = positions
                 filtered_vel = velocities
-            elif self.filterMethod == 'poly_filter':
+            elif self.filter_method == 'poly_filter':
                 self.logger.info("Applying polynomial filter to orbit data")
                 filtered_pos, filtered_vel = self.filter_orbit(timestamps, positions, velocities)
-            elif self.filterMethod == 'physics_filter':
+            elif self.filter_method == 'physics_filter':
                 self.logger.info("Applying physics-constrained filter to orbit data")
                 filtered_pos, filtered_vel = self.physics_constrained_filter(
                     time_seconds, positions, velocities,
                     img_start_sec, img_stop_sec
                 )
-            elif self.filterMethod == 'spline_filter':
+            elif self.filter_method == 'spline_filter':
                 self.logger.info("Applying spline filter to orbit data")
                 filtered_pos, filtered_vel = self.spline_filter(
                     timestamps, positions, velocities,
                     img_start_sec, img_stop_sec
                 )
-            else:  # default to combined_weighted_filter
-                self.logger.info("Applying combined weighted filter to orbit data")
-                filtered_pos, filtered_vel = self.combined_weighted_filter(
+            else:  # default to direction_magnitude
+                self.logger.info("Applying direction and magnitude filter to orbit data")
+                filtered_pos, filtered_vel = self.direction_and_magnitude_filter(
                     time_seconds, positions, velocities,
-                    img_start_sec, img_stop_sec
+                    window_size=5,
+                    smoothing=1.0,
+                    fit_order=5
                 )
         except Exception as e:
             self.logger.error(f"Error during orbit filtering: {str(e)}")
@@ -1965,14 +2003,14 @@ class Lutan1(Sensor):
         img_start_sec = (self.frame.getSensingStart() - t0).total_seconds()
         img_stop_sec = (self.frame.getSensingStop() - t0).total_seconds()
         
-        if self.filterMethod == 'raw_orbit':
+        if self.filter_method == 'raw_orbit':
             self.logger.info("Using raw orbit data without filtering")
             filtered_pos = positions
             filtered_vel = velocities
-        elif self.filterMethod == 'poly_filter':
+        elif self.filter_method == 'poly_filter':
             self.logger.info("Applying polynomial filter to orbit data")
             filtered_pos, filtered_vel = self.filter_orbit(timestamps, positions, velocities)
-        elif self.filterMethod == 'physics_filter':
+        elif self.filter_method == 'physics_filter':
             self.logger.info("Applying physics-constrained filter to orbit data")
             filtered_pos, filtered_vel = self.physics_constrained_filter(
                 time_seconds, positions, velocities,
@@ -1994,3 +2032,77 @@ class Lutan1(Sensor):
             frameOrbit.addStateVector(vec)
         
         return frameOrbit
+
+    def direction_and_magnitude_filter(self, time_data, positions, velocities, window_size=5, smoothing=1.0, fit_order=5):
+        """
+        Orbit filtering method combining velocity direction filtering and magnitude polynomial fitting
+        
+        Parameters:
+        time_data: Time series (in seconds)
+        positions: Position data (N x 3 numpy array)
+        velocities: Velocity data (N x 3 numpy array)
+        window_size: Sliding window size for direction smoothing
+        smoothing: Smoothing parameter
+        fit_order: Polynomial fitting order
+        
+        Returns:
+        filtered_positions: Filtered position data
+        filtered_velocities: Filtered velocity data
+        """
+        # 1. Polynomial fitting for positions
+        filtered_positions = np.zeros_like(positions)
+        for i in range(3):
+            coeffs = np.polyfit(time_data, positions[:, i], 4)  # Use 4th order polynomial for positions
+            filtered_positions[:, i] = np.polyval(coeffs, time_data)
+        
+        # 2. Complete time series and interpolate
+        full_time = np.arange(time_data[0], time_data[-1]+1, 1.0)
+        interp_velocities = np.zeros((len(full_time), velocities.shape[1]))
+        mask = np.zeros(len(full_time), dtype=bool)
+        
+        # Mark original points
+        for i, t in enumerate(time_data):
+            idx = int(round(t - full_time[0]))
+            if 0 <= idx < len(full_time):
+                mask[idx] = True
+                interp_velocities[idx] = velocities[i]
+        
+        # Interpolate missing points
+        for j in range(velocities.shape[1]):
+            valid = mask
+            interp_velocities[:, j] = np.interp(full_time, full_time[valid], interp_velocities[valid, j])
+        
+        # 3. Calculate velocity directions and magnitudes
+        n = len(full_time)
+        velocity_directions = np.zeros_like(interp_velocities)
+        velocity_magnitudes = np.linalg.norm(interp_velocities, axis=1)
+        
+        # 4. Direction smoothing
+        for i in range(n):
+            if velocity_magnitudes[i] > 0:
+                velocity_directions[i] = interp_velocities[i] / velocity_magnitudes[i]
+        
+        smoothed_directions = np.zeros_like(velocity_directions)
+        for i in range(n):
+            if i < window_size or i >= n - window_size:
+                smoothed_directions[i] = velocity_directions[i]
+            else:
+                start_idx = i - window_size
+                end_idx = i + window_size + 1
+                window_directions = velocity_directions[start_idx:end_idx]
+                weights = np.exp(-np.abs(full_time[start_idx:end_idx] - full_time[i]) / smoothing)
+                weights = weights / np.sum(weights)
+                weighted_direction = np.sum(window_directions * weights[:, np.newaxis], axis=0)
+                weighted_direction = weighted_direction / np.linalg.norm(weighted_direction)
+                smoothed_directions[i] = weighted_direction
+        
+        # 5. Polynomial fitting for magnitude
+        fit_magnitudes = np.polyval(np.polyfit(full_time, velocity_magnitudes, fit_order), full_time)
+        
+        # 6. Combine final velocity
+        filtered_velocities = smoothed_directions * fit_magnitudes[:, np.newaxis]
+        
+        # 7. Return only original data points
+        filtered_velocities = filtered_velocities[mask]
+        
+        return filtered_positions, filtered_velocities
