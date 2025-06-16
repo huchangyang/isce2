@@ -1258,7 +1258,7 @@ class Lutan1(Sensor):
                     timestamps, positions, velocities,
                     img_start_sec, img_stop_sec
                 )
-            else:  # default to direction_magnitude
+            else:  # default to direction_magnitude filter
                 self.logger.info("Applying direction and magnitude filter to orbit data")
                 filtered_pos, filtered_vel = self.direction_and_magnitude_filter(
                     time_seconds, positions, velocities,
@@ -2016,11 +2016,13 @@ class Lutan1(Sensor):
                 time_seconds, positions, velocities,
                 img_start_sec, img_stop_sec
             )
-        else:  # default to combined_weighted_filter
-            self.logger.info("Applying combined weighted filter to orbit data")
-            filtered_pos, filtered_vel = self.combined_weighted_filter(
+        else:  # default to direction_magnitude filter
+            self.logger.info("Applying direction and magnitude filter to orbit data")
+            filtered_pos, filtered_vel = self.direction_and_magnitude_filter(
                 time_seconds, positions, velocities,
-                img_start_sec, img_stop_sec
+                window_size=5,
+                smoothing=1.0,
+                fit_order=5
             )
         
         # Create orbit state vectors
