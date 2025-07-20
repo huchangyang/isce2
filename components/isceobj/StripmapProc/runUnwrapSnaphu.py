@@ -174,7 +174,7 @@ def runUnwrapMcf(self):
 def runUnwrap(self, igramSpectrum = "full"):
     """
     Automatically choose appropriate unwrapping method based on image size.
-    Use tiled processing when either dimension exceeds 32000 pixels.
+    Use tiled processing when either dimension exceeds 20000 pixels.
     """
     # Get interferogram directory and filename
     if igramSpectrum == "full":
@@ -202,12 +202,12 @@ def runUnwrap(self, igramSpectrum = "full"):
     print(f"Image dimensions: width={width}, length={length}")
     
     # Choose processing method based on image size
-    if width > 32000 or length > 32000:
+    if width > 20000 or length > 20000:
         print("Large image detected. Using tiled unwrapping...")
         
-        # Calculate number of tiles needed to make each dimension < 32000
-        num_tiles_x = (width + 31999) // 32000
-        num_tiles_y = (length + 31999) // 32000
+        # Calculate number of tiles needed to make each dimension < 20000
+        num_tiles_x = (width + 19999) // 20000
+        num_tiles_y = (length + 19999) // 20000
         
         # Calculate overlap size (20% of tile size, minimum 500 pixels)
         avg_tile_width = width // num_tiles_x
