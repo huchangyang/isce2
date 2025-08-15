@@ -343,7 +343,21 @@ class Track(object):
         """Create the actual Track data by concatenating data from all of the Frames objects together"""
         
         # check the data type of the first frame
-        is_slc = isinstance(self._frames[0].getImage(), isceobj.Image.SlcImage.SlcImage)
+        try:
+            from isceobj.Image import createRawImage, createSlcImage
+            first_image = self._frames[0].getImage()
+            
+            if isinstance(first_image, createSlcImage().__class__):
+                is_slc = True
+            elif isinstance(first_image, createRawImage().__class__):
+                is_slc = False
+            else:
+                self.logger.warning(f"Unknown image type: {type(first_image)}")
+                is_slc = False
+                
+        except Exception as e:
+            self.logger.warning(f"Error determining image type: {e}")
+            is_slc = False
         
         if is_slc:
             self.logger.info("Processing SLC data using Python")
@@ -353,7 +367,7 @@ class Track(object):
             return self._createTrackRaw(output)
 
     def _createTrackSlc(self, output):
-        """处理SLC数据的简化版本，直接通过成像时间确定起始行进行合并"""
+        """Combine SLC data frames into a single track"""
         from isceobj import Constants as CN
         
         # 1. Sort all frames by imaging time

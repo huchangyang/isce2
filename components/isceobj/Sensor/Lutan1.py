@@ -71,7 +71,7 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'raw_orbit',
+                            default = 'poly_filter',
                             type=str,
                             doc = 'Orbit filter method (poly_filter, combined_weighted_filter, spline_filter, raw_orbit)')
 
@@ -108,7 +108,7 @@ class Lutan1(Sensor):
         super(Lutan1, self).__init__(family=self.__class__.family, name=name)
         
         # Add filter method parameter
-        self.filter_method = 'raw_orbit'  # Default filter method
+        self.filter_method = 'poly_filter'  # Default filter method
         
         self.frameList = []
         self._imageFileList = []
