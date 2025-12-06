@@ -43,7 +43,7 @@ def createParser():
             help='Azimuth gross offset')
     parser.add_argument('--ro', dest='rgoff', type=int, default=0,
             help='Range gross offset')
-    parser.add_argument('-t', '--thresh', dest='snrthresh', type=float, default=20,
+    parser.add_argument('-t', '--thresh', dest='snrthresh', type=float, default=10,
             help='SNR threshold')
 
     return parser
@@ -78,12 +78,12 @@ def estimateOffsetField(reference, secondary, azoffset=0, rgoffset=0):
     objOffset.setDownGrossOffset(azoffset)
     objOffset.setWindowSizeWidth(128)
     objOffset.setWindowSizeHeight(128)
-    objOffset.setSearchWindowSizeWidth(16)
-    objOffset.setSearchWindowSizeHeight(16)
+    objOffset.setSearchWindowSizeWidth(32)
+    objOffset.setSearchWindowSizeHeight(32)
     margin = 2*objOffset.searchWindowSizeWidth + objOffset.windowSizeWidth
 
-    nAcross = 40
-    nDown = 40
+    nAcross = 50
+    nDown = 50
 
    
     offAc = max(101,-rgoffset)+margin

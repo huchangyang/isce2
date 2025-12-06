@@ -293,15 +293,38 @@ def main(iargs=None):
 
     ####Setup dem
     demImage = isceobj.createDemImage()
-    demImage.load(os.path.join(inps.geom, 'hgt.rdr.xml'))
+    # Prefer .rdr.full for full resolution, fallback to .rdr if not available
+    hgtFile = os.path.join(inps.geom, 'hgt.rdr.full.xml')
+    if not os.path.exists(hgtFile):
+        hgtFile = os.path.join(inps.geom, 'hgt.rdr.xml')
+        print('Using multilooked hgt.rdr (full resolution hgt.rdr.full not found)')
+    else:
+        print('Using full resolution hgt.rdr.full for geometry')
+    demImage.load(hgtFile)
     demImage.setAccessMode('read')
 
     latImage = isceobj.createImage()
-    latImage.load(os.path.join(inps.geom, 'lat.rdr.xml'))
+    # Prefer .rdr.full for full resolution geometry (to avoid multilooked SLC)
+    latFile = os.path.join(inps.geom, 'lat.rdr.full.xml')
+    if not os.path.exists(latFile):
+        latFile = os.path.join(inps.geom, 'lat.rdr.xml')
+        print('WARNING: Using multilooked lat.rdr (full resolution lat.rdr.full not found)')
+        print('         This will result in multilooked SLC files!')
+    else:
+        print('Using full resolution lat.rdr.full for geometry')
+    latImage.load(latFile)
     latImage.setAccessMode('read')
 
     lonImage = isceobj.createImage()
-    lonImage.load(os.path.join(inps.geom, 'lon.rdr.xml'))
+    # Prefer .rdr.full for full resolution geometry (to avoid multilooked SLC)
+    lonFile = os.path.join(inps.geom, 'lon.rdr.full.xml')
+    if not os.path.exists(lonFile):
+        lonFile = os.path.join(inps.geom, 'lon.rdr.xml')
+        print('WARNING: Using multilooked lon.rdr (full resolution lon.rdr.full not found)')
+        print('         This will result in multilooked SLC files!')
+    else:
+        print('Using full resolution lon.rdr.full for geometry')
+    lonImage.load(lonFile)
     lonImage.setAccessMode('read')
 
     os.makedirs(inps.outdir, exist_ok=True)

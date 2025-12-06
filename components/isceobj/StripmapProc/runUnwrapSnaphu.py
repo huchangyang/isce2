@@ -71,18 +71,67 @@ def runSnaphu(self, igramSpectrum = "full", costMode = None,initMethod = None, d
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
 
 
-    wrapName = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
-
-    if '.flat' in wrapName:
-        unwrapName = wrapName.replace('.flat', '.unw')
-    elif '.int' in wrapName:
-        unwrapName = wrapName.replace('.int', '.unw')
+    # Check if ionospheric looks are specified and look for multilooked interferogram
+    # In runSnaphu, self is the Insar instance, so get parameters from self first
+    numberRangeLooksIon = getattr(self, 'numberRangeLooksIon', None)
+    numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooksIon', None)
+    
+    # If not found in self, try to get from self.insar (for direct StripmapProc usage)
+    if numberRangeLooksIon is None:
+        numberRangeLooksIon = getattr(self.insar, 'numberRangeLooksIon', None)
+    if numberAzimuthLooksIon is None:
+        numberAzimuthLooksIon = getattr(self.insar, 'numberAzimuthLooksIon', None)
+    
+    referenceFrame = self._insar.loadProduct( self._insar.referenceSlcCropProduct)
+    
+    if numberRangeLooksIon is not None and numberAzimuthLooksIon is not None:
+        # Look for multilooked interferogram for ionospheric estimation
+        azLooks, rgLooks = self.insar.numberOfLooks(referenceFrame, self.posting,
+                                                    self.numberAzimuthLooks, self.numberRangeLooks)
+        totalAzLooks = azLooks * numberAzimuthLooksIon
+        totalRgLooks = rgLooks * numberRangeLooksIon
+        ml2 = '_{}rlks_{}alks'.format(totalRgLooks, totalAzLooks)
+        
+        # Try multilooked interferogram first
+        # Try both .flat and .int extensions to match what runFilter.py generates
+        wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+        if not os.path.exists(wrapNameMultilook + '.xml'):
+            wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+        if not os.path.exists(wrapNameMultilook + '.xml'):
+            # Try without filt_ prefix
+            wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+        if not os.path.exists(wrapNameMultilook + '.xml'):
+            wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+        
+        if os.path.exists(wrapNameMultilook + '.xml'):
+            wrapName = wrapNameMultilook
+            if '.flat' in wrapName:
+                unwrapName = wrapName.replace('.flat', '.unw')
+            elif '.int' in wrapName:
+                unwrapName = wrapName.replace('.int', '.unw')
+            else:
+                unwrapName = wrapName + '.unw'
+            print('Found multilooked interferogram for unwrapping: {}'.format(wrapName))
+        else:
+            # Fall back to regular interferogram
+            wrapName = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
+            if '.flat' in wrapName:
+                unwrapName = wrapName.replace('.flat', '.unw')
+            elif '.int' in wrapName:
+                unwrapName = wrapName.replace('.int', '.unw')
+            else:
+                unwrapName = wrapName + '.unw'
     else:
-        unwrapName = wrapName + '.unw'
+        # Use regular interferogram
+        wrapName = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
+        if '.flat' in wrapName:
+            unwrapName = wrapName.replace('.flat', '.unw')
+        elif '.int' in wrapName:
+            unwrapName = wrapName.replace('.int', '.unw')
+        else:
+            unwrapName = wrapName + '.unw'
 
     corName = os.path.join(ifgDirname , self.insar.coherenceFilename)
-
-    referenceFrame = self._insar.loadProduct( self._insar.referenceSlcCropProduct)
     wavelength = referenceFrame.getInstrument().getRadarWavelength()
     img1 = isceobj.createImage()
     img1.load(wrapName + '.xml')
@@ -190,8 +239,60 @@ def runUnwrap(self, igramSpectrum = "full"):
             return
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
 
-    # Get interferogram filename
+    # Check if ionospheric looks are specified and look for multilooked interferogram
+    # For low and high band, we may need to unwrap multilooked interferograms for ionospheric estimation
     wrapName = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename)
+    unwrapName = None  # Initialize unwrapName
+    if igramSpectrum in ["low", "high"]:
+        # Get ionospheric looks parameters
+        numberRangeLooksIon = getattr(self, 'numberRangeLooksIon', None)
+        numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooksIon', None)
+        
+        # If not found in self, try to get from self.insar (for direct StripmapProc usage)
+        if numberRangeLooksIon is None:
+            numberRangeLooksIon = getattr(self.insar, 'numberRangeLooksIon', None)
+        if numberAzimuthLooksIon is None:
+            numberAzimuthLooksIon = getattr(self.insar, 'numberAzimuthLooksIon', None)
+        
+        if numberRangeLooksIon is not None and numberAzimuthLooksIon is not None:
+            # Look for multilooked interferogram for ionospheric estimation
+            referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
+            azLooks, rgLooks = self.insar.numberOfLooks(referenceFrame, self.posting,
+                                                        self.numberAzimuthLooks, self.numberRangeLooks)
+            totalAzLooks = azLooks * numberAzimuthLooksIon
+            totalRgLooks = rgLooks * numberRangeLooksIon
+            ml2 = '_{}rlks_{}alks'.format(totalRgLooks, totalAzLooks)
+            
+            # Try multilooked filtered interferogram first
+            wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+            if not os.path.exists(wrapNameMultilook + '.xml'):
+                wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+            if not os.path.exists(wrapNameMultilook + '.xml'):
+                # Try without filt_ prefix
+                wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+            if not os.path.exists(wrapNameMultilook + '.xml'):
+                wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+            
+            if os.path.exists(wrapNameMultilook + '.xml'):
+                wrapName = wrapNameMultilook
+                if '.flat' in wrapName:
+                    unwrapName = wrapName.replace('.flat', '.unw')
+                elif '.int' in wrapName:
+                    unwrapName = wrapName.replace('.int', '.unw')
+                else:
+                    unwrapName = wrapName + '.unw'
+                print('Found multilooked interferogram for unwrapping: {}'.format(wrapName))
+            else:
+                print('Multilooked interferogram not found, using regular interferogram: {}'.format(wrapName))
+    
+    # Set unwrapName if not already set
+    if unwrapName is None:
+        if '.flat' in wrapName:
+            unwrapName = wrapName.replace('.flat', '.unw')
+        elif '.int' in wrapName:
+            unwrapName = wrapName.replace('.int', '.unw')
+        else:
+            unwrapName = wrapName + '.unw'
     
     # Read image dimensions
     img1 = isceobj.createImage()

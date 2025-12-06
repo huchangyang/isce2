@@ -69,6 +69,11 @@ def createParser():
     
     parser.add_argument('-m', '--method', dest='method', type=str, default='icu',
             help='unwrapping method')
+    
+    parser.add_argument('--number_range_looks_ion', dest='numberRangeLooksIon', type=int, default=None,
+            help='number of range looks for ionospheric estimation (default: None, will try to detect)')
+    parser.add_argument('--number_azimuth_looks_ion', dest='numberAzimuthLooksIon', type=int, default=None,
+            help='number of azimuth looks for ionospheric estimation (default: None, will try to detect)')
 
     return parser
 
@@ -163,8 +168,14 @@ def runSnaphuWithTiling(infile, outfile, corfile, config, costMode=None, initMet
         f.write(f'EARTHRADIUS  {config["earthRadius"]}\n')
         f.write(f'LAMBDA  {config["wavelength"]}\n')
         f.write(f'ALTITUDE  {config["altitude"]}\n')
-        f.write(f'RANGERES  {config["rglooks"]}\n')
-        f.write(f'AZRES  {config["azlooks"]}\n')
+        # CRITICAL: Set RANGERES and AZRES to 1 to prevent Snaphu from downsampling the output
+        # The input interferogram (filt_*.int) is already multilooked (e.g., 10x10), and we want
+        # the output unwrapped phase to have the same dimensions as the input.
+        # Snaphu may use RANGERES and AZRES to downsample the output if they are > 1,
+        # so we set them to 1 to ensure output dimensions match input dimensions.
+        # The correlation looks calculation in corrLooks already accounts for multilooking.
+        f.write(f'RANGERES  1\n')
+        f.write(f'AZRES  1\n')
         f.write(f'MAXNCOMPS  20\n')
         f.write(f'MINREGIONSIZE  1000\n')
         f.write(f'TILECOSTTHRESH  200\n')
@@ -297,16 +308,22 @@ def runUnwrap(infile, outfile, corfile, config, costMode=None, initMethod=None, 
         wavelength = config['wavelength']
         earthRadius = config['earthRadius']
         altitude = config['altitude']
-        rangeLooks = config['rglooks']
-        azimuthLooks = config['azlooks']
-        corrLooks = config['corrlooks']
+        # CRITICAL: Set rangeLooks and azimuthLooks to 1 to prevent Snaphu from downsampling the output
+        # The input interferogram (filt_*.int) is already multilooked (e.g., 10x10), and we want
+        # the output unwrapped phase to have the same dimensions as the input.
+        # Snaphu may use RANGERES and AZRES to downsample the output if they are > 1,
+        # so we set them to 1 to ensure output dimensions match input dimensions.
+        # The corrLooks parameter already accounts for the multilooking in the correlation calculation.
+        rangeLooks = 1  # Always use 1 to prevent output downsampling
+        azimuthLooks = 1  # Always use 1 to prevent output downsampling
+        corrLooks = config['corrlooks']  # This already accounts for multilooking
         maxComponents = 20
 
         snp = Snaphu()
         snp.setInitOnly(initOnly)
         snp.setInput(infile)
         snp.setOutput(outfile)
-        snp.setWidth(width)
+        snp.setWidth(width)  # This ensures output width matches input width
         snp.setCostMode(costMode)
         snp.setEarthRadius(earthRadius)
         snp.setWavelength(wavelength)
@@ -438,6 +455,44 @@ def main(iargs=None):
     # pckfile = os.path.join(inps.reference, 'data')
     interferogramDir = os.path.dirname(inps.intfile)
 
+    # Check if multilooked interferogram exists (created in crossmul step)
+    # Get ionospheric looks from command line arguments
+    numberRangeLooksIon = getattr(inps, 'numberRangeLooksIon', None)
+    numberAzimuthLooksIon = getattr(inps, 'numberAzimuthLooksIon', None)
+    
+    # Use multilooked interferogram if parameters are specified and file exists
+    intFileToUse = inps.intfile
+    
+    # If parameters are not specified, try common defaults (16x16) or detect from existing files
+    if not numberRangeLooksIon or not numberAzimuthLooksIon:
+        # Try to detect from existing multilooked files
+        import glob
+        baseName = inps.intfile.replace('.int', '')
+        # Look for files with pattern *_*rlks_*alks.int
+        pattern = baseName + '_*rlks_*alks.int'
+        matchingFiles = glob.glob(pattern)
+        if matchingFiles:
+            # Extract looks from first matching file
+            import re
+            match = re.search(r'_(\d+)rlks_(\d+)alks\.int$', matchingFiles[0])
+            if match:
+                numberRangeLooksIon = int(match.group(1))
+                numberAzimuthLooksIon = int(match.group(2))
+                print('Detected multilooked interferogram pattern: {}rlks x {}alks'.format(
+                    numberRangeLooksIon, numberAzimuthLooksIon))
+    
+    if numberRangeLooksIon and numberAzimuthLooksIon and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
+        ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
+        intFileMl = inps.intfile.replace('.int', ml2 + '.int')
+        
+        if os.path.exists(intFileMl + '.xml'):
+            print('Using multilooked interferogram for unwrapping: {}'.format(intFileMl))
+            intFileToUse = intFileMl
+        else:
+            print('Multilooked interferogram not found: {}, using regular interferogram: {}'.format(intFileMl, intFileToUse))
+    else:
+        print('Using regular interferogram for unwrapping: {}'.format(intFileToUse))
+
     if inps.method != 'icu':
     
         referenceShelveDir = os.path.join(interferogramDir , 'referenceShelve')
@@ -457,14 +512,14 @@ def main(iargs=None):
             fncall =  runUnwrap
         else:
             fncall = runUnwrapMcf
-        fncall(inps.intfile, inps.unwprefix + '_snaphu.unw', inps.cohfile, metadata, defomax=inps.defomax)
+        fncall(intFileToUse, inps.unwprefix + '_snaphu.unw', inps.cohfile, metadata, defomax=inps.defomax)
 
     elif inps.method == 'snaphu2stage':
         if inps.nomcf: 
             fncall =  runUnwrap
         else:
             fncall = runUnwrapMcf
-        fncall(inps.intfile, inps.unwprefix + '_snaphu.unw', inps.cohfile, metadata, defomax=inps.defomax)
+        fncall(intFileToUse, inps.unwprefix + '_snaphu.unw', inps.cohfile, metadata, defomax=inps.defomax)
 
         # adding in the two-stage
         runUnwrap2Stage(inps.unwprefix + '_snaphu.unw',
@@ -472,7 +527,7 @@ def main(iargs=None):
                         inps.unwprefix + '_snaphu2stage.unw')
 
     elif inps.method == 'icu':
-        runUnwrapIcu(inps.intfile, inps.unwprefix + '_icu.unw')
+        runUnwrapIcu(intFileToUse, inps.unwprefix + '_icu.unw')
 
     # time usage
     m, s = divmod(time.time() - start_time, 60)

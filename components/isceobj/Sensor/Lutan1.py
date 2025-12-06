@@ -71,9 +71,9 @@ ORBIT_DIR = Component.Parameter('_orbitDir',
 
 FILTER_METHOD = Component.Parameter('filterMethod',
                             public_name ='filterMethod',
-                            default = 'poly_filter',
+                            default = 'hermite_poly_filter',
                             type=str,
-                            doc = 'Orbit filter method (poly_filter, combined_weighted_filter, spline_filter, raw_orbit)')
+                            doc = 'Orbit filter method (poly_filter, combined_weighted_filter, spline_filter, hermite_poly_filter, raw_orbit)')
 
 SPLINE_DEGREE = Component.Parameter('splineDegree',
                             public_name ='SPLINE_DEGREE',
@@ -241,7 +241,7 @@ class Lutan1(Sensor):
 
         # Validate filter method
         if hasattr(self, 'filter_method'):
-            valid_methods = ['poly_filter', 'spline_filter', 'raw_orbit']
+            valid_methods = ['poly_filter', 'spline_filter', 'hermite_poly_filter', 'raw_orbit']
             if self.filter_method not in valid_methods:
                 raise ValueError(f"Invalid filter method: {self.filter_method}. "
                                f"Valid methods are: {', '.join(valid_methods)}")
@@ -1118,6 +1118,12 @@ class Lutan1(Sensor):
                     timestamps, positions, velocities,
                     img_start_sec, img_stop_sec
                 )
+            elif self.filter_method == 'hermite_poly_filter':
+                self.logger.info("Applying Hermite polynomial filter to orbit data")
+                filtered_pos, filtered_vel = self.hermite_poly_filter(
+                    timestamps, positions, velocities,
+                    img_start_sec, img_stop_sec
+                )
             else:  # default to raw_orbit
                 self.logger.info("Using raw orbit data without filtering")
                 filtered_pos = positions
@@ -1866,6 +1872,18 @@ class Lutan1(Sensor):
         elif self.filter_method == 'poly_filter':
             self.logger.info("Applying polynomial filter to orbit data")
             filtered_pos, filtered_vel = self.filter_orbit(timestamps, positions, velocities)
+        elif self.filter_method == 'spline_filter':
+            self.logger.info("Applying spline filter to orbit data")
+            filtered_pos, filtered_vel = self.spline_filter(
+                timestamps, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
+        elif self.filter_method == 'hermite_poly_filter':
+            self.logger.info("Applying Hermite polynomial filter to orbit data")
+            filtered_pos, filtered_vel = self.hermite_poly_filter(
+                timestamps, positions, velocities,
+                img_start_sec, img_stop_sec
+            )
         else:  # default to raw_orbit
             self.logger.info("Using raw orbit data without filtering")
             filtered_pos = positions

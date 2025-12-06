@@ -87,6 +87,11 @@ def createParser():
 
     iono.add_argument('--filter_kernel_rotation', dest='filterKernelRotation', type=str, default='0.0',
             help='rotation angle of the filter kernel in degrees (default = 0.0)')
+    
+    iono.add_argument('--number_range_looks_ion', dest='numberRangeLooksIon', type=str, default='16',
+            help='Additional range looks for ionosphere estimation (default: 16)')
+    iono.add_argument('--number_azimuth_looks_ion', dest='numberAzimuthLooksIon', type=str, default='16',
+            help='Additional azimuth looks for ionosphere estimation (default: 16)')
 
     parser.add_argument('-W', '--workflow', dest='workflow', type=str, default='slc',
             help='The InSAR processing workflow : (slc, interferogram, ionosphere)')
@@ -99,6 +104,9 @@ def createParser():
             help='text command to be added to the beginning of each line of the run files. Example : source ~/.bash_profile;')
     parser.add_argument('-useGPU', '--useGPU', dest='useGPU',action='store_true', default=False,
              help='Allow App to use GPU when available')
+
+    parser.add_argument('--rdr_dem_offset', dest='doRdrDemOffset', action='store_true', default=False,
+            help='Enable radar-DEM offset estimation and geometry refinement (default: False)')
 
     parser.add_argument('--summary', dest='summary', action='store_true', default=False, help='Show summary only')
     return parser

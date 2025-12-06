@@ -382,6 +382,20 @@ NONDISPERSIVE_FILENAME = Component.Parameter('nondispersiveFilename',
                                 mandatory=False,
                                 doc='Non dispersive phase from split spectrum')
 
+NUMBER_RANGE_LOOKS_ION = Component.Parameter('numberRangeLooksIon',
+                                public_name='number of range looks ion',
+                                default=None,
+                                type=int,
+                                mandatory=False,
+                                doc="number of additional range looks for ionospheric estimation (multilooked after regular multilooking)")
+
+NUMBER_AZIMUTH_LOOKS_ION = Component.Parameter('numberAzimuthLooksIon',
+                                public_name='number of azimuth looks ion',
+                                default=None,
+                                type=int,
+                                mandatory=False,
+                                doc="number of additional azimuth looks for ionospheric estimation (multilooked after regular multilooking)")
+
 
 OFFSET_TOP = Component.Parameter(
     'offset_top',
@@ -422,6 +436,20 @@ FILTER_STRENGTH = Component.Parameter('filterStrength',
                                 mandatory=False,
                                 doc='')
 
+FILTER_WINSIZE = Component.Parameter('filterWinsize',
+                                public_name='filter window size',
+                                default=64,
+                                type=int,
+                                mandatory=False,
+                                doc='Filter window size in pixels (default: 32, matching Alos2Proc)')
+
+FILTER_STEPSIZE = Component.Parameter('filterStepsize',
+                                public_name='filter step size',
+                                default=4,
+                                type=int,
+                                mandatory=False,
+                                doc='Filter step size in pixels (default: 16)')
+
 SECONDARY_RANGE_MIGRATION_FLAG = Component.Parameter('secondaryRangeMigrationFlag',
                                 public_name='secondaryRangeMigrationFlag',
                                 default=None,
@@ -437,6 +465,35 @@ ESTIMATED_BBOX = Component.Parameter('estimatedBbox',
                                 container=list,
                                 mandatory=False,
                                 doc='Bounding box estimated by topo')
+
+DO_RDR_DEM_OFFSET = Component.Parameter('doRdrDemOffset',
+                                public_name='do rdr dem offset',
+                                default=False,
+                                type=bool,
+                                mandatory=False,
+                                doc='Enable radar-DEM offset estimation and correction')
+
+RADAR_DEM_RANGE_OFFSET = Component.Parameter('radarDemRangeOffset',
+                                public_name='radar dem range offset',
+                                default=0.0,
+                                type=float,
+                                mandatory=False,
+                                doc='Estimated range offset between radar and DEM (in pixels)')
+
+RADAR_DEM_AZIMUTH_OFFSET = Component.Parameter('radarDemAzimuthOffset',
+                                public_name='radar dem azimuth offset',
+                                default=0.0,
+                                type=float,
+                                mandatory=False,
+                                doc='Estimated azimuth offset between radar and DEM (in pixels)')
+
+RADAR_DEM_AFFINE_TRANSFORM = Component.Parameter('radarDemAffineTransform',
+                                public_name='radar dem affine transform',
+                                default=[1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                                container=list,
+                                type=float,
+                                mandatory=False,
+                                doc='Affine transform parameters [m11, m12, m21, m22, t1, t2] for radar-DEM correction')
 
 
 class StripmapProc(Component, FrameMixin):
@@ -500,7 +557,15 @@ class StripmapProc(Component, FrameMixin):
                       NUMBER_LOCATION_DOWN,
                       SECONDARY_RANGE_MIGRATION_FLAG,
                       FILTER_STRENGTH,
+                      FILTER_WINSIZE,
+                      FILTER_STEPSIZE,
                       ESTIMATED_BBOX,
+                      DO_RDR_DEM_OFFSET,            # Added for radar-DEM offset correction
+                      RADAR_DEM_RANGE_OFFSET,
+                      RADAR_DEM_AZIMUTH_OFFSET,
+                      RADAR_DEM_AFFINE_TRANSFORM,
+                      NUMBER_RANGE_LOOKS_ION,
+                      NUMBER_AZIMUTH_LOOKS_ION,
                       )
 
     facility_list = ()

@@ -65,14 +65,23 @@ def cmdLineParse(iargs=None):
 def get_Date(LT1_folder):
     """Grab acquisition date"""
     # will search for meta data of LT1 SLCS to get the acquisition date
-    metadata = glob.glob(os.path.join(LT1_folder, '*.meta.xml'))
+    metadata_patterns = [
+        os.path.join(LT1_folder, 'L1TA_*.meta.xml'),
+        os.path.join(LT1_folder, 'LT1B_*.meta.xml')
+    ]
+    
+    metadata = []
+    for pattern in metadata_patterns:
+        metadata.extend(glob.glob(pattern))
+    
     # if nothing is found return a failure
     if len(metadata) > 0:
-        for metadata in metadata:
+        for metadata_file in metadata:
             try:
-                fp = open(metadata, 'r')
+                fp = open(metadata_file, 'r')
             except IOError as strerr:
                 print("IOError: %s" % strerr)
+                continue
         
             _xml_root = ET.ElementTree(file=fp).getroot()
             acquisitionDate = (str(_xml_root.find('.//productInfo/sceneInfo/sceneCenterCoord/azimuthTimeUTC').text)[:10].replace('-',''))
@@ -80,9 +89,10 @@ def get_Date(LT1_folder):
                 successflag = True
                 fp.close()
                 return successflag, acquisitionDate
-    fp.close()
-    # if it reached here it could not find the acqusiitionDate
-    successflag = False                                                                                                                                                    
+            fp.close()
+    
+    # if it reached here it could not find the acquisitionDate
+    successflag = False
     acquisitionDate = 'FAIL'
     return successflag, acquisitionDate
 

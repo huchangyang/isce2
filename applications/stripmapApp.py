@@ -228,6 +228,24 @@ NUMBER_AZIMUTH_LOOKS = Application.Parameter(
     doc='Number of azimuth looks'
                                  )
 
+NUMBER_RANGE_LOOKS_ION = Application.Parameter(
+    'numberRangeLooksIon',
+    public_name='number of range looks ion',
+    default=None,
+    type=int,
+    mandatory=False,
+    doc='Number of additional range looks for ionospheric estimation'
+)
+
+NUMBER_AZIMUTH_LOOKS_ION = Application.Parameter(
+    'numberAzimuthLooksIon',
+    public_name='number of azimuth looks ion',
+    default=None,
+    type=int,
+    mandatory=False,
+    doc='Number of additional azimuth looks for ionospheric estimation'
+)
+
 FILTER_STRENGTH = Application.Parameter('filterStrength',
                                       public_name='filter strength',
                                       default=0.5,
@@ -249,6 +267,13 @@ DO_RUBBERSHEETINGRANGE = Application.Parameter('doRubbersheetingRange',
                                       mandatory=False,
                                       doc='')
 #################################################################################
+DO_RDR_DEM_OFFSET = Application.Parameter('doRdrDemOffset', 
+                                      public_name='do rdr dem offset',
+                                      default=False,
+                                      type=bool,
+                                      mandatory=False,
+                                      doc='Enable radar-DEM offset estimation and correction')
+
 RUBBERSHEET_SNR_THRESHOLD = Application.Parameter('rubberSheetSNRThreshold',
                                       public_name='rubber sheet SNR Threshold',
                                       default = 5.0,
@@ -540,6 +565,7 @@ class _RoiBase(Application, FrameMixin):
                       HEIGHT_RANGE,
                       DO_RUBBERSHEETINGRANGE, #Modified by V. Brancato 10.07.2019
                       DO_RUBBERSHEETINGAZIMUTH,  #Modified by V. Brancato 10.07.2019
+                      DO_RDR_DEM_OFFSET,         # Added for radar-DEM offset correction
                       RUBBERSHEET_SNR_THRESHOLD,
                       RUBBERSHEET_FILTER_SIZE,
                       DO_DENSEOFFSETS,
@@ -562,7 +588,9 @@ class _RoiBase(Application, FrameMixin):
                       DISPERSIVE_FILTER_KERNEL_ROTATION,
                       DISPERSIVE_FILTER_ITERATION_NUMBER,
                       DISPERSIVE_FILTER_MASK_TYPE,
-                      DISPERSIVE_FILTER_COHERENCE_THRESHOLD)
+                      DISPERSIVE_FILTER_COHERENCE_THRESHOLD,
+                      NUMBER_RANGE_LOOKS_ION,
+                      NUMBER_AZIMUTH_LOOKS_ION)
 
     facility_list = (REFERENCE,
                      SECONDARY,
@@ -666,6 +694,22 @@ class _RoiBase(Application, FrameMixin):
             if g_count > 0:
                 self.off_geocode_list = self.insar.off_geocode_list
 
+        # Sync doRdrDemOffset parameter
+        if hasattr(self, 'doRdrDemOffset'):
+            self.insar.doRdrDemOffset = self.doRdrDemOffset
+
+        # Sync ionospheric looks parameters
+        print('DEBUG: Checking ionospheric looks parameters...')
+        print('DEBUG: hasattr(self, numberRangeLooksIon): {}'.format(hasattr(self, 'numberRangeLooksIon')))
+        print('DEBUG: hasattr(self, numberAzimuthLooksIon): {}'.format(hasattr(self, 'numberAzimuthLooksIon')))
+        if hasattr(self, 'numberRangeLooksIon'):
+            print('DEBUG: self.numberRangeLooksIon = {}'.format(self.numberRangeLooksIon))
+            self.insar.numberRangeLooksIon = self.numberRangeLooksIon
+            print('DEBUG: Set self.insar.numberRangeLooksIon = {}'.format(self.insar.numberRangeLooksIon))
+        if hasattr(self, 'numberAzimuthLooksIon'):
+            print('DEBUG: self.numberAzimuthLooksIon = {}'.format(self.numberAzimuthLooksIon))
+            self.insar.numberAzimuthLooksIon = self.numberAzimuthLooksIon
+            print('DEBUG: Set self.insar.numberAzimuthLooksIon = {}'.format(self.insar.numberAzimuthLooksIon))
 
         return None
 
@@ -727,6 +771,7 @@ class _RoiBase(Application, FrameMixin):
         self.runCrop = StripmapProc.createCrop(self)
         self.runSplitSpectrum = StripmapProc.createSplitSpectrum(self)
         self.runTopo = StripmapProc.createTopo(self)
+        self.runRdrDemOffset = StripmapProc.createRdrDemOffset(self)  # Added
         self.runGeo2rdr = StripmapProc.createGeo2rdr(self)
         self.runResampleSlc = StripmapProc.createResampleSlc(self)
         self.runRefineSecondaryTiming = StripmapProc.createRefineSecondaryTiming(self)
@@ -770,6 +815,9 @@ class _RoiBase(Application, FrameMixin):
         self.step('verifyDEM', func=self.verifyDEM)
 
         self.step('topo', func=self.runTopo)
+
+        self.step('rdr_dem_offset', func=self.runRdrDemOffset,
+                  doc=("Estimate and correct offsets between radar image and DEM"))
 
         self.step('geo2rdr', func=self.runGeo2rdr)
 
@@ -848,6 +896,10 @@ class _RoiBase(Application, FrameMixin):
 
         # run topo (mapping from radar to geo coordinates)
         self.runTopo()
+
+        # estimate radar-DEM offsets if enabled
+        if self.insar.doRdrDemOffset:
+            self.runRdrDemOffset()
 
         # run geo2rdr (mapping from geo to radar coordinates)
         self.runGeo2rdr()

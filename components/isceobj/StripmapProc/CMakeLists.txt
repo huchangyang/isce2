@@ -10,6 +10,7 @@ InstallSameDir(
     runFilter.py
     runGeo2rdr.py
     runGeocode.py
+    runRdrDemOffset.py
     runInterferogram.py
     runPreprocessor.py
     runRefineSecondaryTiming.py
