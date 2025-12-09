@@ -24,8 +24,10 @@ from isceobj.Orbit.Orbit import Orbit
 from isceobj.Attitude.Attitude import Attitude
 from iscesys.DateTimeUtil.DateTimeUtil import DateTimeUtil as DTU
 from isceobj.Util.decorators import type_check, logged, pickled
+from isceobj import Constants as CN
 import isceobj
-import tempfile
+import numpy as np
+import traceback
 
 @pickled
 class Track(object):
@@ -63,6 +65,20 @@ class Track(object):
         self.createOrbit()
         if attitudeOk:
             self.createAttitude()
+
+        for i in range(len(frames)-1):
+            current_frame = frames[i]
+            next_frame = frames[i+1]
+            
+            # Calculate overlap time between current frame and next frame
+            current_end = current_frame.getSensingStop()
+            next_start = next_frame.getSensingStart()
+            overlap_time = (next_start - current_end).total_seconds()
+            
+            self.logger.info(f"Frame {i} and {i+1} overlap:")
+            self.logger.info(f"Frame {i} end: {current_end}")
+            self.logger.info(f"Frame {i+1} start: {next_start}")
+            self.logger.info(f"Overlap time: {overlap_time} seconds")
         return self._frame
 
     def createAuxFile(self, fileList, output):
@@ -176,52 +192,54 @@ class Track(object):
     #width = width of the files
     #frameNum1,2 number of the frames in the sequence of frames to stitch
     #returns a more accurate line1
-    def findOverlapLine(self, file1, file2, line1,width,frameNum1,frameNum2):
+    def findOverlapLine(self, file1, file2, line1, width, frameNum1, frameNum2):
         import numpy as np
         import array
-        fin2 = open(file2,'rb')
-        arr2 = array.array('b')
-        #read full line at the beginning of second file
-        arr2.fromfile(fin2,width)
-        buf2 = np.array(arr2,dtype = np.int8)
-        numTries = 30
-        # start around line1 and try numTries around line1
-        # see searchlist to see which lines it searches
-        searchNumLines = 2
-        #make a sliding window that search for the searchSize samples inside buf2
-        searchSize = 500
-        max = 0
-        indx = None
-        fin1 = open(file1,'rb')
-        for i in range(numTries):
-            # example line1 = 0,searchNumLine = 2 and i = 0 search = [-2,-1,0,1], i = 1, serach =  [-4,-3,2,3]
-            search = list(range(line1 - (i+1)*searchNumLines,line1 - i*searchNumLines))
-            search.extend(list(range(line1 + i*searchNumLines,line1 + (i+1)*searchNumLines)))
-            for k in search:
+        
+        # Increase the search range
+        searchNumLines = 10  # Increase the search number of lines
+        searchSize = width  # Use the entire row for matching
+        numTries = 50      # Increase the number of tries
+        
+        # Read the first few lines of the second frame as reference
+        with open(file2, 'rb') as fin2:
+            arr2 = array.array('b')
+            arr2.fromfile(fin2, width * searchNumLines)
+            buf2 = np.array(arr2, dtype=np.int8).reshape(-1, width)
+        
+        max_correlation = 0
+        best_offset = None
+        
+        with open(file1, 'rb') as fin1:
+            # Search for the best overlap line
+            for i in range(-numTries, numTries):
+                test_line = line1 + i
+                if test_line < 0:
+                    continue
+                    
+                # Read the corresponding line of the first frame
+                fin1.seek(test_line * width, 0)
                 arr1 = array.array('b')
-                #seek to the line k and read +- searchSize/2 samples from the middle of the line
-                fin1.seek(k*width + (width - searchSize)//2,0)
-                arr1.fromfile(fin1,searchSize)
-                buf1 = np.array(arr1,dtype = np.int8)
-                found = False
-                for i in np.arange(width-searchSize):
-                    lenSame =len(np.nonzero(buf1 == buf2[i:i+searchSize])[0])
-                    if  lenSame > max:
-                        max = lenSame
-                        indx = k
-                        if(lenSame == searchSize):
-                            found = True
-                            break
-                if(found):
-                    break
-            if(found):
-                break
-        if not found:
-            self.logger.warning("Cannot find perfect overlap between frame %d and frame %d. Using acquisition time to find overlap position."%(frameNum1,frameNum2))
-        fin1.close()
-        fin2.close()
-        print('Match found: ', indx)
-        return indx
+                try:
+                    arr1.fromfile(fin1, width * searchNumLines)
+                except EOFError:
+                    continue
+                    
+                buf1 = np.array(arr1, dtype=np.int8).reshape(-1, width)
+                
+                # Calculate the correlation
+                correlation = np.abs(np.corrcoef(buf1.flatten(), buf2.flatten())[0,1])
+                
+                if correlation > max_correlation:
+                    max_correlation = correlation
+                    best_offset = test_line
+        
+        if best_offset is None:
+            self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
+            return line1
+        
+        self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation}")
+        return best_offset
 
     def reAdjustStartLine(self, sortedList, width):
         """ Computed the adjusted starting lines based on matching in overlapping regions """
@@ -236,7 +254,7 @@ class Track(object):
             endLine = sortedList[i][0] - sortedList[i-1][0]
             indx = self.findOverlapLine(sortedList[i-1][1],sortedList[i][1],endLine,width,i-1,i)
             #if indx is not None than indx is the new start line
-            #otherwise we use startLine  computed from acquisition time
+            #otherwise we use startLine computed from acquisition time
             #no need to do this for ALOS; otherwise there will be problems when there are multiple prfs and the data are interpolated. C. Liang, 20-dec-2021
             if (self._frames[0].instrument.platform._mission != 'ALOS') and (indx is not None) and (indx + sortedList[i-1][0] != sortedList[i][0]):
                 startLine.append(indx + sortedList[i-1][0])
@@ -248,15 +266,212 @@ class Track(object):
 
         return startLine,outputs
 
-
+    def findBestOverlap(self, file1, file2, start_line, start_line_prev, width, frameNum1, frameNum2):
+        import numpy as np
+        import array
+        
+        # Set search parameters
+        searchNumLines = 5     # Search number of lines
+        numTries = 5          # Search range
+        bytes_per_pixel = 8   # complex64 is 8 bytes
+        
+        # Get the total number of lines of the two files
+        with open(file1, 'rb') as f:
+            f.seek(0, 2)
+            total_bytes1 = f.tell()
+            total_lines1 = total_bytes1 // (width * bytes_per_pixel)
+        
+        with open(file2, 'rb') as f:
+            f.seek(0, 2)
+            total_bytes2 = f.tell()
+            total_lines2 = total_bytes2 // (width * bytes_per_pixel)
+        
+        # Read the first few lines of the second frame as reference
+        with open(file2, 'rb') as fin2:
+            arr2 = array.array('b')
+            arr2.fromfile(fin2, width * searchNumLines * bytes_per_pixel)
+            buf2 = np.frombuffer(arr2, dtype=np.complex64).reshape(searchNumLines, width)
+        
+        max_correlation = 0
+        best_offset = None
+        
+        # Search in the start_line of the first frame
+        with open(file1, 'rb') as fin1:
+            # Search in the start_line
+            for i in range(-numTries, numTries + 1):
+                test_line = start_line - start_line_prev + i
+                self.logger.info(f"test_line: {test_line}")
+                if test_line < 0 or test_line + searchNumLines > total_lines1:
+                    continue
+                    
+                # Read the corresponding line of the first frame
+                try:
+                    fin1.seek(test_line * width * bytes_per_pixel, 0)
+                    arr1 = array.array('b')
+                    arr1.fromfile(fin1, width * searchNumLines * bytes_per_pixel)
+                    buf1 = np.frombuffer(arr1, dtype=np.complex64).reshape(searchNumLines, width)
+                    
+                    # Calculate the correlation - use the amplitude for calculation
+                    amp1 = np.abs(buf1).flatten()
+                    amp2 = np.abs(buf2).flatten()
+                    correlation = np.abs(np.corrcoef(amp1, amp2)[0,1])
+                    
+                    if correlation > max_correlation:
+                        max_correlation = correlation
+                        best_offset = test_line - (start_line - start_line_prev)  # Calculate the offset relative to start_line
+                        self.logger.debug(f"Found better correlation {correlation:.3f} at line {test_line}")
+                        
+                except (EOFError, IOError):
+                    self.logger.debug(f"Failed to read data at line {test_line}")
+                    continue
+        
+        if best_offset is None:
+            self.logger.warning(f"Cannot find good overlap between frame {frameNum1} and frame {frameNum2}")
+            self.logger.warning(f"Start line: {start_line}, Total lines: {total_lines1}")
+            return start_line
+        
+        # Calculate the new start line
+        new_start_line = start_line + best_offset
+        
+        self.logger.info(f"Found best overlap at line {best_offset} with correlation {max_correlation:.3f}")
+        self.logger.info(f"Original start_line: {start_line}, New start_line: {new_start_line}")
+        return new_start_line
 
     # Create the actual Track data by concatenating data from
     # all of the Frames objects together
-    def createTrack(self,output):
+    def createTrack(self, output):
+        """Create the actual Track data by concatenating data from all of the Frames objects together"""
+        
+        # check the data type of the first frame
+        try:
+            from isceobj.Image import createRawImage, createSlcImage
+            first_image = self._frames[0].getImage()
+            
+            if isinstance(first_image, createSlcImage().__class__):
+                is_slc = True
+            elif isinstance(first_image, createRawImage().__class__):
+                is_slc = False
+            else:
+                self.logger.warning(f"Unknown image type: {type(first_image)}")
+                is_slc = False
+                
+        except Exception as e:
+            self.logger.warning(f"Error determining image type: {e}")
+            is_slc = False
+        
+        if is_slc:
+            self.logger.info("Processing SLC data using Python")
+            return self._createTrackSlc(output)
+        else:
+            self.logger.info("Processing RAW data using C")
+            return self._createTrackRaw(output)
+
+    def _createTrackSlc(self, output):
+        """Combine SLC data frames into a single track"""
+        from isceobj import Constants as CN
+        
+        # 1. Sort all frames by imaging time
+        sorted_frames = sorted(self._frames, key=lambda x: x.getSensingStart())
+        width = sorted_frames[0].getNumberOfSamples()
+        prf = sorted_frames[0].getInstrument().getPulseRepetitionFrequency()
+        
+        # 2. Calculate the start line of each frame, using a more precise method to handle decimals
+        start_lines = []
+        actual_lines = []  # Record the actual number of lines used
+        for i, frame in enumerate(sorted_frames):
+            if i == 0:
+                start_lines.append(0)
+                actual_lines.append(frame.getNumberOfLines())
+            else:
+                # Use high precision to calculate the number of lines corresponding to the time difference
+                time_diff = (frame.getSensingStart() - sorted_frames[0].getSensingStart()).total_seconds()
+                start_line_float = time_diff * prf
+                
+                start_line = int(start_line_float)
+                
+                # Add correlation search to fine-tune start_line
+                start_line = self.findBestOverlap(
+                    sorted_frames[i-1].image.getFilename(),
+                    frame.image.getFilename(),
+                    start_line,
+                    start_lines[i-1],
+                    width,
+                    i-1,
+                    i
+                )
+                
+                start_lines.append(start_line)
+                actual_lines.append(frame.getNumberOfLines())
+                
+                self.logger.info(f"Frame {i}: start_line={start_line}")
+        
+        # 3. Calculate the total number of lines
+        total_lines = start_lines[-1] + sorted_frames[-1].getNumberOfLines()
+        merged_data = np.zeros((total_lines, width), dtype=np.complex64)
+        
+        # 4. Merge data frame by frame
+        for i, frame in enumerate(sorted_frames):
+            # Read the current frame data
+            with open(frame.image.getFilename(), 'rb') as f:
+                data = np.fromfile(f, dtype=np.complex64)
+                data = data.reshape(frame.getNumberOfLines(), width)
+            
+            # Write the current frame data to the corresponding position
+            start_line = start_lines[i]
+            merged_data[start_line:start_line + frame.getNumberOfLines()] = data
+        
+        # 5. Save the merged result
+        merged_data.tofile(output)
+        
+        # 6. Set the Frame attributes
+        self._frame.setNumberOfLines(total_lines)
+        self._frame.setNumberOfSamples(width)
+        
+        # Set the basic attributes
+        self._frame.setOrbitNumber(sorted_frames[0].getOrbitNumber())
+        self._frame.setSensingStart(self._startTime)
+        self._frame.setSensingStop(self._stopTime)
+        centerTime = DTU.timeDeltaToSeconds(self._stopTime-self._startTime)/2.0
+        self._frame.setSensingMid(self._startTime + datetime.timedelta(microseconds=int(centerTime*1e6)))
+        self._frame.setStartingRange(self._nearRange)
+        self._frame.setFarRange(self._farRange)
+        
+        # Set the processing information
+        self._frame.setProcessingFacility(sorted_frames[0].getProcessingFacility())
+        self._frame.setProcessingSystem(sorted_frames[0].getProcessingSystem())
+        self._frame.setProcessingSoftwareVersion(sorted_frames[0].getProcessingSoftwareVersion())
+        self._frame.setPolarization(sorted_frames[0].getPolarization())
+        
+        # Create and set the SLC image object
+        slcImage = isceobj.createSlcImage()
+        slcImage.setFilename(output)
+        slcImage.setAccessMode('read')
+        slcImage.setWidth(width)
+        slcImage.setLength(total_lines)
+        slcImage.setXmin(0)
+        slcImage.setXmax(width)
+        slcImage.setDataType('CFLOAT')
+        slcImage.scheme = 'BIP'
+        slcImage.setByteOrder('l')
+        slcImage.imageType = 'slc'
+        
+        # Set the image to Frame
+        self._frame.setImage(slcImage)
+        
+        # Generate the header file and VRT file
+        slcImage.renderHdr()
+        slcImage.renderVRT()
+        
+        return self._frame
+
+    def _createTrackRaw(self, output):
+        """The original RAW data processing method"""
         import os
+        import tempfile
         from operator import itemgetter
         from isceobj import Constants as CN
-        from ctypes import cdll, c_char_p, c_int, c_ubyte,byref
+        from ctypes import cdll, c_char_p, c_int, c_ubyte, byref
+        
         lib = cdll.LoadLibrary(os.path.dirname(__file__)+'/concatenate.so')
         # Perhaps we should check to see if Xmin is 0, if it is not, strip off the header
         self.logger.info("Adjusting Sampling Window Start Times for all Frames")
@@ -279,7 +494,6 @@ class Track(object):
                 width = int(width)
 
             input = frame.getImage().getFilename()
-#            tempOutput = os.path.basename(os.tmpnam()) # Some temporary filename
             with tempfile.NamedTemporaryFile(dir='.') as f:
                 tempOutput = f.name
 
@@ -372,7 +586,8 @@ class Track(object):
         rawImage.setXmax(totalWidth)
         rawImage.setXmin(xmin)
         self._frame.setImage(rawImage)
-
+        
+        return self._frame
 
     # Extract the early, late, start and stop times from a Frame object
     # And use this information to update

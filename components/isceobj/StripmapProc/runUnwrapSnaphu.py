@@ -71,18 +71,67 @@ def runSnaphu(self, igramSpectrum = "full", costMode = None,initMethod = None, d
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
 
 
-    wrapName = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
-
-    if '.flat' in wrapName:
-        unwrapName = wrapName.replace('.flat', '.unw')
-    elif '.int' in wrapName:
-        unwrapName = wrapName.replace('.int', '.unw')
+    # Check if ionospheric looks are specified and look for multilooked interferogram
+    # In runSnaphu, self is the Insar instance, so get parameters from self first
+    numberRangeLooksIon = getattr(self, 'numberRangeLooksIon', None)
+    numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooksIon', None)
+    
+    # If not found in self, try to get from self.insar (for direct StripmapProc usage)
+    if numberRangeLooksIon is None:
+        numberRangeLooksIon = getattr(self.insar, 'numberRangeLooksIon', None)
+    if numberAzimuthLooksIon is None:
+        numberAzimuthLooksIon = getattr(self.insar, 'numberAzimuthLooksIon', None)
+    
+    referenceFrame = self._insar.loadProduct( self._insar.referenceSlcCropProduct)
+    
+    if numberRangeLooksIon is not None and numberAzimuthLooksIon is not None:
+        # Look for multilooked interferogram for ionospheric estimation
+        azLooks, rgLooks = self.insar.numberOfLooks(referenceFrame, self.posting,
+                                                    self.numberAzimuthLooks, self.numberRangeLooks)
+        totalAzLooks = azLooks * numberAzimuthLooksIon
+        totalRgLooks = rgLooks * numberRangeLooksIon
+        ml2 = '_{}rlks_{}alks'.format(totalRgLooks, totalAzLooks)
+        
+        # Try multilooked interferogram first
+        # Try both .flat and .int extensions to match what runFilter.py generates
+        wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+        if not os.path.exists(wrapNameMultilook + '.xml'):
+            wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+        if not os.path.exists(wrapNameMultilook + '.xml'):
+            # Try without filt_ prefix
+            wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+        if not os.path.exists(wrapNameMultilook + '.xml'):
+            wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+        
+        if os.path.exists(wrapNameMultilook + '.xml'):
+            wrapName = wrapNameMultilook
+            if '.flat' in wrapName:
+                unwrapName = wrapName.replace('.flat', '.unw')
+            elif '.int' in wrapName:
+                unwrapName = wrapName.replace('.int', '.unw')
+            else:
+                unwrapName = wrapName + '.unw'
+            print('Found multilooked interferogram for unwrapping: {}'.format(wrapName))
+        else:
+            # Fall back to regular interferogram
+            wrapName = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
+            if '.flat' in wrapName:
+                unwrapName = wrapName.replace('.flat', '.unw')
+            elif '.int' in wrapName:
+                unwrapName = wrapName.replace('.int', '.unw')
+            else:
+                unwrapName = wrapName + '.unw'
     else:
-        unwrapName = wrapName + '.unw'
+        # Use regular interferogram
+        wrapName = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
+        if '.flat' in wrapName:
+            unwrapName = wrapName.replace('.flat', '.unw')
+        elif '.int' in wrapName:
+            unwrapName = wrapName.replace('.int', '.unw')
+        else:
+            unwrapName = wrapName + '.unw'
 
     corName = os.path.join(ifgDirname , self.insar.coherenceFilename)
-
-    referenceFrame = self._insar.loadProduct( self._insar.referenceSlcCropProduct)
     wavelength = referenceFrame.getInstrument().getRadarWavelength()
     img1 = isceobj.createImage()
     img1.load(wrapName + '.xml')
@@ -172,9 +221,301 @@ def runUnwrapMcf(self):
 '''
 
 def runUnwrap(self, igramSpectrum = "full"):
+    """
+    Automatically choose appropriate unwrapping method based on image size.
+    Use tiled processing when either dimension exceeds 20000 pixels.
+    """
+    # Get interferogram directory and filename
+    if igramSpectrum == "full":
+        ifgDirname = self.insar.ifgDirname
+    elif igramSpectrum == "low":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+    elif igramSpectrum == "high":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
 
-    runSnaphu(self, igramSpectrum = igramSpectrum, costMode = 'SMOOTH',initMethod = 'MCF', defomax = 2, initOnly = True)
+    # Check if ionospheric looks are specified and look for multilooked interferogram
+    # For low and high band, we may need to unwrap multilooked interferograms for ionospheric estimation
+    wrapName = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename)
+    unwrapName = None  # Initialize unwrapName
+    if igramSpectrum in ["low", "high"]:
+        # Get ionospheric looks parameters
+        numberRangeLooksIon = getattr(self, 'numberRangeLooksIon', None)
+        numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooksIon', None)
+        
+        # If not found in self, try to get from self.insar (for direct StripmapProc usage)
+        if numberRangeLooksIon is None:
+            numberRangeLooksIon = getattr(self.insar, 'numberRangeLooksIon', None)
+        if numberAzimuthLooksIon is None:
+            numberAzimuthLooksIon = getattr(self.insar, 'numberAzimuthLooksIon', None)
+        
+        if numberRangeLooksIon is not None and numberAzimuthLooksIon is not None:
+            # Look for multilooked interferogram for ionospheric estimation
+            referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
+            azLooks, rgLooks = self.insar.numberOfLooks(referenceFrame, self.posting,
+                                                        self.numberAzimuthLooks, self.numberRangeLooks)
+            totalAzLooks = azLooks * numberAzimuthLooksIon
+            totalRgLooks = rgLooks * numberRangeLooksIon
+            ml2 = '_{}rlks_{}alks'.format(totalRgLooks, totalAzLooks)
+            
+            # Try multilooked filtered interferogram first
+            wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+            if not os.path.exists(wrapNameMultilook + '.xml'):
+                wrapNameMultilook = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+            if not os.path.exists(wrapNameMultilook + '.xml'):
+                # Try without filt_ prefix
+                wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.flat'))
+            if not os.path.exists(wrapNameMultilook + '.xml'):
+                wrapNameMultilook = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.int'))
+            
+            if os.path.exists(wrapNameMultilook + '.xml'):
+                wrapName = wrapNameMultilook
+                if '.flat' in wrapName:
+                    unwrapName = wrapName.replace('.flat', '.unw')
+                elif '.int' in wrapName:
+                    unwrapName = wrapName.replace('.int', '.unw')
+                else:
+                    unwrapName = wrapName + '.unw'
+                print('Found multilooked interferogram for unwrapping: {}'.format(wrapName))
+            else:
+                print('Multilooked interferogram not found, using regular interferogram: {}'.format(wrapName))
+    
+    # Set unwrapName if not already set
+    if unwrapName is None:
+        if '.flat' in wrapName:
+            unwrapName = wrapName.replace('.flat', '.unw')
+        elif '.int' in wrapName:
+            unwrapName = wrapName.replace('.int', '.unw')
+        else:
+            unwrapName = wrapName + '.unw'
+    
+    # Read image dimensions
+    img1 = isceobj.createImage()
+    img1.load(wrapName + '.xml')
+    width = img1.getWidth()
+    length = img1.getLength()
+    
+    print(f"Image dimensions: width={width}, length={length}")
+    
+    # Choose processing method based on image size
+    if width > 20000 or length > 20000:
+        print("Large image detected. Using tiled unwrapping...")
+        
+        # Calculate number of tiles needed to make each dimension < 20000
+        num_tiles_x = (width + 19999) // 20000
+        num_tiles_y = (length + 19999) // 20000
+        
+        # Calculate overlap size (20% of tile size, minimum 500 pixels)
+        avg_tile_width = width // num_tiles_x
+        avg_tile_length = length // num_tiles_y
+        
+        overlap_col = max(int(avg_tile_width * 0.2), 500)
+        overlap_row = max(int(avg_tile_length * 0.2), 500)
+        
+        # Verify that tiles + overlap satisfy SNAPHU constraints
+        if (num_tiles_y + overlap_row > length or 
+            num_tiles_x + overlap_col > width or
+            num_tiles_y * num_tiles_y > length or
+            num_tiles_x * num_tiles_x > width):
+            print("Warning: Adjusting overlap sizes to meet SNAPHU constraints")
+            
+            if num_tiles_y + overlap_row > length:
+                overlap_row = max(0, length - num_tiles_y)
+            if num_tiles_x + overlap_col > width:
+                overlap_col = max(0, width - num_tiles_x)
+        
+        print("Tiling parameters:")
+        print(f"Number of tiles: {num_tiles_x}x{num_tiles_y}")
+        print(f"Average tile size: {avg_tile_width}x{avg_tile_length}")
+        print(f"Overlap size: {overlap_col}x{overlap_row}")
 
+        runSnaphuWithTiling(
+            self,
+            igramSpectrum=igramSpectrum,
+            costMode='SMOOTH',
+            initMethod='MCF',
+            defomax=2,
+            initOnly=False,
+            tile_rows=num_tiles_y,
+            tile_cols=num_tiles_x,
+            overlap_row=overlap_row,
+            overlap_col=overlap_col
+        )
+    else:
+        print("Using standard unwrapping...")
+        runSnaphu(
+            self,
+            igramSpectrum=igramSpectrum,
+            costMode='SMOOTH',
+            initMethod='MCF',
+            defomax=2,
+            initOnly=True
+        )
+    
     return
 
+def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, defomax=None, initOnly=False, 
+                       tile_rows=1000, tile_cols=1000, overlap_row=100, overlap_col=100):
+    """
+    Run Snaphu with tiling for large images
+    """
+    # Set default parameters
+    if costMode is None:
+        costMode = 'DEFO'
+    if initMethod is None:
+        initMethod = 'MST'
+    if defomax is None:
+        defomax = 4.0
 
+    # Get interferogram directory and filenames
+    if igramSpectrum == "full":
+        ifgDirname = self.insar.ifgDirname
+    elif igramSpectrum == "low":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+    elif igramSpectrum == "high":
+        if not self.doDispersive:
+            print('Estimating dispersive phase not requested ... skipping sub-band interferogram unwrapping')
+            return
+        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
+
+    # Set file names
+    wrapName = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename)
+    if '.flat' in wrapName:
+        unwrapName = wrapName.replace('.flat', '.unw')
+    elif '.int' in wrapName:
+        unwrapName = wrapName.replace('.int', '.unw')
+    else:
+        unwrapName = wrapName + '.unw'
+    corName = os.path.join(ifgDirname, self.insar.coherenceFilename)
+
+    # Get image dimensions from XML file
+    img1 = isceobj.createImage()
+    img1.load(wrapName + '.xml')
+    width = img1.getWidth()
+    length = img1.getLength()
+
+    # Get reference frame parameters (same as in runSnaphu)
+    referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
+    wavelength = referenceFrame.getInstrument().getRadarWavelength()
+    
+    orbit = referenceFrame.orbit
+    prf = referenceFrame.PRF
+    elp = copy.copy(referenceFrame.instrument.platform.planet.ellipsoid)
+    sv = orbit.interpolate(referenceFrame.sensingMid, method='hermite')
+    hdg = orbit.getHeading()
+    llh = elp.xyz_to_llh(sv.getPosition())
+    elp.setSCH(llh[0], llh[1], hdg)
+
+    earthRadius = elp.pegRadCur
+    sch, vsch = elp.xyzdot_to_schdot(sv.getPosition(), sv.getVelocity())
+    altitude = sch[2]
+
+    rangeLooks = 1
+    azimuthLooks = 1
+    maxComponents = 20
+    minRegionSize = 1000
+    tileCostThreshold = 200
+    # Create configuration file
+    configName = os.path.join(ifgDirname, 'snaphu.conf')
+    with open(configName, 'w') as f:
+        # File format settings
+        f.write('CORRFILEFORMAT  FLOAT_DATA\n')
+        
+        # Tile parameters
+        f.write(f'NTILEROW  {tile_rows}\n')
+        f.write(f'NTILECOL  {tile_cols}\n')
+        f.write(f'ROWOVRLP  {overlap_row}\n')
+        f.write(f'COLOVRLP  {overlap_col}\n')
+        
+        # Parameters from runSnaphu
+        f.write(f'EARTHRADIUS  {earthRadius}\n')
+        f.write(f'LAMBDA  {wavelength}\n')
+        f.write(f'ALTITUDE  {altitude}\n')
+        f.write(f'RANGERES  {rangeLooks}\n')
+        f.write(f'AZRES  {azimuthLooks}\n')
+        f.write(f'MAXNCOMPS  {maxComponents}\n')
+        f.write(f'MINREGIONSIZE  {minRegionSize}\n')
+        f.write(f'TILECOSTTHRESH  {tileCostThreshold}\n')
+        
+        if defomax is not None and costMode == 'DEFO':
+            f.write(f'DEFOMAX_CYCLE  {defomax}\n')
+        
+        # Other parameters (commented out)
+        f.write('\n# Cost parameters\n')
+        f.write('# MAXCOST  1000.0\n')
+        f.write('# COSTSCALE  100.0\n')
+        
+        f.write('\n# Tile specific parameters\n')
+        f.write('# TILECOSTTHRESH  500\n')
+        f.write('# TILEEDGEWEIGHT  2.5\n')
+        f.write('# SCNDRYARCFLOWMAX  8\n')
+        f.write('# NSHORTCYCLE  200\n')
+        
+        f.write('\n# Statistical cost parameters\n')
+        f.write('# INITDZSTEP  100.0\n')
+        f.write('# MAXFLOW  4.0\n')
+        
+        f.write('\n# Processing parameters\n')
+        f.write('# MAXNEWNODECONST  0.0008\n')
+        f.write('# MAXCYCLEFRACTION  0.00001\n')
+
+    # Build snaphu command
+    cmd = f"snaphu {wrapName} {width}"
+    
+    # Add cost mode
+    if costMode == 'DEFO':
+        cmd += " -d"
+    elif costMode == 'SMOOTH':
+        cmd += " -s"
+    elif costMode == 'TOPO':
+        cmd += " -t"
+    
+    # Add initialization method
+    if initMethod == 'MCF':
+        cmd += " --mcf"
+    
+    # Add correlation file
+    if os.path.exists(corName):
+        cmd += f" -c {corName}"
+    
+    # Add configuration file
+    cmd += f" -f {configName}"
+    
+    # Add output file
+    cmd += f" -o {unwrapName}"
+    
+    print(f"Executing command: {cmd}")
+    status = os.system(cmd)
+    
+    if status != 0:
+        print(f"Snaphu failed with status {status}")
+        raise Exception('Snaphu execution failed')
+
+    # Create output image metadata
+    outImage = isceobj.Image.createUnwImage()
+    outImage.setFilename(unwrapName)
+    outImage.setWidth(width)
+    outImage.setAccessMode('read')
+    outImage.renderHdr()
+    outImage.renderVRT()
+
+    # Check if connected components was created
+    if os.path.exists(unwrapName + '.conncomp'):
+        connImage = isceobj.Image.createImage()
+        connImage.setFilename(unwrapName + '.conncomp')
+        self.insar.connectedComponentsFilename = unwrapName + '.conncomp'
+        connImage.setWidth(width)
+        connImage.setAccessMode('read')
+        connImage.setDataType('BYTE')
+        connImage.renderHdr()
+        connImage.renderVRT()
+
+    return

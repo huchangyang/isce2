@@ -280,7 +280,6 @@ def main(iargs=None):
     else:
         frame = slcFrame
 
-
     #####Determine azimuth and range limits
     limits =  geoboxToAzrgbox(frame, inps.bbox, 
                 israw=inps.israw, isnative=inps.isnative)

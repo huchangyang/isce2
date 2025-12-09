@@ -61,5 +61,5 @@ if __name__ == '__main__':
 
     if inps.h5dir.endswith('/'):
         inps.h5dir = inps.h5dir[:-1]
-
+        
     unpack(inps.h5dir, inps.slcdir)

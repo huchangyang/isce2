@@ -189,6 +189,26 @@ class config(object):
         self.f.write('outdir : ' + self.outDir + '\n')
         self.f.write('alks : ' + self.alks + '\n')
         self.f.write('rlks : ' + self.rlks + '\n')
+        # Enable masking of invalid phase in non-overlapping regions by default
+        # This matches the behavior in StripmapProc
+        if hasattr(self, 'maskInvalid') and self.maskInvalid:
+            self.f.write('mask_invalid : True\n')
+        else:
+            # Default to True to match StripmapProc behavior
+            self.f.write('mask_invalid : True\n')
+        # Additional looks for ionosphere estimation
+        # Only apply additional multilooking for sub-band interferograms (LowBand/HighBand)
+        # Full-band interferograms should not have additional multilooking
+        isSubBand = False
+        if hasattr(self, 'outDir') and self.outDir:
+            isSubBand = 'LowBand' in self.outDir or 'HighBand' in self.outDir
+        if isSubBand:
+            # For sub-band interferograms, write additional looks parameters if they exist
+            if hasattr(self, 'numberRangeLooksIon'):
+                self.f.write('number_range_looks_ion : ' + str(self.numberRangeLooksIon) + '\n')
+            if hasattr(self, 'numberAzimuthLooksIon'):
+                self.f.write('number_azimuth_looks_ion : ' + str(self.numberAzimuthLooksIon) + '\n')
+        # For full-band interferograms, do not write these parameters (they will be None in crossmul.py)
         self.f.write('##########################'+'\n')
 
     def filterCoherence(self, function): 
@@ -214,6 +234,11 @@ class config(object):
         self.f.write('alks : ' + self.alks + '\n')
         self.f.write('rlks : ' + self.rlks + '\n')
         self.f.write('method : ' + self.unwMethod + '\n')
+        # Additional looks for ionosphere estimation
+        if hasattr(self, 'numberRangeLooksIon'):
+            self.f.write('number_range_looks_ion : ' + str(self.numberRangeLooksIon) + '\n')
+        if hasattr(self, 'numberAzimuthLooksIon'):
+            self.f.write('number_azimuth_looks_ion : ' + str(self.numberAzimuthLooksIon) + '\n')
         self.f.write('##########################'+'\n')
 
     def splitRangeSpectrum(self, function):
@@ -248,7 +273,26 @@ class config(object):
         self.f.write('filter_size_x : ' + self.filterSizeX + '\n')
         self.f.write('filter_size_y : ' + self.filterSizeY + '\n')
         self.f.write('filter_kernel_rotation : ' + self.filterKernelRotation + '\n')
+        # Additional looks for ionosphere estimation
+        if hasattr(self, 'numberRangeLooksIon'):
+            self.f.write('number_range_looks_ion : ' + str(self.numberRangeLooksIon) + '\n')
+        if hasattr(self, 'numberAzimuthLooksIon'):
+            self.f.write('number_azimuth_looks_ion : ' + str(self.numberAzimuthLooksIon) + '\n')
         self.f.write('outDir : ' + self.outDir + '\n')
+        self.f.write('##########################'+'\n')
+
+    def rdrDemOffset(self, function):
+        self.f.write('##########################'+'\n')
+        self.f.write(function+'\n')
+        self.f.write('rdrDemOffset : '+'\n')
+        self.f.write('reference : ' + self.slcDir +'\n')
+        self.f.write('dem : ' + self.dem +'\n')
+        self.f.write('output : ' + self.geometryDir +'\n')
+        # Ensure alks and rlks are written as strings (they might be integers)
+        alks_str = str(getattr(self, 'alks', 1))
+        rlks_str = str(getattr(self, 'rlks', 1))
+        self.f.write('alks : ' + alks_str +'\n')
+        self.f.write('rlks : ' + rlks_str +'\n')
         self.f.write('##########################'+'\n')
 
     def finalize(self):
@@ -335,6 +379,12 @@ class run(object):
         configObj.nativeDoppler = focus or native
         configObj.topo('[Function-{0}]'.format(counter))
         counter += 1
+        
+        # Add rdr_dem_offset after topo to refine geometry with estimated offsets
+        # Only if doRdrDemOffset is enabled
+        if getattr(self, 'doRdrDemOffset', False):
+            configObj.rdrDemOffset('[Function-{0}]'.format(counter))
+            counter += 1
 
         if split:
             configObj.slc = os.path.join(configObj.slcDir,stackReference+self.raw_string+'.slc')
@@ -615,14 +665,63 @@ class run(object):
 
             configObj.generateIgram('[Function-1]')
 
-            configObj.igram = configObj.outDir+'.int'
+            # Check if additional multilooking for ionosphere is enabled
+            numberRangeLooksIon = getattr(self, 'numberRangeLooksIon', None)
+            numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooksIon', None)
+            if numberRangeLooksIon is None:
+                numberRangeLooksIon = 16  # default
+            else:
+                # Convert to int if it's a string
+                try:
+                    numberRangeLooksIon = int(numberRangeLooksIon)
+                except (ValueError, TypeError):
+                    numberRangeLooksIon = 16  # fallback to default
+            if numberAzimuthLooksIon is None:
+                numberAzimuthLooksIon = 16  # default
+            else:
+                # Convert to int if it's a string
+                try:
+                    numberAzimuthLooksIon = int(numberAzimuthLooksIon)
+                except (ValueError, TypeError):
+                    numberAzimuthLooksIon = 16  # fallback to default
+            
+            # Determine input interferogram for FilterAndCoherence
+            # For full-band interferograms: filter before additional multilooking
+            # For sub-band interferograms (HighBand/LowBand): filter after additional multilooking
+            # (because dispersive_nonDispersive expects filt_*_*rlks_*alks files)
+            if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
+                ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
+                # Check if this is a sub-band (HighBand or LowBand) processing
+                if low_or_high in ['/LowBand/', '/HighBand/']:
+                    # For sub-bands, use the multilooked interferogram (after additional multilooking)
+                    configObj.igram = configObj.outDir + ml2 + '.int'
+                else:
+                    # For full-band, use the base interferogram (before additional multilooking)
+                    configObj.igram = configObj.outDir + '.int'
+            else:
+                ml2 = ''
+                configObj.igram = configObj.outDir + '.int'  # Use regular file
+            
+            # Determine output filenames for filtered interferogram and coherence
+            # For full-band: filter output should NOT have ml2 suffix (filtering is before additional multilooking)
+            # For sub-bands: filter output should have ml2 suffix (filtering is after additional multilooking)
             if float(configObj.filtStrength) > 0.:
-                configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
-                configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
+                if low_or_high in ['/LowBand/', '/HighBand/']:
+                    # Sub-bands: use ml2 suffix (filtering is after additional multilooking)
+                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.int'
+                    configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
+                else:
+                    # Full-band: no ml2 suffix (filtering is before additional multilooking)
+                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
+                    configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
             else:
                 # do not add prefix filt_ to output file if no filtering is applied.
-                configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.int'
-                configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.cor'
+                if low_or_high in ['/LowBand/', '/HighBand/']:
+                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.int'
+                    configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
+                else:
+                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.int'
+                    configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.cor'
             configObj.filterCoherence('[Function-2]')
 
             # skip phase unwrapping if input method == no
@@ -643,19 +742,56 @@ class run(object):
             configName = os.path.join(self.configDir,config_prefix + pair[0] + '_' + pair[1])
             configObj = config(configName) 
             configObj.configure(self)
-            configObj.lowBandIgram  = os.path.join(self.workDir,
-                                                   'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                   'filt_' + pair[0] + '_'  + pair[1])
-            configObj.highBandIgram = os.path.join(self.workDir,
-                                                   'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                   'filt_' + pair[0] + '_'  + pair[1])
-
-            configObj.lowBandCor  = os.path.join(self.workDir,
-                                                 'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                 'filt_' + pair[0] + '_'  + pair[1] + '.cor')
-            configObj.highBandCor = os.path.join(self.workDir,
-                                                 'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                 'filt_' + pair[0] + '_'  + pair[1] + '.cor')
+            # Check if additional multilooking for ionosphere is enabled
+            numberRangeLooksIon = getattr(self, 'numberRangeLooksIon', None)
+            numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooksIon', None)
+            if numberRangeLooksIon is None:
+                numberRangeLooksIon = 16  # default
+            else:
+                # Convert to int if it's a string
+                try:
+                    numberRangeLooksIon = int(numberRangeLooksIon)
+                except (ValueError, TypeError):
+                    numberRangeLooksIon = 16  # fallback to default
+            if numberAzimuthLooksIon is None:
+                numberAzimuthLooksIon = 16  # default
+            else:
+                # Convert to int if it's a string
+                try:
+                    numberAzimuthLooksIon = int(numberAzimuthLooksIon)
+                except (ValueError, TypeError):
+                    numberAzimuthLooksIon = 16  # fallback to default
+            
+            # Determine file suffixes based on additional multilooking
+            if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
+                ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
+                # Use multilooked files: filt_*_*rlks_*alks_snaphu.unw
+                configObj.lowBandIgram  = os.path.join(self.workDir,
+                                                       'Igrams' + lowBand + pair[0] + '_'  + pair[1],
+                                                       'filt_' + pair[0] + '_'  + pair[1] + ml2)
+                configObj.highBandIgram = os.path.join(self.workDir,
+                                                       'Igrams' + highBand + pair[0] + '_'  + pair[1],
+                                                       'filt_' + pair[0] + '_'  + pair[1] + ml2)
+                configObj.lowBandCor  = os.path.join(self.workDir,
+                                                     'Igrams' + lowBand + pair[0] + '_'  + pair[1],
+                                                     'filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor')
+                configObj.highBandCor = os.path.join(self.workDir,
+                                                     'Igrams' + highBand + pair[0] + '_'  + pair[1],
+                                                     'filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor')
+            else:
+                # Use regular files (no additional multilooking)
+                configObj.lowBandIgram  = os.path.join(self.workDir,
+                                                       'Igrams' + lowBand + pair[0] + '_'  + pair[1],
+                                                       'filt_' + pair[0] + '_'  + pair[1])
+                configObj.highBandIgram = os.path.join(self.workDir,
+                                                       'Igrams' + highBand + pair[0] + '_'  + pair[1],
+                                                       'filt_' + pair[0] + '_'  + pair[1])
+                configObj.lowBandCor  = os.path.join(self.workDir,
+                                                     'Igrams' + lowBand + pair[0] + '_'  + pair[1],
+                                                     'filt_' + pair[0] + '_'  + pair[1] + '.cor')
+                configObj.highBandCor = os.path.join(self.workDir,
+                                                     'Igrams' + highBand + pair[0] + '_'  + pair[1],
+                                                     'filt_' + pair[0] + '_'  + pair[1] + '.cor')
 
             configObj.lowBandShelve = os.path.join(self.slcDir,pair[0] + lowBand  + 'data') 
             configObj.highBandShelve = os.path.join(self.slcDir,pair[0] + highBand  + 'data')   
@@ -696,7 +832,7 @@ def baselinePair(baselineDir, reference, secondary,doBaselines=True):
         except:
             mdb = shelve.open( os.path.join(reference, 'data'), flag='r')
             sdb = shelve.open( os.path.join(secondary, 'data'), flag='r')
-
+        
         mFrame = mdb['frame']
         sFrame = sdb['frame']
 

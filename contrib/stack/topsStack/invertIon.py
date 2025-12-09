@@ -178,7 +178,7 @@ if __name__ == '__main__':
         timeReference = datetime.datetime.strptime(dateReference, "%Y%m%d")
         timeSecondary = datetime.datetime.strptime(dateSecondary, "%Y%m%d")
         ts = np.absolute((timeSecondary - timeReference).total_seconds()) / (365.0 * 24.0 * 3600)
-        if (dateReference in dateExcluded) and (dateSecondary in dateExcluded):
+        if (dateReference in dateExcluded) or (dateSecondary in dateExcluded):
             continue
         if (x in pairExcluded):
             continue
