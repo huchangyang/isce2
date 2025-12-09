@@ -137,6 +137,58 @@ def polyfit_2d(data, weight, order):
     
     return (data_fit, coeff)
 
+
+def correctUnwrappingError(lowerUnw, upperUnw, wgt, adjFlag=1):
+    '''
+    Correct relative phase unwrapping errors between lower and upper band unwrapped interferograms
+    Similar to Alos2Proc computeIonosphere adjustment logic
+    
+    lowerUnw:  lower band unwrapped interferogram (numpy array, phase only)
+    upperUnw:  upper band unwrapped interferogram (numpy array, phase only)
+    wgt:       weight (numpy array)
+    adjFlag:   method for removing relative phase unwrapping errors
+                0: mean value
+                1: polynomial (default)
+    
+    Returns:
+    upperUnw_corrected: corrected upper band unwrapped interferogram
+    '''
+    # Adjust phase using mean value
+    if adjFlag == 0:
+        flag = (lowerUnw!=0)*(wgt!=0)
+        index = np.nonzero(flag!=0)
+        if len(index[0]) > 0:
+            mv = np.mean((lowerUnw - upperUnw)[index], dtype=np.float64)
+            logger.info('mean value of phase difference: {}'.format(mv))
+            diff = mv
+        else:
+            logger.warning('No valid pixels for mean adjustment, skipping')
+            return upperUnw.copy()
+    # Adjust phase using a surface (polynomial)
+    else:
+        diff, coeff = polyfit_2d(lowerUnw - upperUnw, wgt, 2)
+    
+    # Only adjust pixels with valid weight (high coherence regions)
+    # This prevents adjusting low-coherence noisy regions
+    flag2 = (lowerUnw!=0)*(wgt!=0)
+    index2 = np.nonzero(flag2)
+    # Phase for adjustment
+    unwd = ((lowerUnw - upperUnw) - diff)[index2] / (2.0*np.pi)
+    unw_adj = np.around(unwd) * (2.0*np.pi)
+    # Adjust phase of upper band (only for high-coherence pixels)
+    upperUnw_corrected = upperUnw.copy()
+    upperUnw_corrected[index2] += unw_adj
+    
+    unw_diff = (lowerUnw - upperUnw_corrected)[index2]
+    if len(unw_diff) > 0:
+        logger.info('after adjustment:')
+        logger.info('max phase difference: {}'.format(np.amax(unw_diff)))
+        logger.info('min phase difference: {}'.format(np.amin(unw_diff)))
+        logger.info('max-min: {}'.format(np.amax(unw_diff) - np.amin(unw_diff)))
+    
+    return upperUnw_corrected
+
+
 def dispersive_nonDispersive(lowBandIgram, highBandIgram, f0, fL, fH, outDispersive, outNonDispersive, y_ref=None, x_ref=None, m=None , d=None):
     
     if y_ref and x_ref:
@@ -927,8 +979,201 @@ def runDispersive(self):
     else:
         logger.info('Using regular unwrapped interferograms for ionosphere estimation')
     
-    # Use original method with unwrapped phase files
-    dispersive_nonDispersive(lowBandIgram, highBandIgram, f0, fL, fH, outDispersive, outNonDispersive)
+    # Correct unwrapping errors before computing ionosphere (similar to Alos2Proc)
+    logger.info('Correcting unwrapping errors before computing ionosphere')
+    adjFlag = getattr(self, 'adjFlagIon', 1)  # Default: polynomial adjustment
+    corThresholdAdj = getattr(self, 'corThresholdAdjIon', 0.97)
+    corOrderAdj = getattr(self, 'corOrderAdjIon', 20)
+    
+    # Read unwrapped interferograms
+    try:
+        # Read .unw files (format: amplitude in band 1, phase in band 2)
+        ds_low = gdal.Open(lowBandIgram + '.vrt', gdal.GA_ReadOnly)
+        ds_high = gdal.Open(highBandIgram + '.vrt', gdal.GA_ReadOnly)
+        
+        if ds_low is None or ds_high is None:
+            logger.warning('Could not open unwrapped interferogram files, skipping unwrapping error correction')
+            lowBandIgram_corrected = lowBandIgram
+            highBandIgram_corrected = highBandIgram
+        else:
+            width = ds_low.RasterXSize
+            length = ds_low.RasterYSize
+            
+            # Read phase (band 2)
+            lowerUnw = ds_low.GetRasterBand(2).ReadAsArray()
+            upperUnw = ds_high.GetRasterBand(2).ReadAsArray()
+            
+            # Read coherence for weighting (try to find coherence files)
+            ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+            lowBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
+            ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
+            highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
+            
+            if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
+                try:
+                    # Read coherence (StripmapProc coherence files have single band)
+                    # Try .vrt first, then .xml (which GDAL can read directly)
+                    vrt_low = lowBandCor + '.vrt'
+                    vrt_high = highBandCor + '.vrt'
+                    if not os.path.exists(vrt_low):
+                        vrt_low = lowBandCor + '.xml'
+                    if not os.path.exists(vrt_high):
+                        vrt_high = highBandCor + '.xml'
+                    
+                    # Open with error handling
+                    # If VRT doesn't exist but XML does, try to create VRT first
+                    if vrt_low.endswith('.xml') and not os.path.exists(lowBandCor + '.vrt'):
+                        try:
+                            img_temp = isceobj.createImage()
+                            img_temp.load(lowBandCor + '.xml')
+                            img_temp.renderVRT()
+                        except:
+                            pass
+                    if vrt_high.endswith('.xml') and not os.path.exists(highBandCor + '.vrt'):
+                        try:
+                            img_temp = isceobj.createImage()
+                            img_temp.load(highBandCor + '.xml')
+                            img_temp.renderVRT()
+                        except:
+                            pass
+                    
+                    ds_cor_low = None
+                    ds_cor_high = None
+                    try:
+                        ds_cor_low = gdal.Open(vrt_low, gdal.GA_ReadOnly)
+                    except Exception as e:
+                        logger.debug('Error opening low band coherence file {}: {}'.format(vrt_low, e))
+                    
+                    try:
+                        ds_cor_high = gdal.Open(vrt_high, gdal.GA_ReadOnly)
+                    except Exception as e:
+                        logger.debug('Error opening high band coherence file {}: {}'.format(vrt_high, e))
+                    
+                    if ds_cor_low is None:
+                        logger.warning('Could not open low band coherence file: {}'.format(vrt_low))
+                    if ds_cor_high is None:
+                        logger.warning('Could not open high band coherence file: {}'.format(vrt_high))
+                    
+                    if ds_cor_low and ds_cor_high:
+                        # Check number of bands - StripmapProc coherence files are single band
+                        nbands_low = ds_cor_low.RasterCount
+                        nbands_high = ds_cor_high.RasterCount
+                        logger.debug('Low band coherence file has {} bands, high band has {} bands'.format(nbands_low, nbands_high))
+                        
+                        if nbands_low >= 1 and nbands_high >= 1:
+                            # Read band 1 (coherence files in StripmapProc are single band)
+                            # Always use band 1 for StripmapProc coherence files
+                            band_to_read = 1
+                            
+                            # Verify band exists
+                            if band_to_read > nbands_low or band_to_read > nbands_high:
+                                raise Exception('Band {} does not exist in coherence files (low has {} bands, high has {} bands)'.format(
+                                    band_to_read, nbands_low, nbands_high))
+                            
+                            cor_low = ds_cor_low.GetRasterBand(band_to_read).ReadAsArray()
+                            cor_high = ds_cor_high.GetRasterBand(band_to_read).ReadAsArray()
+                            
+                            # Check dimensions match
+                            if cor_low.shape != (length, width) or cor_high.shape != (length, width):
+                                logger.warning('Coherence dimensions ({}, {}) do not match unwrapped interferogram dimensions ({}, {}). Using uniform weight.'.format(
+                                    cor_low.shape, cor_high.shape, (length, width)))
+                                raise Exception('Dimension mismatch')
+                            
+                            cor = (cor_low + cor_high) / 2.0
+                            cor[np.nonzero(cor<0)] = 0.0
+                            cor[np.nonzero(cor>1)] = 0.0
+                            # Prepare weight
+                            wgt = cor**corOrderAdj
+                            wgt[np.nonzero(cor<corThresholdAdj)] = 0
+                            logger.info('Successfully read coherence files for weighting (using band {})'.format(band_to_read))
+                        else:
+                            raise Exception('Coherence files have invalid number of bands: low={}, high={}'.format(nbands_low, nbands_high))
+                        
+                        ds_cor_low = None
+                        ds_cor_high = None
+                    else:
+                        # Fallback: use uniform weight
+                        logger.warning('Could not open coherence files. Using uniform weight for unwrapping error correction.')
+                        wgt = np.ones((length, width), dtype=np.float32)
+                        wgt[lowerUnw==0] = 0
+                        wgt[upperUnw==0] = 0
+                except Exception as e:
+                    logger.warning('Could not read coherence files for weighting: {}. Using uniform weight.'.format(e))
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                    wgt = np.ones((length, width), dtype=np.float32)
+                    wgt[lowerUnw==0] = 0
+                    wgt[upperUnw==0] = 0
+            else:
+                # Fallback: use uniform weight
+                wgt = np.ones((length, width), dtype=np.float32)
+                wgt[lowerUnw==0] = 0
+                wgt[upperUnw==0] = 0
+            
+            # Correct unwrapping errors
+            upperUnw_corrected = correctUnwrappingError(lowerUnw, upperUnw, wgt, adjFlag)
+            
+            # Save corrected upper band unwrapped interferogram to temporary file
+            # Use Alos2Proc-style BIL format: amplitude and phase interleaved by line
+            highBandIgram_corrected = highBandIgram + '_unwCor'
+            
+            # Verify dimensions
+            if upperUnw_corrected.shape != (length, width):
+                logger.error('Corrected phase dimensions mismatch: got {}, expected ({}, {})'.format(
+                    upperUnw_corrected.shape, length, width))
+                raise Exception('Corrected phase dimension mismatch')
+            
+            # Read amplitude from original file (band 1)
+            amp_high = ds_high.GetRasterBand(1).ReadAsArray()
+            
+            # Verify amplitude dimensions
+            if amp_high.shape != (length, width):
+                logger.error('Amplitude dimensions mismatch: got {}, expected ({}, {})'.format(
+                    amp_high.shape, length, width))
+                raise Exception('Amplitude dimension mismatch')
+            
+            # Ensure float32 type
+            amp_high = amp_high.astype(np.float32)
+            upperUnw_corrected = upperUnw_corrected.astype(np.float32)
+            
+            # Create BIL format array: interleave amplitude and phase by line
+            # Format: [amp_line0, phase_line0, amp_line1, phase_line1, ...]
+            unw_corrected_bil = np.zeros((length*2, width), dtype=np.float32)
+            unw_corrected_bil[0:length*2:2, :] = amp_high  # Even lines: amplitude
+            unw_corrected_bil[1:length*2:2, :] = upperUnw_corrected  # Odd lines: phase
+            
+            # Write to file using numpy (same as Alos2Proc)
+            unw_corrected_bil.tofile(highBandIgram_corrected)
+            
+            # Create XML and VRT files (same as Alos2Proc style)
+            # Use isceobj to create XML metadata
+            img = isceobj.createImage()
+            img.setFilename(highBandIgram_corrected)
+            img.setWidth(width)
+            img.setLength(length)
+            img.setAccessMode('READ')
+            img.bands = 2
+            img.dataType = 'FLOAT'
+            img.scheme = 'BIL'  # Band Interleaved by Line format
+            img.renderHdr()
+            img.renderVRT()
+            
+            logger.info('Saved corrected upper band unwrapped interferogram to: {} (BIL format)'.format(highBandIgram_corrected))
+            # Use corrected file for upper band, original for lower band
+            lowBandIgram_corrected = lowBandIgram  # Lower band doesn't need correction
+            
+            ds_low = None
+            ds_high = None
+            
+    except Exception as e:
+        logger.warning('Error during unwrapping error correction: {}. Using original files.'.format(e))
+        import traceback
+        logger.debug(traceback.format_exc())
+        lowBandIgram_corrected = lowBandIgram
+        highBandIgram_corrected = highBandIgram
+    
+    # Use corrected unwrapped interferogram files for computing ionosphere
+    dispersive_nonDispersive(lowBandIgram_corrected, highBandIgram_corrected, f0, fL, fH, outDispersive, outNonDispersive)
 
     # If median filter is selected, compute the ionosphere phase standard deviation at a mean coherence value defined by the user
     if self.dispersive_filter_mask_type == "median_filter":
@@ -1021,9 +1266,9 @@ def runDispersive(self):
         # - window size of secondary filtering: 5
         # - apply polynomial fit in adaptive filtering window: True
         # - whether do secondary filtering: True
-        size_max = getattr(self, 'filteringWinsizeMaxIon', 301)
-        size_min = getattr(self, 'filteringWinsizeMinIon', 11)
-        size_secondary = getattr(self, 'filteringWinsizeSecondaryIon', 5)
+        size_max = getattr(self, 'filteringWinsizeMaxIon', 501)
+        size_min = getattr(self, 'filteringWinsizeMinIon', 31)
+        size_secondary = getattr(self, 'filteringWinsizeSecondaryIon', 11)
         std_out0 = getattr(self, 'filterStdIon', None)  # None means auto-determine based on mode
         fitAdaptive = getattr(self, 'fitAdaptiveIon', True)
         filtSecondary = getattr(self, 'filtSecondaryIon', True)
@@ -1062,13 +1307,42 @@ def runDispersive(self):
             
             if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
                 try:
-                    cor_low = np.fromfile(lowBandCor, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
-                    cor_high = np.fromfile(highBandCor, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
-                    cor = (cor_low + cor_high) / 2.0
-                    cor[np.nonzero(cor<0)] = 0.0
-                    cor[np.nonzero(cor>1)] = 0.0
-                    wgt[np.nonzero(cor<corThresholdFit)] = 0
-                except:
+                    # StripmapProc coherence files are single band
+                    # Try .vrt first, then .xml (which will create VRT if needed)
+                    vrt_low = lowBandCor + '.vrt'
+                    vrt_high = highBandCor + '.vrt'
+                    if not os.path.exists(vrt_low):
+                        vrt_low = lowBandCor + '.xml'
+                    if not os.path.exists(vrt_high):
+                        vrt_high = highBandCor + '.xml'
+                    
+                    ds_cor_low = gdal.Open(vrt_low, gdal.GA_ReadOnly)
+                    ds_cor_high = gdal.Open(vrt_high, gdal.GA_ReadOnly)
+                    
+                    if ds_cor_low and ds_cor_high:
+                        nbands_low = ds_cor_low.RasterCount
+                        nbands_high = ds_cor_high.RasterCount
+                        # Handle both single band and two-band formats
+                        band_to_read = 1 if nbands_low == 1 else 2
+                        if band_to_read > nbands_low:
+                            band_to_read = nbands_low
+                        if band_to_read > nbands_high:
+                            band_to_read = min(nbands_low, nbands_high)
+                        
+                        # Read coherence (single band format)
+                        cor_low = ds_cor_low.GetRasterBand(band_to_read).ReadAsArray()
+                        cor_high = ds_cor_high.GetRasterBand(band_to_read).ReadAsArray()
+                        
+                        # Check dimensions match
+                        if cor_low.shape == (length, width) and cor_high.shape == (length, width):
+                            cor = (cor_low + cor_high) / 2.0
+                            cor[np.nonzero(cor<0)] = 0.0
+                            cor[np.nonzero(cor>1)] = 0.0
+                            wgt[np.nonzero(cor<corThresholdFit)] = 0
+                        ds_cor_low = None
+                        ds_cor_high = None
+                except Exception as e:
+                    logger.debug('Could not read coherence files for dispersive polynomial fit weighting: {}'.format(e))
                     pass
             
             # Normalize weight
@@ -1140,13 +1414,45 @@ def runDispersive(self):
             wgt[np.nonzero(std_nonDisp==0)] = 0
             if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
                 try:
-                    cor_low = np.fromfile(lowBandCor, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
-                    cor_high = np.fromfile(highBandCor, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
-                    cor = (cor_low + cor_high) / 2.0
-                    cor[np.nonzero(cor<0)] = 0.0
-                    cor[np.nonzero(cor>1)] = 0.0
-                    wgt[np.nonzero(cor<corThresholdFit)] = 0
-                except:
+                    # StripmapProc coherence files are single band
+                    # Try .vrt first, then .xml (which will create VRT if needed)
+                    vrt_low = lowBandCor + '.vrt'
+                    vrt_high = highBandCor + '.vrt'
+                    if not os.path.exists(vrt_low):
+                        vrt_low = lowBandCor + '.xml'
+                    if not os.path.exists(vrt_high):
+                        vrt_high = highBandCor + '.xml'
+                    
+                    ds_cor_low = gdal.Open(vrt_low, gdal.GA_ReadOnly)
+                    ds_cor_high = gdal.Open(vrt_high, gdal.GA_ReadOnly)
+                    
+                    if ds_cor_low and ds_cor_high:
+                        nbands_low = ds_cor_low.RasterCount
+                        nbands_high = ds_cor_high.RasterCount
+                        # StripmapProc coherence files are single band, always use band 1
+                        band_to_read = 1
+                        
+                        # Verify band exists
+                        if band_to_read > nbands_low or band_to_read > nbands_high:
+                            logger.debug('Band {} does not exist in coherence files (low has {} bands, high has {} bands)'.format(
+                                band_to_read, nbands_low, nbands_high))
+                        else:
+                            # Read coherence (single band format)
+                            cor_low = ds_cor_low.GetRasterBand(band_to_read).ReadAsArray()
+                            cor_high = ds_cor_high.GetRasterBand(band_to_read).ReadAsArray()
+                            
+                            # Check dimensions match
+                            if cor_low.shape == (length, width) and cor_high.shape == (length, width):
+                                cor = (cor_low + cor_high) / 2.0
+                                cor[np.nonzero(cor<0)] = 0.0
+                                cor[np.nonzero(cor>1)] = 0.0
+                                wgt[np.nonzero(cor<corThresholdFit)] = 0
+                            else:
+                                logger.debug('Coherence dimensions do not match for non-dispersive polynomial fit weighting')
+                        ds_cor_low = None
+                        ds_cor_high = None
+                except Exception as e:
+                    logger.debug('Could not read coherence files for non-dispersive polynomial fit weighting: {}'.format(e))
                     pass
             index = np.nonzero(wgt!=0)
             if len(index[0]) > 0:
@@ -1215,28 +1521,34 @@ def runDispersive(self):
                     iteration = self.dispersive_filter_iterations,
                     theta = self.kernel_rotation)
             
-            
-    # Estimating phase unwrapping errors
-    mFile , dFile = unwrapp_error_correction(f0, B, outDispersive+".filt", outNonDispersive+".filt", 
-                                                    lowBandIgram, highBandIgram)
+    # Iterative unwrapping error correction (optional, since we already corrected before computation)
+    # This step estimates errors from filtered results and re-computes
+    doIterativeUnwCorrection = getattr(self, 'doIterativeUnwCorrection', False)
+    if doIterativeUnwCorrection:
+        logger.info('Performing iterative unwrapping error correction (after filtering)')
+        # Estimating phase unwrapping errors from filtered results
+        mFile , dFile = unwrapp_error_correction(f0, B, outDispersive+".filt", outNonDispersive+".filt", 
+                                                        lowBandIgram, highBandIgram)
 
-    # re-estimate the dispersive and non-dispersive phase components by taking into account the unwrapping errors
-    outDispersive = outDispersive + ".unwCor"
-    outNonDispersive = outNonDispersive + ".unwCor"
-    dispersive_nonDispersive(lowBandIgram, highBandIgram, f0, fL, fH, outDispersive, outNonDispersive, m=mFile , d=dFile)
+        # re-estimate the dispersive and non-dispersive phase components by taking into account the unwrapping errors
+        outDispersive = outDispersive + ".unwCor"
+        outNonDispersive = outNonDispersive + ".unwCor"
+        dispersive_nonDispersive(lowBandIgram, highBandIgram, f0, fL, fH, outDispersive, outNonDispersive, m=mFile , d=dFile)
 
-    # low pass filtering the new estimations 
-    lowPassFilter(self,outDispersive, sigmaDispersive, maskFile, 
-                    self.kernel_x_size, self.kernel_y_size,
-                    self.kernel_sigma_x, self.kernel_sigma_y,
-                    iteration = self.dispersive_filter_iterations,
-                    theta = self.kernel_rotation)
+        # low pass filtering the new estimations 
+        lowPassFilter(self,outDispersive, sigmaDispersive, maskFile, 
+                        self.kernel_x_size, self.kernel_y_size,
+                        self.kernel_sigma_x, self.kernel_sigma_y,
+                        iteration = self.dispersive_filter_iterations,
+                        theta = self.kernel_rotation)
 
-    lowPassFilter(self,outNonDispersive, sigmaNonDispersive, maskFile,
-                    self.kernel_x_size, self.kernel_y_size,
-                    self.kernel_sigma_x, self.kernel_sigma_y,
-                    iteration = self.dispersive_filter_iterations,
-                    theta = self.kernel_rotation)
+        lowPassFilter(self,outNonDispersive, sigmaNonDispersive, maskFile,
+                        self.kernel_x_size, self.kernel_y_size,
+                        self.kernel_sigma_x, self.kernel_sigma_y,
+                        iteration = self.dispersive_filter_iterations,
+                        theta = self.kernel_rotation)
+    else:
+        logger.info('Skipping iterative unwrapping error correction (already corrected before computation)')
     
     # Resample ionospheric phase back to original multilooked resolution if additional looks were used
     if useMultilookedUnw and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):

@@ -37,8 +37,6 @@ import isceobj
 from iscesys.ImageUtil.ImageUtil import ImageUtil as IU
 from mroipac.filter.Filter import Filter
 from mroipac.icu.Icu import Icu
-from contrib.alos2filter.alos2filter import psfilt1
-from isceobj.Alos2Proc.Alos2ProcPublic import create_xml
 import os
 
 logger = logging.getLogger('isce.insar.runFilter')
@@ -135,21 +133,24 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
             filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(topoflatIntFilename))
     else:
         filtIntFilename = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
-    # Get filter parameters
+    
+    filtImage = isceobj.createIntImage()
+    filtImage.setFilename(filtIntFilename)
+    filtImage.setWidth(widthInt)
+    filtImage.setAccessMode('write')
+    filtImage.createImage()
+    
+    objFilter = Filter()
+    objFilter.wireInputPort(name='interferogram',object=intImage)
+    objFilter.wireOutputPort(name='filtered interferogram',object=filtImage)
     if filterStrength is not None:
         self.insar.filterStrength = filterStrength
     
-    # Get filter window size and step size (use Alos2Proc style filtering)
-    filterWinsize = getattr(self.insar, 'filterWinsize', 32)
-    filterStepsize = getattr(self.insar, 'filterStepsize', 16)
-    
-    # Use psfilt1 (Alos2Proc filter) instead of goldsteinWerner
-    lengthInt = intImage.getLength()
-    psfilt1(topoflatIntFilename, filtIntFilename, widthInt, self.insar.filterStrength, filterWinsize, filterStepsize)
-    create_xml(filtIntFilename, widthInt, lengthInt, 'int')
-    
-    # Note: psfilt1 preserves magnitude, so no need to restore like in Alos2Proc
+    objFilter.goldsteinWerner(alpha=self.insar.filterStrength)
+
     intImage.finalizeImage()
+    filtImage.finalizeImage()
+    del filtImage
     
     #Create phase sigma correlation file here
     filtImage = isceobj.createIntImage()

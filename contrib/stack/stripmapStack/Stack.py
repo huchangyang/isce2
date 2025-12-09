@@ -686,25 +686,37 @@ class run(object):
                     numberAzimuthLooksIon = 16  # fallback to default
             
             # Determine input interferogram for FilterAndCoherence
-            # If additional multilooking is enabled, use the multilooked file
+            # For full-band interferograms: filter before additional multilooking
+            # For sub-band interferograms (HighBand/LowBand): filter after additional multilooking
+            # (because dispersive_nonDispersive expects filt_*_*rlks_*alks files)
             if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
                 ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-                configObj.igram = configObj.outDir + ml2 + '.int'  # Use multilooked file
+                # Check if this is a sub-band (HighBand or LowBand) processing
+                if low_or_high in ['/LowBand/', '/HighBand/']:
+                    # For sub-bands, use the multilooked interferogram (after additional multilooking)
+                    configObj.igram = configObj.outDir + ml2 + '.int'
+                else:
+                    # For full-band, use the base interferogram (before additional multilooking)
+                    configObj.igram = configObj.outDir + '.int'
             else:
-                configObj.igram = configObj.outDir+'.int'  # Use regular file
+                ml2 = ''
+                configObj.igram = configObj.outDir + '.int'  # Use regular file
             
             # Determine output filenames for filtered interferogram and coherence
+            # For full-band: filter output should NOT have ml2 suffix (filtering is before additional multilooking)
+            # For sub-bands: filter output should have ml2 suffix (filtering is after additional multilooking)
             if float(configObj.filtStrength) > 0.:
-                if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
-                    # Output files should have filt_ prefix and multilook suffix
+                if low_or_high in ['/LowBand/', '/HighBand/']:
+                    # Sub-bands: use ml2 suffix (filtering is after additional multilooking)
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
                 else:
+                    # Full-band: no ml2 suffix (filtering is before additional multilooking)
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
             else:
                 # do not add prefix filt_ to output file if no filtering is applied.
-                if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
+                if low_or_high in ['/LowBand/', '/HighBand/']:
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
                 else:

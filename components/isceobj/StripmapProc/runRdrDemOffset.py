@@ -168,20 +168,22 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
                     os.path.exists(simampFile + '.xml') and 
                     os.path.exists(simampFile + '.vrt'))
     
-    # Check if sim.float already exists (in current working directory)
-    simLookFile = 'sim.float'
+    # Check if sim.rdr already exists (in current working directory)
+    # Changed from sim.float to sim.rdr
+    simLookFile = 'sim.rdr'
     simExists = (os.path.exists(simLookFile) and 
                  os.path.exists(simLookFile + '.xml') and 
                  os.path.exists(simLookFile + '.vrt'))
     
-    # Check if amp.float already exists
-    referenceAmplitudeFilename = 'amp.float'
+    # Check if amp.rdr already exists
+    # Changed from amp.float to amp.rdr
+    referenceAmplitudeFilename = 'amp.rdr'
     ampExists = (os.path.exists(referenceAmplitudeFilename) and 
                  os.path.exists(referenceAmplitudeFilename + '.xml') and 
                  os.path.exists(referenceAmplitudeFilename + '.vrt'))
     
     # Generate simulated radar image if not exists
-    # Prefer simamp.rdr from topo.py if it exists, otherwise generate sim.float
+    # Prefer simamp.rdr from topo.py if it exists, otherwise generate sim.rdr
     if simampExists:
         logger.info("Found simamp.rdr from topo.py, using it for correlation")
         # Create a symlink or copy to current directory for convenience
@@ -190,14 +192,14 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         simExists = True
     elif not simExists:
         logger.info("Simulated radar image not found, generating from DEM...")
-        # Directly generate sim.float instead of generating hgt.rdr.sim and copying
+        # Directly generate sim.rdr instead of sim.float
         simulateRadar(heightFile, simLookFile, scale=3.0, offset=100.0)
         simExists = True
     else:
-        logger.info("Simulated radar image (sim.float) already exists, skipping generation")
+        logger.info("Simulated radar image (sim.rdr) already exists, skipping generation")
     
     # Load sim image to get dimensions
-    # Handle both absolute path (simamp.rdr) and relative path (sim.float)
+    # Handle both absolute path (simamp.rdr) and relative path (sim.rdr)
     sim = isceobj.createImage()
     simXmlPath = simLookFile + '.xml'
     if not os.path.isabs(simXmlPath):
@@ -259,7 +261,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
                 # Compute amplitude: |complex| = sqrt(real^2 + imag^2)
                 ampData[i:i+lines_to_read, :] = np.abs(complex_data)
         
-        # Write amplitude data as .float file (like Alos2Proc)
+        # Write amplitude data as .rdr file (changed from .float)
         ampImage = isceobj.createImage()
         ampImage.setDataType('FLOAT')
         ampImage.setFilename(referenceAmplitudeFilename)
@@ -275,9 +277,9 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         slcImage.finalizeImage()
         ampImage.finalizeImage()
         ampImage.renderHdr()
-        logger.info("Amplitude image (amp.float) generated successfully")
+        logger.info("Amplitude image (amp.rdr) generated successfully")
     else:
-        logger.info("Amplitude image (amp.float) already exists, skipping computation")
+        logger.info("Amplitude image (amp.rdr) already exists, skipping computation")
 
     # Get image dimensions for offset calculation
     width = sim.width
@@ -521,6 +523,21 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         # Store as affine transform format: [1, 0, 0, 1, rg_offset, az_offset]
         self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, rg_offset, az_offset]
         
+        # Save offsets to text file in geometry directory
+        if originalGeometryDir is not None:
+            offsetFile = os.path.join(originalGeometryDir, 'rdr_dem_offsets.txt')
+            try:
+                with open(offsetFile, 'w') as f:
+                    f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
+                    f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
+                    f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
+                    f.write('range_offset: {:.6f}\n'.format(rg_offset))
+                    f.write('azimuth_offset: {:.6f}\n'.format(az_offset))
+                    f.write('affine_transform: {}\n'.format(self._insar.radarDemAffineTransform))
+                logger.info('Saved offsets to file: {}'.format(offsetFile))
+            except Exception as e:
+                logger.warning('Failed to save offsets to file: {}'.format(e))
+        
         if catalog is not None:
             catalog.addItem('radar dem range offset', '{:.6f}'.format(rg_offset), 'runRdrDemOffset')
             catalog.addItem('radar dem azimuth offset', '{:.6f}'.format(az_offset), 'runRdrDemOffset')
@@ -563,6 +580,23 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         self._insar.radarDemRangeOffset = 0.0
         self._insar.radarDemAzimuthOffset = 0.0
         self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        
+        # Save zero offsets to text file as well
+        if originalGeometryDir is not None:
+            offsetFile = os.path.join(originalGeometryDir, 'rdr_dem_offsets.txt')
+            try:
+                with open(offsetFile, 'w') as f:
+                    f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
+                    f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
+                    f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
+                    f.write('# Warning: Could not fit offsets, using zero offsets\n')
+                    f.write('range_offset: 0.000000\n')
+                    f.write('azimuth_offset: 0.000000\n')
+                    f.write('affine_transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]\n')
+                logger.info('Saved zero offsets to file: {}'.format(offsetFile))
+            except Exception as e2:
+                logger.warning('Failed to save offsets to file: {}'.format(e2))
+        
         if catalog is not None:
             catalog.addItem('warning message', 
                           'Could not fit constant offsets, using zero offsets', 
@@ -603,7 +637,9 @@ def simulateRadar(hgtfile, simfile, scale=3.0, offset=100.0):
 
     hgtfp.close()
     simfp.close()
-    create_xml(simfile, hgt.width, hgt.length, 'float')
+    # Changed from 'float' to 'rdr' - but still use FLOAT data type
+    # The fileType parameter is used for XML creation, but we want .rdr extension
+    create_xml(simfile, hgt.width, hgt.length, 'rdr')
 
 
 def create_xml(fileName, width, length, fileType):
@@ -616,7 +652,9 @@ def create_xml(fileName, width, length, fileType):
         image = isceobj.createIntImage()
     elif fileType == 'amp':
         image = isceobj.createAmpImage()
-    elif fileType == 'float':
+    elif fileType == 'float' or fileType == 'rdr':
+        # Support both 'float' and 'rdr' - both use FLOAT data type
+        # 'rdr' is just a naming convention, data type is still FLOAT
         image = isceobj.createImage()
         image.setDataType('FLOAT')
     elif fileType == 'double':

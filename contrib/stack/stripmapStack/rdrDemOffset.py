@@ -95,7 +95,8 @@ def main(iargs=None):
     inps = cmdLineParse(iargs)
     
     # Load reference frame
-    db = shelve.open(os.path.join(inps.reference, 'data'))
+    framePath = os.path.join(inps.reference, 'data')
+    db = shelve.open(framePath)
     frame = db['frame']
     db.close()
     
@@ -189,7 +190,10 @@ def main(iargs=None):
         
         @sensingStart.setter
         def sensingStart(self, value):
-            frame.sensingStart = value
+            if hasattr(frame, 'setSensingStart'):
+                frame.setSensingStart(value)
+            else:
+                frame.sensingStart = value
         
         @property
         def PRF(self):
@@ -223,12 +227,20 @@ def main(iargs=None):
     # Update frame with corrected geometry if offsets were estimated
     if abs(adapter._insar.radarDemRangeOffset) > 0.01 or abs(adapter._insar.radarDemAzimuthOffset) > 0.01:
         logger.info('Updating frame with corrected geometry')
+        # Get corrected values (already updated in rdrDemOffset via ReferenceInfoWrapper)
         frame.startingRange = referenceInfo.startingRange
-        frame.sensingStart = referenceInfo.sensingStart
+        if hasattr(frame, 'setSensingStart'):
+            frame.setSensingStart(referenceInfo.sensingStart)
+        else:
+            frame.sensingStart = referenceInfo.sensingStart
         
-        # Save updated frame
-        db = shelve.open(os.path.join(inps.reference, 'data'), writeback=True)
+        # Save updated frame - shelve doesn't detect attribute changes, so delete and reassign
+        framePath = os.path.join(inps.reference, 'data')
+        db = shelve.open(framePath, writeback=True)
+        if 'frame' in db:
+            del db['frame']
         db['frame'] = frame
+        db.sync()
         db.close()
         logger.info('Saved updated frame with corrected geometry')
         

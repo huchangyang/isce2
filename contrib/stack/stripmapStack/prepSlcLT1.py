@@ -66,7 +66,7 @@ def get_Date(LT1_folder):
     """Grab acquisition date"""
     # will search for meta data of LT1 SLCS to get the acquisition date
     metadata_patterns = [
-        os.path.join(LT1_folder, 'L1TA_*.meta.xml'),
+        os.path.join(LT1_folder, 'LT1A_*.meta.xml'),
         os.path.join(LT1_folder, 'LT1B_*.meta.xml')
     ]
     
@@ -103,7 +103,8 @@ def get_LT1_name(infile):
     fbase = os.path.basename(infile)
     if 'LT1' in fbase:
         fbase = fbase.replace('_','-')
-        outname = fbase.replace('.tar.gz', '')
+        # Remove common compression extensions
+        outname = fbase.replace('.tar.gz', '').replace('.tar', '').replace('.zip', '').replace('.gz', '')
     else:
         fext = os.path.splitext(infile)[1]
         if fext in ['.tar', '.gz']:
