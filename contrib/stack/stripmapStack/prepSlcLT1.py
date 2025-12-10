@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Author: David Bekaert
-# Hu Changyang, adopted from prepSlcALOS2.py for LT1 SLC
+# Hu Changyang, adopted from prepSlcALOS2.py for LT1 SLC, 2024-12
 
 
 import os
@@ -13,7 +13,7 @@ from uncompressFile import uncompressfile
 import xml.etree.ElementTree as ET
 
 EXAMPLE = """example:
-  prepSlcLT1.py -i download -o SLC -orbit orbits
+  prepSlcLT1.py -i download -o SLC --orbit orbits
 """
 
 def createParser():
@@ -35,12 +35,12 @@ def createParser():
     parser.add_argument('-p', '--polarization', dest='polarization', type=str,
             help='polarization in case if quad or full pol data exists (default: %(default)s).')
 
-    parser.add_argument('-rmfile', '--rmfile', dest='rmfile',action='store_true', default=False,
+    parser.add_argument('--rmfile', dest='rmfile',action='store_true', default=False,
             help='Optional: remove zip/tar/compressed files after unpacking into date structure '
                  '(default is to keep in archive folder)')
     
-    parser.add_argument('-orbit', '--orbitfile', dest='orbitfile', type=str, default=None, required=False,
-                        help='Optional: directory with the precise orbit file for LT1 SLC (default: %(default)s).')
+    parser.add_argument('--orbit', dest='orbitDir', type=str, default=None, required=False,
+                        help='Optional: directory with the precise orbit files for LT1 SLC (default: %(default)s).')
     
     return parser
 
@@ -229,7 +229,7 @@ def main(iargs=None):
                 shutil.rmtree(LT1_folder_out)
                 
             # copy orbit file to SLC directory
-            copy_orbit_file(inps.orbitfile, imgDate, SLC_dir)
+            copy_orbit_file(inps.orbitDir, imgDate, SLC_dir)
 
             # move the LT1 acqusition folder in the date folder
             cmd = 'mv ' + LT1_folder + '/* ' + SLC_dir
@@ -254,8 +254,8 @@ def main(iargs=None):
                 cmd = 'unpackFrame_LT1.py -i ' + os.path.abspath(dateDir) + ' -o ' + slcDir
                 if inps.polarization:
                     cmd += ' --polarization {} '.format(inps.polarization)
-                if inps.orbitfile:
-                    cmd += ' --orbitfile ' + inps.orbitfile
+                if inps.orbitDir:
+                    cmd += ' --orbit ' + inps.orbitDir
                 print (cmd)
                 f.write(inps.text_cmd + cmd+'\n')
         f.close()
