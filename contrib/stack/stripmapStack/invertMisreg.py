@@ -24,6 +24,8 @@ def createParser():
             help='Directory with the overlap directories that has calculated misregistration for each pair')
     parser.add_argument('-o', '--output', type=str, dest='output', required=True,
             help='output directory to save misregistration for each date with respect to the stack Reference date')
+    parser.add_argument('-r', '--reference', type=str, dest='reference', default=None,
+            help='Reference date (YYYYMMDD format). If not provided, the first date in sorted dateList will be used.')
     parser.add_argument('-f', '--misregFileName', type=str, dest='misregFileName', default='misreg.txt',
             help='misreg file name that contains the calculated misregistration for a pair')
 
@@ -93,7 +95,7 @@ def getPolyInfo(filename):
   #return np.size(azCoefs), np.size(rgCoefs), np.shape(azCoefs), np.shape(rgCoefs)
 
 ######################################
-def design_matrix(pairDirs):
+def design_matrix(pairDirs, referenceDate=None):
   '''Make the design matrix for the inversion.  '''
   tbase,dateList,dateDict = date_list(pairDirs)
   numDates = len(dateDict)
@@ -125,12 +127,24 @@ def design_matrix(pairDirs):
     Laz[ni,:] = azOff[:]
     Lrg[ni,:] = rgOff[:]
 
-  A = A[:,1:]
-  B = B[:,:-1]
+  # Find reference date index
+  if referenceDate is None:
+    # Default: use first date in sorted list (original behavior)
+    refIdx = 0
+  else:
+    if referenceDate not in dateList:
+      print(f'Warning: Reference date {referenceDate} not found in dateList. Using first date as reference.')
+      refIdx = 0
+    else:
+      refIdx = dateList.index(referenceDate)
+  
+  # Remove reference date column
+  A = np.delete(A, refIdx, axis=1)
+  B = np.delete(B, refIdx, axis=1)
   
  # ind=~np.isnan(Laz)
  # return A[ind[:,0],:],B[ind[:,0],:],Laz[ind,:], Lrg[ind]
-  return A, B, Laz, Lrg
+  return A, B, Laz, Lrg, refIdx
  
 ######################################
 def main(iargs=None):
@@ -143,7 +157,14 @@ def main(iargs=None):
 
   tbase, dateList, dateDict = date_list(pairDirs)
 
-  A, B, Laz, Lrg = design_matrix(pairDirs)
+  # Determine reference date
+  referenceDate = inps.reference
+  if referenceDate is None:
+    # Default: use first date in sorted list (original behavior)
+    referenceDate = dateList[0]
+    print(f'No reference date specified. Using first date in sorted list: {referenceDate}')
+
+  A, B, Laz, Lrg, refIdx = design_matrix(pairDirs, referenceDate=referenceDate)
   A1 = np.linalg.pinv(A)
   A1 = np.array(A1,np.float32)
 
@@ -158,8 +179,11 @@ def main(iargs=None):
   RMSE_az = np.sqrt(np.sum(residual_az**2)/len(residual_az))
   RMSE_rg = np.sqrt(np.sum(residual_rg**2)/len(residual_rg))
 
-  Saz = np.vstack((np.zeros((1,Saz.shape[1]), dtype=np.float32), Saz))
-  Srg = np.vstack((np.zeros((1,Srg.shape[1]), dtype=np.float32), Srg))
+  # Insert zero row at reference date position
+  zero_row_az = np.zeros((1, Saz.shape[1]), dtype=np.float32)
+  zero_row_rg = np.zeros((1, Srg.shape[1]), dtype=np.float32)
+  Saz = np.vstack([Saz[:refIdx], zero_row_az, Saz[refIdx:]])
+  Srg = np.vstack([Srg[:refIdx], zero_row_rg, Srg[refIdx:]])
 
   print('')
   print('Rank of design matrix: ' + str(np.linalg.matrix_rank(A)))

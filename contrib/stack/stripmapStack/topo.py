@@ -334,6 +334,11 @@ def runTopoCPU(info, demImage, dop=None,
 
 
 def runSimamp(outdir, hname='z.rdr'):
+    simampFile = os.path.join(outdir, 'simamp.rdr')
+    # Skip if simamp.rdr already exists
+    if os.path.exists(simampFile) and os.path.getsize(simampFile) > 0:
+        return
+    
     from iscesys.StdOEL.StdOELPy import create_writer
 
     #####Run simamp
@@ -451,9 +456,10 @@ def extractInfo(frame, inps):
     ins = frame.getInstrument()
 
     info.sensingStart = frame.getSensingStart()
-
+    print('sensingStart: ', info.sensingStart)
     info.lookSide = frame.instrument.platform.pointingDirection
     info.rangeFirstSample = frame.startingRange
+    print('rangeFirstSample: ', info.rangeFirstSample)
     info.numberRangeLooks = 1 #inps.rlks
     info.numberAzimuthLooks = 1 #inps.alks
 

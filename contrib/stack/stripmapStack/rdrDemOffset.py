@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+# author
 
 import os
 import argparse
 import shelve
 import datetime
+import shutil
 import numpy as np
 import types
 import isce
@@ -219,66 +221,80 @@ def main(iargs=None):
         os.chdir(rdrDemDir)
         
         # Call the core function with originalGeometryDir
+        # Set skipTopoUpdate=True so that topo will be re-run in rdrDemOffset.py after frame update
         logger.info('Calling StripmapProc rdrDemOffset...')
-        rdrDemOffset(adapter, referenceInfo, heightFilename, referenceSlc, catalog=None, originalGeometryDir=originalGeometryDir)
+        rdrDemOffset(adapter, referenceInfo, heightFilename, referenceSlc, catalog=None, originalGeometryDir=originalGeometryDir, skipTopoUpdate=True)
     finally:
         os.chdir(cwd)
+    
+    # Move rdr_dem_offsets.txt from geometry directory to rdr_dem_offset subdirectory
+    # This ensures all intermediate files (except topo .full files) are in rdr_dem_offset
+    offsetFileInGeometry = os.path.join(originalGeometryDir, 'rdr_dem_offsets.txt')
+    offsetFileInRdrDemDir = os.path.join(rdrDemDir, 'rdr_dem_offsets.txt')
+    if os.path.exists(offsetFileInGeometry):
+        logger.info('Moving rdr_dem_offsets.txt from {} to {}'.format(offsetFileInGeometry, offsetFileInRdrDemDir))
+        shutil.move(offsetFileInGeometry, offsetFileInRdrDemDir)
     
     # Update frame with corrected geometry if offsets were estimated
     if abs(adapter._insar.radarDemRangeOffset) > 0.01 or abs(adapter._insar.radarDemAzimuthOffset) > 0.01:
         logger.info('Updating frame with corrected geometry')
         # Get corrected values (already updated in rdrDemOffset via ReferenceInfoWrapper)
-        frame.startingRange = referenceInfo.startingRange
-        if hasattr(frame, 'setSensingStart'):
-            frame.setSensingStart(referenceInfo.sensingStart)
-        else:
-            frame.sensingStart = referenceInfo.sensingStart
+        correctedStartingRange = referenceInfo.startingRange
+        correctedSensingStart = referenceInfo.sensingStart
         
-        # Save updated frame - shelve doesn't detect attribute changes, so delete and reassign
+        # Open database with writeback=True to enable in-place attribute modification
         framePath = os.path.join(inps.reference, 'data')
         db = shelve.open(framePath, writeback=True)
-        if 'frame' in db:
-            del db['frame']
-        db['frame'] = frame
-        db.sync()
-        db.close()
+        try:
+            # Get frame from database and modify only the two attributes
+            dbFrame = db['frame']
+            dbFrame.startingRange = correctedStartingRange
+            if hasattr(dbFrame, 'setSensingStart'):
+                dbFrame.setSensingStart(correctedSensingStart)
+            else:
+                dbFrame.sensingStart = correctedSensingStart
+            
+            # With writeback=True, changes are tracked automatically
+            # Just need to sync to ensure changes are written to disk
+            db.sync()
+            logger.info('Updated frame attributes: startingRange={:.6f}, sensingStart={}'.format(
+                correctedStartingRange, correctedSensingStart))
+        finally:
+            db.close()
         logger.info('Saved updated frame with corrected geometry')
         
-        # Multilook geometry files if needed (same as topo.py)
-        # Always perform multilook after updating .full files to ensure .rdr files are regenerated
-        # from the updated geometry, even if alks=1, rlks=1 (which means no actual downsampling)
+        # Re-run topo with corrected geometry to regenerate all geometry files
+        # This will regenerate .full files with corrected geometry and also perform multilook
+        logger.info('Re-running topo with corrected geometry to regenerate all geometry files')
+        
+        # Import topo module
+        from stripmapStack import topo
+        
+        # Build command line arguments for topo.main()
         # Ensure alks and rlks are integers (they might be strings from config file)
         alks = int(inps.alks) if hasattr(inps, 'alks') else 1
         rlks = int(inps.rlks) if hasattr(inps, 'rlks') else 1
-        logger.info('Multilook parameters: alks={}, rlks={} (product={})'.format(alks, rlks, alks * rlks))
         
-        # Always run multilook to regenerate .rdr files from updated .full files
-        # This ensures consistency even if alks=1, rlks=1 (no downsampling, but still regenerates files)
-        logger.info('Multilooking geometry files with alks={}, rlks={} (regenerating .rdr from updated .full)'.format(alks, rlks))
-        # Import multilook function from topo.py
-        # Use absolute import to ensure we get the right module
-        import sys
-        import importlib.util
-        topo_path = os.path.join(os.path.dirname(__file__), 'topo.py')
-        spec = importlib.util.spec_from_file_location("topo", topo_path)
-        topo_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(topo_module)
-        runMultilook = topo_module.runMultilook
+        # Build argument list for topo.main()
+        topo_args = [
+            '-m', inps.reference,
+            '-d', inps.dem,
+            '-o', inps.outdir,
+            '-a', str(alks),
+            '-r', str(rlks)
+        ]
         
-        # Determine output directory (same logic as topo.py)
-        # topo.py uses: os.path.join(os.path.dirname(os.path.dirname(info.outdir)), 'geom_reference')
-        # But in rdrDemOffset, outdir is already the geometry directory
-        # So we need to find the parent directory structure
-        # Typically: workDir/stack_folder/geom_reference -> workDir/stack_folder/geom_reference (same)
-        out_dir = inps.outdir  # Use the same directory for multilooked files
+        # Add optional flags if they exist in inps
+        if hasattr(inps, 'nativedop') and inps.nativedop:
+            topo_args.append('-n')
+        if hasattr(inps, 'legendre') and inps.legendre:
+            topo_args.append('-l')
+        if hasattr(inps, 'useGPU') and inps.useGPU:
+            topo_args.append('--useGPU')
         
-        # Run multilook on the updated .full files
-        # Input: .full files in geometry directory
-        # Output: multilooked .rdr files in the same directory (overwriting existing ones)
-        runMultilook(in_dir=inps.outdir, out_dir=out_dir, alks=alks, rlks=rlks,
-                    in_ext='.rdr.full', out_ext='.rdr', method='gdal',
-                    fbase_list=['hgt', 'lat', 'lon', 'los'])
-        logger.info('Multilooked geometry files generated successfully')
+        logger.info('Calling topo.main() with arguments: {}'.format(' '.join(topo_args)))
+        topo.main(topo_args)
+        logger.info('Topo completed successfully, geometry files regenerated')
     
     logger.info('rdr_dem_offset completed successfully')
     return

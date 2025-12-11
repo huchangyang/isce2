@@ -29,7 +29,7 @@ def createParser():
     parser.add_argument('-o', '--output', dest='outputDir', type=str, required=False,
             help='output directory where data needs to be unpacked into isce format (for script generation).')
 
-    parser.add_argument('-t', '--text_cmd', dest='text_cmd', type=str, default='source ~/.bash_profile;',
+    parser.add_argument('-t', '--text_cmd', dest='text_cmd', type=str, default='',
             help='text command to be added to the beginning of each line of the run files (default: %(default)s).')
 
     parser.add_argument('-p', '--polarization', dest='polarization', type=str,

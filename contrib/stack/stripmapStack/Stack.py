@@ -524,11 +524,11 @@ class run(object):
             self.runf.write(self.text_cmd + 'stripmapWrapper.py -c '+ configName+'\n')
 
   
-    def invertMisregPoly(self):
+    def invertMisregPoly(self, stackReference):
 
         pairDirs = os.path.join(self.workDir, 'refineSecondaryTiming/pairs/')
         dateDirs = os.path.join(self.workDir, 'refineSecondaryTiming/dates/')
-        cmd = self.text_cmd + 'invertMisreg.py -i ' + pairDirs + ' -o ' + dateDirs
+        cmd = self.text_cmd + 'invertMisreg.py -i ' + pairDirs + ' -o ' + dateDirs + ' -r ' + stackReference
         self.runf.write(cmd + '\n')
 
 

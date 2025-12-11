@@ -281,6 +281,7 @@ def main(iargs=None):
         print('CPU mode')
         runGeo2rdr = runGeo2rdrCPU
 
+    # Load secondary frame (used for calculating offsets to secondary frame)
     db = shelve.open( os.path.join(inps.secondary, 'data'), flag='r')
     print( os.path.join(inps.secondary, 'data'))
     frame = db['frame']
@@ -288,8 +289,21 @@ def main(iargs=None):
         dop = db['doppler']
     except:
         dop = frame._dopplerVsPixel
-
     db.close()
+    
+    # Load reference frame to verify geometry files are consistent
+    # Geometry files (lat.rdr.full, lon.rdr.full, hgt.rdr.full) are based on reference frame
+    # If reference frame's startingRange/sensingStart were updated by rdrDemOffset,
+    # the geometry files should have been regenerated with updated parameters
+    ref_db = shelve.open( os.path.join(inps.reference, 'data'), flag='r')
+    ref_frame = ref_db['frame']
+    ref_db.close()
+    
+    # Log reference frame parameters for debugging
+    print('Reference frame startingRange: {:.6f}'.format(ref_frame.startingRange))
+    print('Reference frame sensingStart: {}'.format(ref_frame.getSensingStart()))
+    print('Secondary frame startingRange: {:.6f}'.format(frame.startingRange))
+    print('Secondary frame sensingStart: {}'.format(frame.getSensingStart()))
 
     ####Setup dem
     demImage = isceobj.createDemImage()

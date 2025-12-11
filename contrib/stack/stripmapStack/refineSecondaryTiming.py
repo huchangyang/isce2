@@ -43,7 +43,7 @@ def createParser():
             help='Azimuth gross offset')
     parser.add_argument('--ro', dest='rgoff', type=int, default=0,
             help='Range gross offset')
-    parser.add_argument('-t', '--thresh', dest='snrthresh', type=float, default=10,
+    parser.add_argument('-t', '--thresh', dest='snrthresh', type=float, default=5.0,
             help='SNR threshold')
 
     return parser
@@ -76,10 +76,10 @@ def estimateOffsetField(reference, secondary, azoffset=0, rgoffset=0):
     objOffset.configure()
     objOffset.setAcrossGrossOffset(rgoffset)
     objOffset.setDownGrossOffset(azoffset)
-    objOffset.setWindowSizeWidth(256)
-    objOffset.setWindowSizeHeight(256)
-    objOffset.setSearchWindowSizeWidth(64)
-    objOffset.setSearchWindowSizeHeight(64)
+    objOffset.setWindowSizeWidth(128)
+    objOffset.setWindowSizeHeight(128)
+    objOffset.setSearchWindowSizeWidth(40)
+    objOffset.setSearchWindowSizeHeight(40)
     margin = 2*objOffset.searchWindowSizeWidth + objOffset.windowSizeWidth
 
     nAcross = 60
@@ -137,8 +137,7 @@ def fitOffsets(field,azrgOrder=0,azazOrder=0,
 
     stdWriter = create_writer("log","",True,filename='off.log')
 
-    # for distance in [10,5,3,1]:
-    for distance in [20,10,5,2]:
+    for distance in [10,5,3,1]:
         inpts = len(field._offsets)
 
         objOff = isceobj.createOffoutliers()
