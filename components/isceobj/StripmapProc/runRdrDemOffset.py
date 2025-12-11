@@ -421,10 +421,10 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
 
     # MATCH PARAMETERS - Use same as Alos2Proc
     # For stricter matching, can increase window size (better correlation quality)
-    ampcor.setWindowSizeWidth(64)  # Can increase to 128 for better quality (slower)
-    ampcor.setWindowSizeHeight(64)  # Can increase to 128 for better quality (slower)
-    ampcor.setSearchWindowSizeWidth(16)  # Same as Alos2Proc
-    ampcor.setSearchWindowSizeHeight(16)  # Same as Alos2Proc
+    ampcor.setWindowSizeWidth(128)  # Can increase to 128 for better quality (slower)
+    ampcor.setWindowSizeHeight(128)  # Can increase to 128 for better quality (slower)
+    ampcor.setSearchWindowSizeWidth(60)  # Same as Alos2Proc
+    ampcor.setSearchWindowSizeHeight(60)  # Same as Alos2Proc
     
     # Set stricter SNR and covariance thresholds for better quality matches
     # Default thresholdSNR is 0.001, lower values are more lenient
