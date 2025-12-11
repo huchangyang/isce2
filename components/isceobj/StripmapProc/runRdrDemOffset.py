@@ -470,10 +470,14 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         field = offsets
         stdWriter = create_writer("log", "", True, filename='off.log')
         
-        # Stricter culling - use higher SNR threshold for better quality
-        snrThreshold = 1.5  # Stricter: increased from 0.5 to 1.5 (higher = more strict)
-        # Use more aggressive distance sequence for stricter outlier removal
-        for distance in [20, 15, 10, 5]:  # More aggressive: start from smaller distance
+        # Cull offsets using iterative distance sequence (similar to Alos2Proc's fitoff approach)
+        # Reference: Alos2Proc uses fitoff with nsig=1.5, maxrms=0.5, minpoint=50
+        # We use iterative distance-based culling to achieve similar effect
+        snrThreshold = 1.5  # Similar to Alos2Proc's nsig=1.5 (stricter threshold)
+        # Use distance sequence to progressively remove outliers
+        # Similar to fitoff's iterative approach, we tighten the distance threshold progressively
+        for distance in [20, 15, 10, 5]:  # Progressive tightening (similar to fitoff iterations)
+            pointsBefore = len(field._offsets)
             objOff = isceobj.createOffoutliers()
             objOff.wireInputPort(name='offsets', object=field)
             objOff.setSNRThreshold(snrThreshold)
@@ -481,18 +485,17 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
             objOff.setStdWriter(stdWriter)
             objOff.offoutliers()
             field = objOff.getRefinedOffsetField()
-            logger.info('{} points left after culling at distance {} with SNR threshold {}'.format(
-                len(field._offsets), distance, snrThreshold))
+            pointsAfter = len(field._offsets)
+            logger.info('{} points left after culling at distance {} with SNR threshold {} (removed {} points)'.format(
+                pointsAfter, distance, snrThreshold, pointsBefore - pointsAfter))
             
-            # If we have enough points, we can stop early
-            # For stricter matching, require more points before stopping
-            if len(field._offsets) >= 100:  # Increased from 50 to 100 for stricter matching
-                logger.info('Sufficient points found, stopping culling early')
-                break
+            # No early stopping - let the culling process complete all distance steps
+            # This ensures we remove outliers progressively, similar to fitoff's iterative approach
+            # Reference: Alos2Proc's fitoff continues until convergence or minpoint is reached
         
-        # Stricter minimum point requirement for fitting
-        # Require more points for reliable offset estimation
-        minPointsForFitting = 10  # Increased from 3 to 10 for stricter matching
+        # Check final number of points (similar to Alos2Proc's minpoint=50 check)
+        # Alos2Proc requires at least 50 points, we use a similar threshold
+        minPointsForFitting = 50  # Similar to Alos2Proc's minpoint=50
         if len(field._offsets) < minPointsForFitting:
             logger.warning('Too few points left after culling, {} left (minimum {} required for fitting)'.format(len(field._offsets), minPointsForFitting))
             logger.warning('Do not estimate offsets between radar and dem')
@@ -504,7 +507,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
                               'too few points left after culling, {} left'.format(len(field._offsets)), 
                               'runRdrDemOffset')
             return
-        elif len(field._offsets) < 20:  # Increased from 10 to 20 for stricter matching
+        elif len(field._offsets) < 100:  # Warn if below 100 points (similar to Alos2Proc's approach)
             logger.warning('Low number of points ({}), but attempting to fit offsets'.format(len(field._offsets)))
 
         # Fit constant offsets (zero-order polynomials)
