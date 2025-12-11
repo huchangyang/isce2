@@ -81,14 +81,18 @@ def runRdrDemOffset(self):
     self._insar.procDoc.addAllFromCatalog(catalog)
 
 
-def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, originalGeometryDir=None):
+def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, originalGeometryDir=None, skipTopoUpdate=False):
     '''Core function to estimate radar-DEM offsets
+    
+    Args:
+        skipTopoUpdate: If True, skip calling updateTopoWithOffset (for stripmapStack, 
+                       where topo will be re-run separately)
     '''
     # DEM pixel size (assumed to be 30m for simplicity)
     # For simplicity, we assume all DEMs have 30m resolution
     # This is a common resolution for DEMs like SRTM, ASTER GDEM, etc.
-    demDeltaLon = 30.0  # DEM pixel size in range direction (meters)
-    demDeltaLat = 30.0  # DEM pixel size in azimuth direction (meters)
+    demDeltaLon = 20.0  # DEM pixel size in range direction (meters)
+    demDeltaLat = 20.0  # DEM pixel size in azimuth direction (meters)
     logger.info('DEM pixel size (assumed): {:.2f} m (range), {:.2f} m (azimuth)'.format(demDeltaLon, demDeltaLat))
     
     # Get SAR pixel sizes and first-level looks
@@ -416,24 +420,27 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
     ampcor.setNumberLocationDown(numberOfOffsetsAzimuth)
 
     # MATCH PARAMETERS - Use same as Alos2Proc
-    ampcor.setWindowSizeWidth(64)  # Same as Alos2Proc
-    ampcor.setWindowSizeHeight(64)  # Same as Alos2Proc
-    ampcor.setSearchWindowSizeWidth(16)  # Same as Alos2Proc
-    ampcor.setSearchWindowSizeHeight(16)  # Same as Alos2Proc
+    # For stricter matching, can increase window size (better correlation quality)
+    ampcor.setWindowSizeWidth(128)  # Can increase to 128 for better quality (slower)
+    ampcor.setWindowSizeHeight(128)  # Can increase to 128 for better quality (slower)
+    ampcor.setSearchWindowSizeWidth(60)  # Same as Alos2Proc
+    ampcor.setSearchWindowSizeHeight(60)  # Same as Alos2Proc
     
-    # # Very low SNR threshold for ampcor to get more valid matches
-    # # Default is 0.001, we need to be much more lenient
-    # ampcor.thresholdSNR = 0.000001  # Even lower threshold (from 0.00001)
+    # Set stricter SNR and covariance thresholds for better quality matches
+    # Default thresholdSNR is 0.001, lower values are more lenient
+    # For stricter matching, use higher thresholdSNR (e.g., 0.01 or 0.1)
+    ampcor.thresholdSNR = 0.01  # Stricter: only accept matches with SNR >= 0.01 (default: 0.001)
     
-    # # Very high covariance threshold (default is 1000.0)
-    # # Higher threshold means less strict (accepts higher covariance values)
-    # ampcor.thresholdCov = 50000.0  # Even higher threshold (from 10000.0)
+    # Default thresholdCov is 1000.0, higher values are more lenient
+    # For stricter matching, use lower thresholdCov (e.g., 500.0 or 100.0)
+    ampcor.thresholdCov = 500.0  # Stricter: only accept matches with covariance <= 500.0 (default: 1000.0)
 
     # REST OF THE STUFF
     # Images are already multilooked, so ampcor uses looks=1
     ampcor.setAcrossLooks(1)
     ampcor.setDownLooks(1)
-    ampcor.setOversamplingFactor(64)
+    # Increase oversampling factor for better sub-pixel accuracy (slower but more accurate)
+    ampcor.setOversamplingFactor(128)  # Increased from 64 for better precision
     ampcor.setZoomWindowSize(16)
     ampcor.setDebugFlag(False)
     ampcor.setDisplayFlag(False)
@@ -463,10 +470,14 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         field = offsets
         stdWriter = create_writer("log", "", True, filename='off.log')
         
-        # Very lenient culling - use very low SNR threshold and less aggressive distance sequence
-        snrThreshold = 0.5  # Even lower threshold (from 1.0 to 0.5)
-        # Use less aggressive distance sequence - start from larger distance
-        for distance in [30, 20, 10, 5]:
+        # Cull offsets using iterative distance sequence (similar to Alos2Proc's fitoff approach)
+        # Reference: Alos2Proc uses fitoff with nsig=1.5, maxrms=0.5, minpoint=50
+        # We use iterative distance-based culling to achieve similar effect
+        snrThreshold = 1.5  # Similar to Alos2Proc's nsig=1.5 (stricter threshold)
+        # Use distance sequence to progressively remove outliers
+        # Similar to fitoff's iterative approach, we tighten the distance threshold progressively
+        for distance in [20, 15, 10, 5]:  # Progressive tightening (similar to fitoff iterations)
+            pointsBefore = len(field._offsets)
             objOff = isceobj.createOffoutliers()
             objOff.wireInputPort(name='offsets', object=field)
             objOff.setSNRThreshold(snrThreshold)
@@ -474,18 +485,19 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
             objOff.setStdWriter(stdWriter)
             objOff.offoutliers()
             field = objOff.getRefinedOffsetField()
-            logger.info('{} points left after culling at distance {} with SNR threshold {}'.format(
-                len(field._offsets), distance, snrThreshold))
+            pointsAfter = len(field._offsets)
+            logger.info('{} points left after culling at distance {} with SNR threshold {} (removed {} points)'.format(
+                pointsAfter, distance, snrThreshold, pointsBefore - pointsAfter))
             
-            # If we have enough points, we can stop early
-            if len(field._offsets) >= 50:
-                logger.info('Sufficient points found, stopping culling early')
-                break
+            # No early stopping - let the culling process complete all distance steps
+            # This ensures we remove outliers progressively, similar to fitoff's iterative approach
+            # Reference: Alos2Proc's fitoff continues until convergence or minpoint is reached
         
-        # Lower the minimum point requirement for fitting
-        # Allow fitting with as few as 3 points (minimum for constant offset)
-        if len(field._offsets) < 3:
-            logger.warning('Too few points left after culling, {} left (minimum 3 required for fitting)'.format(len(field._offsets)))
+        # Check final number of points (similar to Alos2Proc's minpoint=50 check)
+        # Alos2Proc requires at least 50 points, we use a similar threshold
+        minPointsForFitting = 50  # Similar to Alos2Proc's minpoint=50
+        if len(field._offsets) < minPointsForFitting:
+            logger.warning('Too few points left after culling, {} left (minimum {} required for fitting)'.format(len(field._offsets), minPointsForFitting))
             logger.warning('Do not estimate offsets between radar and dem')
             self._insar.radarDemRangeOffset = 0.0
             self._insar.radarDemAzimuthOffset = 0.0
@@ -495,7 +507,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
                               'too few points left after culling, {} left'.format(len(field._offsets)), 
                               'runRdrDemOffset')
             return
-        elif len(field._offsets) < 10:
+        elif len(field._offsets) < 100:  # Warn if below 100 points (similar to Alos2Proc's approach)
             logger.warning('Low number of points ({}), but attempting to fit offsets'.format(len(field._offsets)))
 
         # Fit constant offsets (zero-order polynomials)
@@ -570,10 +582,13 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
             logger.info('Saved updated referenceInfo product with corrected geometry')
         
         # Re-run topo with corrected geometry to update lat.rdr.full, lon.rdr.full, z.rdr.full
-        if abs(rg_offset) > 0.01 or abs(az_offset) > 0.01:
+        # Skip this if called from stripmapStack (skipTopoUpdate=True), where topo will be re-run separately
+        if not skipTopoUpdate and (abs(rg_offset) > 0.01 or abs(az_offset) > 0.01):
             logger.info('Re-running topo with corrected geometry based on estimated offsets')
             logger.info('This will update lat.rdr.full, lon.rdr.full, and z.rdr.full files')
             updateTopoWithOffset(self, referenceInfo, rg_offset, az_offset, originalGeometryDir=originalGeometryDir, referenceSlc=referenceSlc)
+        elif skipTopoUpdate:
+            logger.info('Skipping topo update (will be handled by stripmapStack caller)')
         
     except Exception as e:
         logger.warning('Could not fit constant offsets, using zero offsets: {}'.format(e))

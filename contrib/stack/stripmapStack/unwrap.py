@@ -34,6 +34,8 @@ import sys
 import time
 import argparse
 import shelve
+import glob
+import re
 
 import isce
 import isceobj
@@ -440,6 +442,73 @@ def runUnwrap2Stage(unwrappedIntFilename,connectedComponentsFilename,unwrapped2S
     return
 
 
+def selectInterferogramFile(intfile, numberRangeLooksIon=None, numberAzimuthLooksIon=None):
+    """
+    Select the appropriate interferogram file for unwrapping.
+    
+    This function checks if a multilooked interferogram exists (created in crossmul step
+    for ionospheric estimation) and selects it if available. If the look parameters are
+    not specified, it attempts to auto-detect them from existing files.
+    
+    IMPORTANT: Additional multilooking (for ionospheric estimation) should ONLY be used
+    for sub-band interferograms (LowBand/HighBand), NOT for full-band interferograms.
+    
+    Args:
+        intfile (str): Path to the base interferogram file
+        numberRangeLooksIon (int, optional): Number of range looks for ionospheric estimation
+        numberAzimuthLooksIon (int, optional): Number of azimuth looks for ionospheric estimation
+    
+    Returns:
+        str: Path to the interferogram file to use for unwrapping
+    """
+    # Use multilooked interferogram if parameters are specified and file exists
+    intFileToUse = intfile
+    
+    # Check if this is a sub-band interferogram (for ionospheric estimation)
+    # Only sub-band interferograms should use additional multilooking
+    isSubBand = 'LowBand' in intfile or 'HighBand' in intfile
+    
+    if not isSubBand:
+        # For full-band interferograms, always use the regular interferogram
+        # Do not use additional multilooking even if parameters are specified
+        print('Full-band interferogram detected, using regular interferogram (no additional multilooking): {}'.format(intFileToUse))
+        if numberRangeLooksIon or numberAzimuthLooksIon:
+            print('Warning: number_range_looks_ion/number_azimuth_looks_ion parameters are ignored for full-band interferograms')
+        return intFileToUse
+    
+    # For sub-band interferograms, proceed with multilooking logic
+    # If parameters are not specified, try to detect from existing multilooked files
+    if not numberRangeLooksIon or not numberAzimuthLooksIon:
+        baseName = intfile.replace('.int', '')
+        # Look for files with pattern *_*rlks_*alks.int
+        pattern = baseName + '_*rlks_*alks.int'
+        matchingFiles = glob.glob(pattern)
+        if matchingFiles:
+            # Extract looks from first matching file
+            match = re.search(r'_(\d+)rlks_(\d+)alks\.int$', matchingFiles[0])
+            if match:
+                numberRangeLooksIon = int(match.group(1))
+                numberAzimuthLooksIon = int(match.group(2))
+                print('Detected multilooked interferogram pattern: {}rlks x {}alks'.format(
+                    numberRangeLooksIon, numberAzimuthLooksIon))
+    
+    # Check if multilooked interferogram should be used
+    if numberRangeLooksIon and numberAzimuthLooksIon and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
+        ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
+        intFileMl = intfile.replace('.int', ml2 + '.int')
+        
+        if os.path.exists(intFileMl + '.xml'):
+            print('Using multilooked interferogram for unwrapping (sub-band): {}'.format(intFileMl))
+            intFileToUse = intFileMl
+        else:
+            print('Multilooked interferogram not found: {}, using regular interferogram: {}'.format(
+                intFileMl, intFileToUse))
+    else:
+        print('Using regular interferogram for unwrapping (sub-band): {}'.format(intFileToUse))
+    
+    return intFileToUse
+
+
 def main(iargs=None):
     '''
     The main driver.
@@ -455,43 +524,10 @@ def main(iargs=None):
     # pckfile = os.path.join(inps.reference, 'data')
     interferogramDir = os.path.dirname(inps.intfile)
 
-    # Check if multilooked interferogram exists (created in crossmul step)
-    # Get ionospheric looks from command line arguments
+    # Select appropriate interferogram file (check for multilooked version for ionospheric estimation)
     numberRangeLooksIon = getattr(inps, 'numberRangeLooksIon', None)
     numberAzimuthLooksIon = getattr(inps, 'numberAzimuthLooksIon', None)
-    
-    # Use multilooked interferogram if parameters are specified and file exists
-    intFileToUse = inps.intfile
-    
-    # If parameters are not specified, try common defaults (16x16) or detect from existing files
-    if not numberRangeLooksIon or not numberAzimuthLooksIon:
-        # Try to detect from existing multilooked files
-        import glob
-        baseName = inps.intfile.replace('.int', '')
-        # Look for files with pattern *_*rlks_*alks.int
-        pattern = baseName + '_*rlks_*alks.int'
-        matchingFiles = glob.glob(pattern)
-        if matchingFiles:
-            # Extract looks from first matching file
-            import re
-            match = re.search(r'_(\d+)rlks_(\d+)alks\.int$', matchingFiles[0])
-            if match:
-                numberRangeLooksIon = int(match.group(1))
-                numberAzimuthLooksIon = int(match.group(2))
-                print('Detected multilooked interferogram pattern: {}rlks x {}alks'.format(
-                    numberRangeLooksIon, numberAzimuthLooksIon))
-    
-    if numberRangeLooksIon and numberAzimuthLooksIon and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
-        ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-        intFileMl = inps.intfile.replace('.int', ml2 + '.int')
-        
-        if os.path.exists(intFileMl + '.xml'):
-            print('Using multilooked interferogram for unwrapping: {}'.format(intFileMl))
-            intFileToUse = intFileMl
-        else:
-            print('Multilooked interferogram not found: {}, using regular interferogram: {}'.format(intFileMl, intFileToUse))
-    else:
-        print('Using regular interferogram for unwrapping: {}'.format(intFileToUse))
+    intFileToUse = selectInterferogramFile(inps.intfile, numberRangeLooksIon, numberAzimuthLooksIon)
 
     if inps.method != 'icu':
     

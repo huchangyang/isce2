@@ -19,16 +19,14 @@ def cmdLineParse():
             required=True, help='Input LT1 directory')
     parser.add_argument('-o', '--output', dest='slcdir', type=str,
             required=True, help='Output SLC directory')
-    parser.add_argument('-d', '--deskew', dest='deskew', action='store_true',
-            default=False, help='To read in for deskewing data later')
     parser.add_argument('-p', '--polarization', dest='polarization', type=str,
             default='HH', help='polarization in case if quad or full pol data exists. Deafult: HH')
-    parser.add_argument('-orbit', '--orbitfile', dest='orbitfile', type=str, default=None, required=False,
+    parser.add_argument('--orbit', dest='orbitDir', type=str, default=None, required=False,
                         help='Optional: directory with the precise orbit file for LT1 SLC. Default: None')
     return parser.parse_args()
 
 
-def unpack(hdf5, slcname, deskew=False, polarization='HH', orbitfile=None):
+def unpack(hdf5, slcname, polarization='HH', orbitDir=None):
     '''
     Unpack HDF5 to binary SLC file.
     '''
@@ -57,7 +55,7 @@ def unpack(hdf5, slcname, deskew=False, polarization='HH', orbitfile=None):
     obj._xmlFileList = xmlnames
     
     # If the orbit file is provided, find and set the orbit file list
-    if orbitfile:
+    if orbitDir:
         try:
             orbnames = sorted(glob.glob(os.path.join(hdf5, '*ABSORBIT_SCIE.xml'), recursive=True))
             if not orbnames:
@@ -70,10 +68,7 @@ def unpack(hdf5, slcname, deskew=False, polarization='HH', orbitfile=None):
             print("Found orbit files:", orbnames)
     
     # Set the output file path
-    if deskew:
-        obj.output = os.path.join(slcname, date + '_orig.slc')
-    else:
-        obj.output = os.path.join(slcname, date + '.slc')
+    obj.output = os.path.join(slcname, date + '.slc')
     
     print("Processing files:")
     print("TIFF files:", obj._tiffList)
@@ -105,7 +100,7 @@ def unpack(hdf5, slcname, deskew=False, polarization='HH', orbitfile=None):
     frame._dopplerVsPixel = coeffs if coeffs else [0., 0., 0.]
     
     # Save the processing results
-    pickName = os.path.join(slcname, 'original' if deskew else 'data')
+    pickName = os.path.join(slcname, 'data')
     with shelve.open(pickName) as db:
         db['frame'] = frame
         db['doppler'] = poly
@@ -129,7 +124,6 @@ if __name__ == '__main__':
         inps.h5dir = inps.h5dir[:-1]
 
     obj = unpack(inps.h5dir, inps.slcdir,
-                 deskew=inps.deskew,
                  polarization=inps.polarization,
-                 orbitfile=inps.orbitfile)
+                 orbitDir=inps.orbitDir)
 
