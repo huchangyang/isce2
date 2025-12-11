@@ -450,6 +450,9 @@ def selectInterferogramFile(intfile, numberRangeLooksIon=None, numberAzimuthLook
     for ionospheric estimation) and selects it if available. If the look parameters are
     not specified, it attempts to auto-detect them from existing files.
     
+    IMPORTANT: Additional multilooking (for ionospheric estimation) should ONLY be used
+    for sub-band interferograms (LowBand/HighBand), NOT for full-band interferograms.
+    
     Args:
         intfile (str): Path to the base interferogram file
         numberRangeLooksIon (int, optional): Number of range looks for ionospheric estimation
@@ -461,6 +464,19 @@ def selectInterferogramFile(intfile, numberRangeLooksIon=None, numberAzimuthLook
     # Use multilooked interferogram if parameters are specified and file exists
     intFileToUse = intfile
     
+    # Check if this is a sub-band interferogram (for ionospheric estimation)
+    # Only sub-band interferograms should use additional multilooking
+    isSubBand = 'LowBand' in intfile or 'HighBand' in intfile
+    
+    if not isSubBand:
+        # For full-band interferograms, always use the regular interferogram
+        # Do not use additional multilooking even if parameters are specified
+        print('Full-band interferogram detected, using regular interferogram (no additional multilooking): {}'.format(intFileToUse))
+        if numberRangeLooksIon or numberAzimuthLooksIon:
+            print('Warning: number_range_looks_ion/number_azimuth_looks_ion parameters are ignored for full-band interferograms')
+        return intFileToUse
+    
+    # For sub-band interferograms, proceed with multilooking logic
     # If parameters are not specified, try to detect from existing multilooked files
     if not numberRangeLooksIon or not numberAzimuthLooksIon:
         baseName = intfile.replace('.int', '')
@@ -482,13 +498,13 @@ def selectInterferogramFile(intfile, numberRangeLooksIon=None, numberAzimuthLook
         intFileMl = intfile.replace('.int', ml2 + '.int')
         
         if os.path.exists(intFileMl + '.xml'):
-            print('Using multilooked interferogram for unwrapping: {}'.format(intFileMl))
+            print('Using multilooked interferogram for unwrapping (sub-band): {}'.format(intFileMl))
             intFileToUse = intFileMl
         else:
             print('Multilooked interferogram not found: {}, using regular interferogram: {}'.format(
                 intFileMl, intFileToUse))
     else:
-        print('Using regular interferogram for unwrapping: {}'.format(intFileToUse))
+        print('Using regular interferogram for unwrapping (sub-band): {}'.format(intFileToUse))
     
     return intFileToUse
 

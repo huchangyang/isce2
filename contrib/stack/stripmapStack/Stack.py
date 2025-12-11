@@ -235,10 +235,18 @@ class config(object):
         self.f.write('rlks : ' + self.rlks + '\n')
         self.f.write('method : ' + self.unwMethod + '\n')
         # Additional looks for ionosphere estimation
-        if hasattr(self, 'numberRangeLooksIon'):
-            self.f.write('number_range_looks_ion : ' + str(self.numberRangeLooksIon) + '\n')
-        if hasattr(self, 'numberAzimuthLooksIon'):
-            self.f.write('number_azimuth_looks_ion : ' + str(self.numberAzimuthLooksIon) + '\n')
+        # Only apply additional multilooking for sub-band interferograms (LowBand/HighBand)
+        # Full-band interferograms should not have additional multilooking
+        isSubBand = False
+        if hasattr(self, 'igram') and self.igram:
+            isSubBand = 'LowBand' in self.igram or 'HighBand' in self.igram
+        if isSubBand:
+            # For sub-band interferograms, write additional looks parameters if they exist
+            if hasattr(self, 'numberRangeLooksIon'):
+                self.f.write('number_range_looks_ion : ' + str(self.numberRangeLooksIon) + '\n')
+            if hasattr(self, 'numberAzimuthLooksIon'):
+                self.f.write('number_azimuth_looks_ion : ' + str(self.numberAzimuthLooksIon) + '\n')
+        # For full-band interferograms, do not write these parameters
         self.f.write('##########################'+'\n')
 
     def splitRangeSpectrum(self, function):
