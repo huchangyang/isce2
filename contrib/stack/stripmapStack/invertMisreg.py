@@ -63,15 +63,23 @@ def date_list(pairDirs):
   return tbase,dateList,dateDict
 
 #####################################
-def extract_offset(filename):
-  print(filename)
+def extract_offset(filename, verbose=False):
+  if verbose:
+    print(f'Reading offset from: {filename}')
   with shelve.open(os.path.join(filename,'misreg'),flag='r') as db:
-       print(dir(db))
        azpoly = db['azpoly']
        rgpoly = db['rgpoly']
 
   azCoefs = np.array(azpoly.getCoeffs())
   rgCoefs = np.array(rgpoly.getCoeffs())
+  
+  # Get constant offset (first coefficient) for display
+  az_const = azCoefs.flatten()[0] if azCoefs.size > 0 else 0.0
+  rg_const = rgCoefs.flatten()[0] if rgCoefs.size > 0 else 0.0
+  
+  if verbose:
+    print(f'  Azimuth offset (constant): {az_const:.6f} pixels')
+    print(f'  Range offset (constant): {rg_const:.6f} pixels')
 
   return azCoefs.flatten(), rgCoefs.flatten()
 
@@ -123,7 +131,7 @@ def design_matrix(pairDirs, referenceDate=None):
     t[ni,:] = [dateDict[date[0]],dateDict[date[1]]]
 
   #  misreg_dict = extract_offset(os.path.join(overlapDirs[ni],misregName))
-    azOff, rgOff = extract_offset(pairDirs[ni])
+    azOff, rgOff = extract_offset(pairDirs[ni], verbose=False)
     Laz[ni,:] = azOff[:]
     Lrg[ni,:] = rgOff[:]
 
@@ -165,12 +173,26 @@ def main(iargs=None):
     print(f'No reference date specified. Using first date in sorted list: {referenceDate}')
 
   A, B, Laz, Lrg, refIdx = design_matrix(pairDirs, referenceDate=referenceDate)
+  
+  # Print observed offsets for each pair
+  print('='*80)
+  print('Observed offsets for each pair (before inversion):')
+  print('='*80)
+  print(f'{"Pair":<25} {"Azimuth offset (pixels)":<30} {"Range offset (pixels)":<30}')
+  print('-'*80)
+  for ni in range(len(pairDirs)):
+    date12 = os.path.basename(pairDirs[ni]).replace('.txt','')
+    # Get constant offset (first coefficient) for display
+    az_const = Laz[ni, 0] if Laz.shape[1] > 0 else 0.0
+    rg_const = Lrg[ni, 0] if Lrg.shape[1] > 0 else 0.0
+    print(f'{date12:<25} {az_const:>28.6f} {rg_const:>28.6f}')
+  print('='*80)
+  print('')
+  
   A1 = np.linalg.pinv(A)
   A1 = np.array(A1,np.float32)
 
-  zero = np.array([0.],np.float32)
-  Saz = np.dot(A1, Laz)
-
+  # Solve for offsets relative to reference date
   Saz = np.dot(A1, Laz)
   Srg = np.dot(A1, Lrg)
 
@@ -195,12 +217,20 @@ def main(iargs=None):
   print('RMSE in azimuth : '+str(RMSE_az)+' pixels')
   print('RMSE in range : '+str(RMSE_rg)+' pixels')
   print('')
-  print('Estimated offsets with respect to the stack reference date')    
-  print('')
+  print('='*80)
+  print('Estimated offsets with respect to the stack reference date:')
+  print('='*80)
+  print(f'{"Date":<15} {"Azimuth offset (pixels)":<30} {"Range offset (pixels)":<30}')
+  print('-'*80)
   offset_dict={}
   for i in range(len(dateList)):
-     print (dateList[i])
+     # Get constant offset (first coefficient) for display
+     az_const = Saz[i, 0] if Saz.shape[1] > 0 else 0.0
+     rg_const = Srg[i, 0] if Srg.shape[1] > 0 else 0.0
+     print(f'{dateList[i]:<15} {az_const:>28.6f} {rg_const:>28.6f}')
      offset_dict[dateList[i]]=Saz[i]
+     
+     # Create Poly2D objects and save to shelve
      azpoly = Poly2D()
      rgpoly = Poly2D()
      azCoefs = np.reshape(Saz[i,:],polyInfo['shapeOfAzCoefs']).tolist()
@@ -214,6 +244,12 @@ def main(iargs=None):
      odb['azpoly'] = azpoly
      odb['rgpoly'] = rgpoly
      odb.close()
+  
+  print('='*80)
+  print('')
+  print('Note: Inverted offsets are cumulative and can be larger than individual pair offsets.')
+  print('This is because offsets accumulate along the network path from reference date.')
+  print('')
  
      #with open(os.path.join(inps.output,dateList[i]+'.txt'), 'w') as f:
      #   f.write(str(Saz[i]))

@@ -45,16 +45,12 @@ def runRdrDemOffset(self):
     # Get reference product
     referenceInfo = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
     
-    geometryDir = self.insar.geometryDirname
-    # Save absolute path BEFORE changing directory
-    originalGeometryDir = os.path.abspath(geometryDir)
+    geometryDir = os.path.abspath(self.insar.geometryDirname)
     
     heightFilename = os.path.join(geometryDir, self.insar.heightFilename + '.full')
-    
-    # Convert to absolute path before changing directory
     heightFilename = os.path.abspath(heightFilename)
     
-    # Get reference SLC path and convert to absolute path before changing directory
+    # Get reference SLC path and convert to absolute path
     referenceSlc = referenceInfo.getImage().filename
     if not os.path.isabs(referenceSlc):
         referenceSlc = os.path.abspath(referenceSlc)
@@ -70,9 +66,7 @@ def runRdrDemOffset(self):
     cwd = os.getcwd()
     try:
         os.chdir(rdrDemDir)
-        
-        # Pass originalGeometryDir to rdrDemOffset so it can be used in updateTopoWithOffset
-        rdrDemOffset(self, referenceInfo, heightFilename, referenceSlc, catalog=catalog, originalGeometryDir=originalGeometryDir)
+        rdrDemOffset(self, referenceInfo, heightFilename, referenceSlc, catalog=catalog)
     finally:
         os.chdir(cwd)
 
@@ -81,13 +75,15 @@ def runRdrDemOffset(self):
     self._insar.procDoc.addAllFromCatalog(catalog)
 
 
-def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, originalGeometryDir=None, skipTopoUpdate=False):
+def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, skipTopoUpdate=False):
     '''Core function to estimate radar-DEM offsets
     
     Args:
         skipTopoUpdate: If True, skip calling updateTopoWithOffset (for stripmapStack, 
                        where topo will be re-run separately)
     '''
+    # Get geometry directory (absolute path)
+    geometryDir = os.path.abspath(self.insar.geometryDirname)
     # DEM pixel size (assumed to be 30m for simplicity)
     # For simplicity, we assume all DEMs have 30m resolution
     # This is a common resolution for DEMs like SRTM, ASTER GDEM, etc.
@@ -118,55 +114,33 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         logger.info('Estimated azimuth pixel size from velocity/PRF: {:.2f} m (velocity: {:.2f} m/s)'.format(
             azimuthPixelSize, velocity))
     
-    # Get first-level looks (if available)
-    # For StripmapProc, we may not have first-level looks, so use 1 as default
-    numberRangeLooks1 = getattr(self._insar, 'numberRangeLooks', 1)
-    numberAzimuthLooks1 = getattr(self._insar, 'numberAzimuthLooks', 1)
-    
-    # Calculate SAR ground resolution after first-level looks
-    sarRangeResolution = numberRangeLooks1 * rangePixelSize
-    sarAzimuthResolution = numberAzimuthLooks1 * azimuthPixelSize
-    logger.info('SAR ground resolution (after first-level looks): {:.2f} m (range), {:.2f} m (azimuth)'.format(
-        sarRangeResolution, sarAzimuthResolution))
-    
-    # Automatically determine number of looks for simulation (similar to Alos2Proc)
+    # Automatically determine number of looks for simulation
     # If SAR resolution is already coarser than DEM, use single look
     # Otherwise, calculate looks to match DEM resolution
-    if sarRangeResolution > demDeltaLon:
+    if rangePixelSize > demDeltaLon:
         rangeLooks = 1  # SAR resolution already coarser than DEM
         logger.info('SAR range resolution ({:.2f} m) > DEM ({:.2f} m), using single look'.format(
-            sarRangeResolution, demDeltaLon))
+            rangePixelSize, demDeltaLon))
     else:
-        rangeLooks = max(1, int(demDeltaLon / sarRangeResolution + 0.5))
-        logger.info('Calculated range looks: {} (to match DEM resolution {:.2f} m)'.format(
-            rangeLooks, demDeltaLon))
+        rangeLooks = max(1, int(demDeltaLon / rangePixelSize + 0.5))
+        logger.info('Calculated range looks: {} (SAR: {:.2f} m, DEM: {:.2f} m)'.format(
+            rangeLooks, rangePixelSize, demDeltaLon))
     
-    if sarAzimuthResolution > demDeltaLat:
+    if azimuthPixelSize > demDeltaLat:
         azimuthLooks = 1  # SAR resolution already coarser than DEM
         logger.info('SAR azimuth resolution ({:.2f} m) > DEM ({:.2f} m), using single look'.format(
-            sarAzimuthResolution, demDeltaLat))
+            azimuthPixelSize, demDeltaLat))
     else:
-        azimuthLooks = max(1, int(demDeltaLat / sarAzimuthResolution + 0.5))
-        logger.info('Calculated azimuth looks: {} (to match DEM resolution {:.2f} m)'.format(
-            azimuthLooks, demDeltaLat))
-    
+        azimuthLooks = max(1, int(demDeltaLat / azimuthPixelSize + 0.5))
+        logger.info('Calculated azimuth looks: {} (SAR: {:.2f} m, DEM: {:.2f} m)'.format(
+            azimuthLooks, azimuthPixelSize, demDeltaLat))
+    rangeLooks = 3
+    azimuthLooks = 3
     logger.info('Selected multilook parameters: {} range looks, {} azimuth looks'.format(
         rangeLooks, azimuthLooks))
     
-    # Check if simamp.rdr exists (generated by topo.py) - prefer this over sim.float
-    # simamp.rdr is typically in the geometry directory, but we're in rdr_dem_offset subdirectory
-    # So we need to check in the parent geometry directory
-    # Use originalGeometryDir if provided, otherwise try to infer from current directory
-    if originalGeometryDir is not None:
-        geometryDir = originalGeometryDir
-    else:
-        # Try to infer from current directory structure
-        currentDir = os.getcwd()
-        if 'rdr_dem_offset' in currentDir:
-            geometryDir = os.path.dirname(currentDir)
-        else:
-            geometryDir = currentDir
-    
+    # Check if simamp.rdr exists (generated by topo.py) - prefer this over sim.rdr
+    # simamp.rdr is in the geometry directory (parent of current rdr_dem_offset directory)
     simampFile = os.path.join(geometryDir, 'simamp.rdr')
     simampExists = (os.path.exists(simampFile) and 
                     os.path.exists(simampFile + '.xml') and 
@@ -320,8 +294,8 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         simLookFile = simLookFile
     else:
         # Apply multilook to both images
-        ampLookFile = 'amp_{}rlks_{}alks.float'.format(rangeLooks, azimuthLooks)
-        simLookFileMultilooked = 'sim_{}rlks_{}alks.float'.format(rangeLooks, azimuthLooks)
+        ampLookFile = 'amp_{}rlks_{}alks.rdr'.format(rangeLooks, azimuthLooks)
+        simLookFileMultilooked = 'sim_{}rlks_{}alks.rdr'.format(rangeLooks, azimuthLooks)
         
         # Check if multilooked images already exist
         ampLookExists = (os.path.exists(ampLookFile) and 
@@ -429,11 +403,11 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
     # Set stricter SNR and covariance thresholds for better quality matches
     # Default thresholdSNR is 0.001, lower values are more lenient
     # For stricter matching, use higher thresholdSNR (e.g., 0.01 or 0.1)
-    ampcor.thresholdSNR = 0.01  # Stricter: only accept matches with SNR >= 0.01 (default: 0.001)
+    ampcor.thresholdSNR = 0.1  # Stricter: only accept matches with SNR >= 0.01 (default: 0.001)
     
     # Default thresholdCov is 1000.0, higher values are more lenient
     # For stricter matching, use lower thresholdCov (e.g., 500.0 or 100.0)
-    ampcor.thresholdCov = 500.0  # Stricter: only accept matches with covariance <= 500.0 (default: 1000.0)
+    ampcor.thresholdCov = 100.0  # Stricter: only accept matches with covariance <= 500.0 (default: 1000.0)
 
     # REST OF THE STUFF
     # Images are already multilooked, so ampcor uses looks=1
@@ -473,10 +447,19 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         # Cull offsets using iterative distance sequence (similar to Alos2Proc's fitoff approach)
         # Reference: Alos2Proc uses fitoff with nsig=1.5, maxrms=0.5, minpoint=50
         # We use iterative distance-based culling to achieve similar effect
-        snrThreshold = 1.5  # Similar to Alos2Proc's nsig=1.5 (stricter threshold)
+        snrThreshold = 2  # Similar to Alos2Proc's nsig=1.5 (stricter threshold)
+
+        # Optional thresholds for later covariance-based culling (in pixel^2 units).
+        # Points whose estimated uncertainty (covariance) is larger than the threshold will be removed.
+        sigmaThresholdRange = 0.01      # threshold for range covariance
+        sigmaThresholdAzimuth = 0.1     # threshold for azimuth covariance
+
+        # Optional statistical culling based purely on the distribution of rg / az offsets.
+        offsetNSigmaRange = 1.0
+        offsetNSigmaAzimuth = 2.0
         # Use distance sequence to progressively remove outliers
         # Similar to fitoff's iterative approach, we tighten the distance threshold progressively
-        for distance in [20, 15, 10, 5]:  # Progressive tightening (similar to fitoff iterations)
+        for distance in [10, 5, 3, 1]:  # Progressive tightening (similar to fitoff iterations)
             pointsBefore = len(field._offsets)
             objOff = isceobj.createOffoutliers()
             objOff.wireInputPort(name='offsets', object=field)
@@ -488,10 +471,136 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
             pointsAfter = len(field._offsets)
             logger.info('{} points left after culling at distance {} with SNR threshold {} (removed {} points)'.format(
                 pointsAfter, distance, snrThreshold, pointsBefore - pointsAfter))
-            
+
             # No early stopping - let the culling process complete all distance steps
             # This ensures we remove outliers progressively, similar to fitoff's iterative approach
             # Reference: Alos2Proc's fitoff continues until convergence or minpoint is reached
+
+        if (offsetNSigmaRange is not None) or (offsetNSigmaAzimuth is not None):
+            rg_list = []
+            az_list = []
+            for offsetx in field:
+                offsetStr = "{}".format(offsetx)
+                fields = offsetStr.split()
+                if len(fields) >= 4:
+                    try:
+                        rg_list.append(float(fields[1]))  # dx: range offset
+                        az_list.append(float(fields[3]))  # dy: azimuth offset
+                    except ValueError:
+                        continue
+
+            if len(rg_list) >= 2 and len(az_list) >= 2:
+                rg_array = np.array(rg_list, dtype=np.float64)
+                az_array = np.array(az_list, dtype=np.float64)
+
+                rg_mean = float(np.mean(rg_array))
+                az_mean = float(np.mean(az_array))
+                rg_std = float(np.std(rg_array))
+                az_std = float(np.std(az_array))
+
+                filtered_offsets_stat = []
+                removedStat = 0
+
+                for offsetx in field:
+                    offsetStr = "{}".format(offsetx)
+                    fields = offsetStr.split()
+                    if len(fields) < 4:
+                        removedStat += 1
+                        continue
+                    try:
+                        rg_off = float(fields[1])
+                        az_off = float(fields[3])
+                    except ValueError:
+                        removedStat += 1
+                        continue
+
+                    drop = False
+                    if offsetNSigmaRange is not None and rg_std > 0.0:
+                        if abs(rg_off - rg_mean) > offsetNSigmaRange * rg_std:
+                            drop = True
+                    if offsetNSigmaAzimuth is not None and az_std > 0.0:
+                        if abs(az_off - az_mean) > offsetNSigmaAzimuth * az_std:
+                            drop = True
+
+                    if drop:
+                        removedStat += 1
+                    else:
+                        filtered_offsets_stat.append(offsetx)
+
+                logger.info(
+                    '{} points left after statistical offset-based culling (removed {} points; '
+                    'range mean = {:.4f}, std = {:.4f}, Nσ = {}; '
+                    'azimuth mean = {:.4f}, std = {:.4f}, Nσ = {}).'.format(
+                        len(filtered_offsets_stat), removedStat,
+                        rg_mean, rg_std, offsetNSigmaRange,
+                        az_mean, az_std, offsetNSigmaAzimuth)
+                )
+
+                field._offsets = filtered_offsets_stat
+            else:
+                logger.info('Not enough points for statistical offset-based culling ({} points). '
+                            'Skipping this step.'.format(len(field._offsets)))
+
+        # Optionally apply an additional culling based on per-point standard deviation / covariance.
+        # We use the covariance terms stored in the original offset field (from ampcor),
+        # and keep only the points whose uncertainties are below the specified thresholds.
+        if (sigmaThresholdRange is not None) or (sigmaThresholdAzimuth is not None):
+            # Build a lookup table from original offsets using (range line, range sample) as key
+            originalOffsetMap = {}
+            for offsetx in offsets:
+                offsetStr = "{}".format(offsetx)
+                fields = offsetStr.split()
+                if len(fields) >= 8:
+                    ref_line = int(float(fields[0]))
+                    ref_sample = float(fields[1])
+                    originalOffsetMap[(ref_line, ref_sample)] = fields
+
+            filtered_offsets = []
+            removedSigma = 0
+            for offsetx in field:
+                offsetStr = "{}".format(offsetx)
+                fields = offsetStr.split()
+                if len(fields) < 4:
+                    # Malformed entry, skip it
+                    removedSigma += 1
+                    continue
+
+                ref_line = int(float(fields[0]))
+                ref_sample = float(fields[1])
+                key = (ref_line, ref_sample)
+
+                orig_fields = originalOffsetMap.get(key, None)
+                if (orig_fields is None) or (len(orig_fields) < 8):
+                    # Cannot recover covariance info for this point, drop it
+                    removedSigma += 1
+                    continue
+
+                # Covariance / standard deviation terms from the original ampcor offsets
+                cov_range = float(orig_fields[5])
+                cov_azimuth = float(orig_fields[6])
+
+                # Apply thresholds (if set). Use absolute value in case of negative covariances.
+                if ((sigmaThresholdRange is not None and abs(cov_range) > sigmaThresholdRange) or
+                    (sigmaThresholdAzimuth is not None and abs(cov_azimuth) > sigmaThresholdAzimuth)):
+                    removedSigma += 1
+                    continue
+
+                filtered_offsets.append(offsetx)
+
+            logger.info('{} points left after sigma-based culling (removed {} points with large covariance; '
+                        'range threshold = {}, azimuth threshold = {})'.format(
+                            len(filtered_offsets), removedSigma,
+                            sigmaThresholdRange, sigmaThresholdAzimuth))
+
+            # Replace the internal list of offsets with the sigma-filtered subset
+            field._offsets = filtered_offsets
+
+        # Save culled offsets to a new .off file
+        # Note: getRefinedOffsetField() may lose some fields (SNR, Corr, AzOffset)
+        # So we need to match culled offsets with original offsets to preserve all fields
+        culledOffsetFile = 'ampcor_culled.off'
+        writeOffsetWithOriginalInfo(field, offsets, culledOffsetFile)
+        logger.info('Saved culled offsets to: {} ({} points)'.format(culledOffsetFile, len(field._offsets)))
         
         # Check final number of points (similar to Alos2Proc's minpoint=50 check)
         # Alos2Proc requires at least 50 points, we use a similar threshold
@@ -536,19 +645,18 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, rg_offset, az_offset]
         
         # Save offsets to text file in geometry directory
-        if originalGeometryDir is not None:
-            offsetFile = os.path.join(originalGeometryDir, 'rdr_dem_offsets.txt')
-            try:
-                with open(offsetFile, 'w') as f:
-                    f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
-                    f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
-                    f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
-                    f.write('range_offset: {:.6f}\n'.format(rg_offset))
-                    f.write('azimuth_offset: {:.6f}\n'.format(az_offset))
-                    f.write('affine_transform: {}\n'.format(self._insar.radarDemAffineTransform))
-                logger.info('Saved offsets to file: {}'.format(offsetFile))
-            except Exception as e:
-                logger.warning('Failed to save offsets to file: {}'.format(e))
+        offsetFile = os.path.join(geometryDir, 'rdr_dem_offsets.txt')
+        try:
+            with open(offsetFile, 'w') as f:
+                f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
+                f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
+                f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
+                f.write('range_offset: {:.6f}\n'.format(rg_offset))
+                f.write('azimuth_offset: {:.6f}\n'.format(az_offset))
+                f.write('affine_transform: {}\n'.format(self._insar.radarDemAffineTransform))
+            logger.info('Saved offsets to file: {}'.format(offsetFile))
+        except Exception as e:
+            logger.warning('Failed to save offsets to file: {}'.format(e))
         
         if catalog is not None:
             catalog.addItem('radar dem range offset', '{:.6f}'.format(rg_offset), 'runRdrDemOffset')
@@ -586,7 +694,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         if not skipTopoUpdate and (abs(rg_offset) > 0.01 or abs(az_offset) > 0.01):
             logger.info('Re-running topo with corrected geometry based on estimated offsets')
             logger.info('This will update lat.rdr.full, lon.rdr.full, and z.rdr.full files')
-            updateTopoWithOffset(self, referenceInfo, rg_offset, az_offset, originalGeometryDir=originalGeometryDir, referenceSlc=referenceSlc)
+            updateTopoWithOffset(self, referenceInfo, rg_offset, az_offset, referenceSlc=referenceSlc)
         elif skipTopoUpdate:
             logger.info('Skipping topo update (will be handled by stripmapStack caller)')
         
@@ -597,20 +705,20 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, or
         self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
         
         # Save zero offsets to text file as well
-        if originalGeometryDir is not None:
-            offsetFile = os.path.join(originalGeometryDir, 'rdr_dem_offsets.txt')
-            try:
-                with open(offsetFile, 'w') as f:
-                    f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
-                    f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
-                    f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
-                    f.write('# Warning: Could not fit offsets, using zero offsets\n')
-                    f.write('range_offset: 0.000000\n')
-                    f.write('azimuth_offset: 0.000000\n')
-                    f.write('affine_transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]\n')
-                logger.info('Saved zero offsets to file: {}'.format(offsetFile))
-            except Exception as e2:
-                logger.warning('Failed to save offsets to file: {}'.format(e2))
+        geometryDir = os.path.abspath(self.insar.geometryDirname)
+        offsetFile = os.path.join(geometryDir, 'rdr_dem_offsets.txt')
+        try:
+            with open(offsetFile, 'w') as f:
+                f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
+                f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
+                f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
+                f.write('# Warning: Could not fit offsets, using zero offsets\n')
+                f.write('range_offset: 0.000000\n')
+                f.write('azimuth_offset: 0.000000\n')
+                f.write('affine_transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]\n')
+            logger.info('Saved zero offsets to file: {}'.format(offsetFile))
+        except Exception as e2:
+            logger.warning('Failed to save offsets to file: {}'.format(e2))
         
         if catalog is not None:
             catalog.addItem('warning message', 
@@ -688,20 +796,118 @@ def create_xml(fileName, width, length, fileType):
 def writeOffset(offset, fileName):
     '''
     Write offset file in ampcor format (similar to Alos2ProcPublic.writeOffset).
+    
+    .off file format (ampcor standard):
+    Each line contains 8 fields:
+    1. Reference image line number (integer, azimuth position)
+    2. Reference image sample number (float, range position, sub-pixel precision)
+    3. Secondary image line number (integer, azimuth position)
+    4. Secondary image sample number (float, range position, sub-pixel precision)
+    5. Range offset (float, pixels) - offset in range direction
+    6. Azimuth offset (float, pixels) - offset in azimuth direction
+    7. SNR (float) - Signal-to-Noise Ratio of the correlation
+    8. Correlation coefficient (float) - Quality metric of the match
+    
+    Format: {:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}
     '''
-    offsetsPlain = ''
+    # Write header line with column descriptions
+    # Note: Offset.__str__() returns: x dx y dy snr sigmax sigmay sigmaxy
+    # Column names reflect actual data content
+    header = "# {:>7} {:>10} {:>7} {:>12} {:>11} {:>11} {:>11} {:>11}\n".format(
+        "RgLoc", "RgOffset", "AzLoc", "AzOffset", "SNR", "RgCov", "AzCov", "CrossCov"
+    )
+    header += "# {:>7} {:>10} {:>7} {:>12} {:>11} {:>11} {:>11} {:>11}\n".format(
+        "(int)", "(pixels)", "(int)", "(pixels)", "", "(cov)", "(cov)", "(cov)"
+    )
+    
+    offsetsPlain = header
     for offsetx in offset:
         offsetsPlainx = "{}".format(offsetx)
         offsetsPlainx = offsetsPlainx.split()
         offsetsPlain = offsetsPlain + "{:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}\n".format(
-            int(float(offsetsPlainx[0])),
-            float(offsetsPlainx[1]),
-            int(float(offsetsPlainx[2])),
-            float(offsetsPlainx[3]),
-            float(offsetsPlainx[4]),
-            float(offsetsPlainx[5]),
-            float(offsetsPlainx[6]),
-            float(offsetsPlainx[7])
+            int(float(offsetsPlainx[0])),      # Ref line (azimuth)
+            float(offsetsPlainx[1]),           # Ref sample (range, sub-pixel)
+            int(float(offsetsPlainx[2])),      # Sec line (azimuth)
+            float(offsetsPlainx[3]),           # Sec sample (range, sub-pixel)
+            float(offsetsPlainx[4]),           # Range offset (pixels)
+            float(offsetsPlainx[5]),           # Azimuth offset (pixels)
+            float(offsetsPlainx[6]),           # SNR
+            float(offsetsPlainx[7])            # Correlation coefficient
+        )
+
+    with open(fileName, 'w') as f:
+        f.write(offsetsPlain)
+
+
+def writeOffsetWithOriginalInfo(culledField, originalField, fileName):
+    '''
+    Write culled offset file, preserving all fields from original offsets.
+    
+    This function matches culled offsets with original offsets to preserve
+    SNR, correlation, and azimuth offset information that may be lost in
+    the refined offset field.
+    
+    Args:
+        culledField: Refined offset field after culling
+        originalField: Original offset field before culling
+        fileName: Output filename
+    '''
+    # Create a mapping from (ref_line, ref_sample) to original offset entry
+    originalOffsetMap = {}
+    for offsetx in originalField:
+        offsetStr = "{}".format(offsetx)
+        fields = offsetStr.split()
+        if len(fields) >= 8:
+            ref_line = int(float(fields[0]))
+            ref_sample = float(fields[1])
+            key = (ref_line, ref_sample)
+            originalOffsetMap[key] = fields
+    
+    # Write header
+    # Note: Offset.__str__() returns: x dx y dy snr sigmax sigmay sigmaxy
+    # Column names reflect actual data content
+    header = "# {:>7} {:>10} {:>7} {:>12} {:>11} {:>11} {:>11} {:>11}\n".format(
+        "RgLoc", "RgOffset", "AzLoc", "AzOffset", "SNR", "RgCov", "AzCov", "CrossCov"
+    )
+    header += "# {:>7} {:>10} {:>7} {:>12} {:>11} {:>11} {:>11} {:>11}\n".format(
+        "(int)", "(pixels)", "(int)", "(pixels)", "", "(cov)", "(cov)", "(cov)"
+    )
+    
+    offsetsPlain = header
+    
+    # Write culled offsets, matching with original to preserve all fields
+    for offsetx in culledField:
+        offsetStr = "{}".format(offsetx)
+        fields = offsetStr.split()
+        if len(fields) >= 5:  # At least ref_line, ref_sample, sec_line, sec_sample, rg_offset
+            ref_line = int(float(fields[0]))
+            ref_sample = float(fields[1])
+            key = (ref_line, ref_sample)
+            
+            # Try to find matching original offset to preserve all fields
+            if key in originalOffsetMap:
+                orig_fields = originalOffsetMap[key]
+                # Use original fields which have all 8 values
+                offsetsPlain = offsetsPlain + "{:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}\n".format(
+                    int(float(orig_fields[0])),      # Ref line (azimuth)
+                    float(orig_fields[1]),           # Ref sample (range, sub-pixel)
+                    int(float(orig_fields[2])),      # Sec line (azimuth)
+                    float(orig_fields[3]),           # Sec sample (range, sub-pixel)
+                    float(orig_fields[4]),           # Range offset (pixels) - use from original
+                    float(orig_fields[5]),           # Azimuth offset (pixels) - preserve from original
+                    float(orig_fields[6]),           # SNR - preserve from original
+                    float(orig_fields[7])            # Correlation coefficient - preserve from original
+                )
+            else:
+                # Fallback: use culled offset fields, fill missing with zeros
+                sec_line = int(float(fields[2])) if len(fields) > 2 else int(float(fields[0]))
+                sec_sample = float(fields[3]) if len(fields) > 3 else float(fields[1])
+                rg_offset = float(fields[4]) if len(fields) > 4 else 0.0
+                az_offset = float(fields[5]) if len(fields) > 5 else 0.0
+                snr = float(fields[6]) if len(fields) > 6 else 0.0
+                corr = float(fields[7]) if len(fields) > 7 else 0.0
+                offsetsPlain = offsetsPlain + "{:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}\n".format(
+                    ref_line, ref_sample, sec_line, sec_sample, rg_offset, az_offset, snr, corr
         )
 
     with open(fileName, 'w') as f:
@@ -719,7 +925,7 @@ def runCmd(cmd, silent=0):
         raise Exception('Error when running:\n{}\n'.format(cmd))
 
 
-def updateTopoWithOffset(self, referenceInfo, rangeOffset, azimuthOffset, originalGeometryDir=None, referenceSlc=None):
+def updateTopoWithOffset(self, referenceInfo, rangeOffset, azimuthOffset, referenceSlc=None):
     '''Re-run topo with corrected geometry based on estimated offsets
     Note: referenceInfo should already have corrected startingRange and sensingStart
     This function updates lat.rdr.full, lon.rdr.full, z.rdr.full in geometryDir
@@ -731,13 +937,8 @@ def updateTopoWithOffset(self, referenceInfo, rangeOffset, azimuthOffset, origin
     
     logger.info("Updating topo geometry files with radar-DEM offsets")
     
-    # Use originalGeometryDir if provided, otherwise fall back to self.insar.geometryDirname
-    if originalGeometryDir is None:
-        # Get geometry directory (use absolute path to ensure correct location)
-        # But this might be wrong if we're in a subdirectory, so prefer originalGeometryDir
-        geometryDir = os.path.abspath(self.insar.geometryDirname)
-    else:
-        geometryDir = originalGeometryDir
+    # Get geometry directory (absolute path)
+    geometryDir = os.path.abspath(self.insar.geometryDirname)
     
     # IMPORTANT: Update self.insar.geometryDirname to point to the correct location
     # This ensures subsequent steps (like geo2rdr) can find the geometry files

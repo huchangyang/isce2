@@ -82,6 +82,8 @@ def estimateOffsetField(reference, secondary, azoffset=0, rgoffset=0):
     objOffset.setSearchWindowSizeHeight(60)
     margin = 2*objOffset.searchWindowSizeWidth + objOffset.windowSizeWidth
 
+    objOffset.thresholdSNR = 0.01
+
     nAcross = 60
     nDown = 60
 
@@ -131,9 +133,14 @@ def estimateOffsetField(reference, secondary, azoffset=0, rgoffset=0):
 def fitOffsets(field,azrgOrder=0,azazOrder=0,
         rgrgOrder=0,rgazOrder=0,snr=5.0):
     '''
-    Estimate constant range and azimith shifs.
+    Estimate constant range and azimuth shifts.
     '''
 
+
+    # Keep a copy of the original field so that we can access the original
+    # per-point covariance / standard deviation information (sigmax, sigmay)
+    # after Offoutliers has created a refined subset without covariance.
+    originalField = field
 
     stdWriter = create_writer("log","",True,filename='off.log')
 
@@ -153,7 +160,56 @@ def fitOffsets(field,azrgOrder=0,azazOrder=0,
 
         print('%d points left'%(len(field._offsets)))
 
-    
+    # ------------------------------------------------------------------
+    # Additional culling based on per-point standard deviation (sigma)
+    # stored in the original ampcor offsets as sigmax / sigmay.
+    # Threshold is fixed at 0.001 (in pixel units).
+    # ------------------------------------------------------------------
+    sigmaThreshold = 0.001
+    print('Applying sigma threshold: {:.4f}'.format(sigmaThreshold))
+
+    # Build a lookup from original offsets using (x, y) as key, where
+    # x = range location, y = azimuth location. We use the string
+    # representation to avoid floating point rounding issues.
+    originalOffsetMap = {}
+    for offsetx in originalField:
+        fields = "{}".format(offsetx).split()
+        if len(fields) >= 8:
+            key = (fields[0], fields[2])  # x, y
+            originalOffsetMap[key] = fields
+
+    filtered_offsets = []
+    removedSigma = 0
+    for offsetx in field:
+        fields = "{}".format(offsetx).split()
+        if len(fields) < 4:
+            # Malformed entry, drop it
+            removedSigma += 1
+            continue
+
+        key = (fields[0], fields[2])
+        orig_fields = originalOffsetMap.get(key, None)
+        if (orig_fields is None) or (len(orig_fields) < 8):
+            # Cannot recover covariance info, drop this point
+            removedSigma += 1
+            continue
+
+        sigma_rg = float(orig_fields[5])  # sigmax
+        sigma_az = float(orig_fields[6])  # sigmay
+
+        if (abs(sigma_rg) > sigmaThreshold) or (abs(sigma_az) > sigmaThreshold):
+            removedSigma += 1
+            continue
+
+        filtered_offsets.append(offsetx)
+
+    print('%d points left after sigma culling (removed %d points with sigma > %.4f)' %
+          (len(filtered_offsets), removedSigma, sigmaThreshold))
+
+    # Replace the internal list with the sigma-filtered subset so that the
+    # subsequent polynomial fit only uses high-quality points.
+    field._offsets = filtered_offsets
+
     aa, dummy = field.getFitPolynomials(azimuthOrder=azazOrder, rangeOrder=azrgOrder, usenumpy=True)
     dummy, rr = field.getFitPolynomials(azimuthOrder=rgazOrder, rangeOrder=rgrgOrder, usenumpy=True)
 

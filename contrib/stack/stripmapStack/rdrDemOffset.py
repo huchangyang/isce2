@@ -105,9 +105,6 @@ def main(iargs=None):
     # Create geometry directory if it doesn't exist
     os.makedirs(inps.outdir, exist_ok=True)
     
-    # Save absolute path of geometry directory BEFORE creating working directory
-    originalGeometryDir = os.path.abspath(inps.outdir)
-    
     # Create adapter
     adapter = InsarAdapter(frame, inps.outdir, inps.dem)
     
@@ -220,16 +217,17 @@ def main(iargs=None):
     try:
         os.chdir(rdrDemDir)
         
-        # Call the core function with originalGeometryDir
+        # Call the core function
         # Set skipTopoUpdate=True so that topo will be re-run in rdrDemOffset.py after frame update
         logger.info('Calling StripmapProc rdrDemOffset...')
-        rdrDemOffset(adapter, referenceInfo, heightFilename, referenceSlc, catalog=None, originalGeometryDir=originalGeometryDir, skipTopoUpdate=True)
+        rdrDemOffset(adapter, referenceInfo, heightFilename, referenceSlc, catalog=None, skipTopoUpdate=True)
     finally:
         os.chdir(cwd)
     
     # Move rdr_dem_offsets.txt from geometry directory to rdr_dem_offset subdirectory
     # This ensures all intermediate files (except topo .full files) are in rdr_dem_offset
-    offsetFileInGeometry = os.path.join(originalGeometryDir, 'rdr_dem_offsets.txt')
+    geometryDir = os.path.abspath(inps.outdir)
+    offsetFileInGeometry = os.path.join(geometryDir, 'rdr_dem_offsets.txt')
     offsetFileInRdrDemDir = os.path.join(rdrDemDir, 'rdr_dem_offsets.txt')
     if os.path.exists(offsetFileInGeometry):
         logger.info('Moving rdr_dem_offsets.txt from {} to {}'.format(offsetFileInGeometry, offsetFileInRdrDemDir))
@@ -295,6 +293,62 @@ def main(iargs=None):
         logger.info('Calling topo.main() with arguments: {}'.format(' '.join(topo_args)))
         topo.main(topo_args)
         logger.info('Topo completed successfully, geometry files regenerated')
+        
+        # Generate simamp_new.rdr using the updated height file to test the correction effect
+        logger.info('Generating simamp_new.rdr using corrected geometry for testing...')
+        try:
+            from iscesys.StdOEL.StdOELPy import create_writer
+            
+            # Determine the height file name based on multilook settings
+            # In stripmapStack, topo generates hgt.rdr (multilooked) and hgt.rdr.full (full resolution)
+            # We'll use the multilooked version if it exists, otherwise use .full
+            hgtFileMultilooked = os.path.join(inps.outdir, 'hgt.rdr')
+            hgtFileFull = os.path.join(inps.outdir, 'hgt.rdr.full')
+            
+            # Prefer multilooked version for simamp (consistent with original simamp.rdr)
+            if os.path.exists(hgtFileMultilooked):
+                hgtFile = hgtFileMultilooked
+                logger.info('Using multilooked height file: {}'.format(hgtFile))
+            elif os.path.exists(hgtFileFull):
+                hgtFile = hgtFileFull
+                logger.info('Using full resolution height file: {}'.format(hgtFile))
+            else:
+                raise FileNotFoundError('Could not find height file (hgt.rdr or hgt.rdr.full)')
+            
+            simampNewFile = os.path.join(inps.outdir, 'simamp_new.rdr')
+            
+            stdWriter = create_writer("log", "", True, filename=os.path.join(inps.outdir, 'simamp_new.log'))
+            objShade = isceobj.createSimamplitude()
+            objShade.setStdWriter(stdWriter)
+            
+            # Load the updated height image
+            hgtImage = isceobj.createImage()
+            hgtImage.load(hgtFile + '.xml')
+            hgtImage.setAccessMode('read')
+            hgtImage.createImage()
+            
+            # Create simamp_new.rdr image
+            simImage = isceobj.createImage()
+            simImage.setFilename(simampNewFile)
+            simImage.dataType = 'FLOAT'
+            simImage.setAccessMode('write')
+            simImage.setWidth(hgtImage.getWidth())
+            simImage.setLength(hgtImage.getLength())
+            simImage.createImage()
+            
+            # Generate simulated amplitude using the corrected height file
+            objShade.simamplitude(hgtImage, simImage, shade=3.0)
+            
+            simImage.renderHdr()
+            hgtImage.finalizeImage()
+            simImage.finalizeImage()
+            
+            logger.info('Successfully generated simamp_new.rdr at: {}'.format(simampNewFile))
+            logger.info('You can now compare simamp_new.rdr with the original simamp.rdr to verify the correction effect')
+        except Exception as e:
+            logger.warning('Failed to generate simamp_new.rdr: {}'.format(e))
+            import traceback
+            logger.warning(traceback.format_exc())
     
     logger.info('rdr_dem_offset completed successfully')
     return

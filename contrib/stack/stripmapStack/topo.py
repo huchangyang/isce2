@@ -425,23 +425,57 @@ def runMultilook(in_dir, out_dir, alks, rlks, in_ext='.rdr', out_ext='.rdr', met
                 options_str = '-of ENVI -a_nodata 0 -outsize {ox} {oy} -srcwin 0 0 {sx} {sy} '.format(
                     ox=out_wid, oy=out_len, sx=src_wid, sy=src_len)
                 gdal.Translate(out_file, ds, options=options_str)
+                ds = None
+                
+                # Regenerate .vrt and .xml from the multilooked data file to ensure correct dimensions
+                if os.path.exists(out_file+'.vrt'):
+                    os.remove(out_file+'.vrt')
+                if os.path.exists(out_file+'.xml'):
+                    os.remove(out_file+'.xml')
+                
                 dso = gdal.Open(out_file, gdal.GA_ReadOnly)
+                if dso is None:
+                    print('Warning: Could not open multilooked file: {}'.format(out_file))
+                    continue
+                
                 gdal.Translate(out_file+'.vrt', dso, options=gdal.TranslateOptions(format='VRT'))
+                dso = None
 
-                # generate ISCE .xml file
-                if not os.path.isfile(out_file+'.xml'):
-                    from isce.applications.gdal2isce_xml import gdal2isce_xml
-                    gdal2isce_xml(out_file+'.vrt')
+                from isce.applications.gdal2isce_xml import gdal2isce_xml
+                gdal2isce_xml(out_file+'.vrt')
 
             else:
                 raise ValueError('un-supported multilook method: {}'.format(method))
 
             # copy the full resolution xml/vrt file from ./merged/geom_reference to ./geom_reference
             # to facilitate the number of looks extraction
-            # the file path inside .xml file is not, but should, updated
+            # IMPORTANT: Only copy if the input file is actually single-look (not already multilooked)
+            # Check if input file dimensions are reasonable for single-look (should be much larger than output)
             if in_file != out_file+'.full':
-                shutil.copy(in_file+'.xml', out_file+'.full.xml')
-                shutil.copy(in_file+'.vrt', out_file+'.full.vrt')
+                # Verify input file is single-look before copying
+                # Single-look files should have dimensions much larger than multilooked output
+                # For 3x3 multilook, single-look should be ~3x larger in each dimension
+                ds_check = gdal.Open(in_file, gdal.GA_ReadOnly)
+                if ds_check is not None:
+                    in_check_wid = ds_check.RasterXSize
+                    in_check_len = ds_check.RasterYSize
+                    ds_check = None
+                    
+                    # Calculate expected output dimensions
+                    expected_out_wid = int(in_check_wid / rlks)
+                    expected_out_len = int(in_check_len / alks)
+                    
+                    # If input dimensions are much larger than expected output, it's likely single-look
+                    # Copy the .xml and .vrt files only if input is clearly single-look
+                    if in_check_wid >= expected_out_wid * rlks * 0.9 and in_check_len >= expected_out_len * alks * 0.9:
+                        if os.path.exists(in_file+'.xml'):
+                            shutil.copy(in_file+'.xml', out_file+'.full.xml')
+                        if os.path.exists(in_file+'.vrt'):
+                            shutil.copy(in_file+'.vrt', out_file+'.full.vrt')
+                    else:
+                        print('  Warning: Input file dimensions {}x{} suggest it may already be multilooked.'.format(
+                            in_check_wid, in_check_len))
+                        print('  Skipping copy of .full.xml and .full.vrt files.')
 
     return out_dir
 
