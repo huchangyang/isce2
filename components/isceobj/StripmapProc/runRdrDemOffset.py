@@ -604,7 +604,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         
         # Check final number of points (similar to Alos2Proc's minpoint=50 check)
         # Alos2Proc requires at least 50 points, we use a similar threshold
-        minPointsForFitting = 50  # Similar to Alos2Proc's minpoint=50
+        minPointsForFitting = 30  # Similar to Alos2Proc's minpoint=50
         if len(field._offsets) < minPointsForFitting:
             logger.warning('Too few points left after culling, {} left (minimum {} required for fitting)'.format(len(field._offsets), minPointsForFitting))
             logger.warning('Do not estimate offsets between radar and dem')
@@ -698,7 +698,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
             # The /2 factor accounts for round-trip propagation: ground error = round-trip error / 2
             # Correction sign depends on orbit direction (ascending: -, descending: +)
             rangePixelSize = referenceInfo.getInstrument().getRangePixelSize()
-            rangeOffsetMeters = rg_offset * rangePixelSize / 2 / 1.15
+            rangeOffsetMeters = rg_offset * rangePixelSize / 2 / 1.18
             originalStartingRange = referenceInfo.startingRange
             correctedStartingRange = originalStartingRange + correctionSign * rangeOffsetMeters
             referenceInfo.startingRange = correctedStartingRange
@@ -706,7 +706,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
             # Apply azimuth offset correction
             # Similar logic: correction sign depends on orbit direction
             prf = referenceInfo.PRF
-            azimuthOffsetSeconds = az_offset / prf / 2 / 1.15
+            azimuthOffsetSeconds = az_offset / prf / 2 / 1.18
             originalSensingStart = referenceInfo.getSensingStart()
             correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=correctionSign * azimuthOffsetSeconds)
             referenceInfo.sensingStart = correctedSensingStart
