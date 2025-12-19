@@ -666,18 +666,49 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         if abs(rg_offset) > 0.01 or abs(az_offset) > 0.01:
             logger.info('Updating referenceInfo with corrected geometry')
             
+            # Determine orbit direction (ascending/descending) to decide correction sign
+            # Get pass direction from frame (same approach as used in TopsProc/runIon.py)
+            passDirection = None
+            try:
+                if hasattr(referenceInfo, 'frame') and hasattr(referenceInfo.frame, 'passDirection'):
+                    passDirection = referenceInfo.frame.passDirection
+            except Exception as e:
+                logger.warning('Could not get pass direction from frame: {}'.format(e))
+            
+            # Determine correction sign based on orbit direction
+            # For ascending: use subtraction (-)
+            # For descending: use addition (+)
+            if passDirection:
+                passDirLower = str(passDirection).upper()
+                if 'ASCENDING' in passDirLower or 'ASC' in passDirLower:
+                    correctionSign = -1  # Subtraction for ascending
+                    logger.info('Detected ascending orbit, using subtraction for correction')
+                elif 'DESCENDING' in passDirLower or 'DESC' in passDirLower:
+                    correctionSign = 1  # Addition for descending
+                    logger.info('Detected descending orbit, using addition for correction')
+                else:
+                    correctionSign = -1  # Default to subtraction
+                    logger.warning('Unknown pass direction "{}", defaulting to subtraction'.format(passDirection))
+            else:
+                correctionSign = -1  # Default to subtraction if cannot determine
+                logger.warning('Could not determine pass direction, defaulting to subtraction')
+            
             # Apply range offset correction
+            # Note: ampcor returns offset as "secondary relative to reference"
+            # The /2 factor accounts for round-trip propagation: ground error = round-trip error / 2
+            # Correction sign depends on orbit direction (ascending: -, descending: +)
             rangePixelSize = referenceInfo.getInstrument().getRangePixelSize()
-            rangeOffsetMeters = rg_offset * rangePixelSize
+            rangeOffsetMeters = rg_offset * rangePixelSize / 2 / 1.15
             originalStartingRange = referenceInfo.startingRange
-            correctedStartingRange = originalStartingRange + rangeOffsetMeters
+            correctedStartingRange = originalStartingRange + correctionSign * rangeOffsetMeters
             referenceInfo.startingRange = correctedStartingRange
             
             # Apply azimuth offset correction
+            # Similar logic: correction sign depends on orbit direction
             prf = referenceInfo.PRF
-            azimuthOffsetSeconds = az_offset / prf
+            azimuthOffsetSeconds = az_offset / prf / 2 / 1.15
             originalSensingStart = referenceInfo.getSensingStart()
-            correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=azimuthOffsetSeconds)
+            correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=correctionSign * azimuthOffsetSeconds)
             referenceInfo.sensingStart = correctedSensingStart
             
             logger.info('Updated referenceInfo.startingRange: {:.6f} m -> {:.6f} m (offset: {:.6f} pixels = {:.2f} m)'.format(

@@ -7,6 +7,7 @@
 
 import os
 import glob
+import re
 import numpy as np
 import xml.etree.ElementTree as ET
 import datetime
@@ -168,51 +169,100 @@ class Lutan1(Sensor):
             # For multiple SLCs on the same date, the same orbit file should be used
             try:
                 # Extract date information from each TIFF file name
+                # Use regex to find 8-digit date (YYYYMMDD) in filename
+                # Pattern: 8 consecutive digits that could be a date (YYYYMMDD where YYYY is reasonable year)
+                date_pattern = r'(\d{8})'
                 tiff_dates = []
                 for tiff in self._tiffList:
-                    # Assume the file name contains the date, e.g. LT1B_MONO_KRN_STRIP2_000643_E37.4_N37.1_20220411_SLC_HH_L1A_0000010037.tiff
-                    # Extract the date part (assume the date format is YYYYMMDD, at the 8th underscore)
                     basename = os.path.basename(tiff)
-                    parts = basename.split('_')
-                    if len(parts) >= 8:
-                        date_str = parts[7]  # Assume date is at the 8th position
-                        if len(date_str) == 8 and date_str.isdigit():  # Ensure it's 8 digits (YYYYMMDD)
-                            tiff_dates.append(date_str)
-                        else:
-                            tiff_dates.append(None)
-                    else:
-                        tiff_dates.append(None)
+                    # Find all 8-digit sequences
+                    matches = re.findall(date_pattern, basename)
+                    date_str = None
+                    # Look for a date that looks like YYYYMMDD (year between 2000-2099, month 01-12, day 01-31)
+                    for match in matches:
+                        if len(match) == 8:
+                            year = int(match[:4])
+                            month = int(match[4:6])
+                            day = int(match[6:8])
+                            # Validate date range
+                            if 2000 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31:
+                                date_str = match
+                                break
+                    tiff_dates.append(date_str)
                 
                 # Extract date information from each orbit file name
+                # Collect all valid dates from TIFF files for matching
+                valid_tiff_dates = set([d for d in tiff_dates if d is not None])
+                
                 orbit_dates = []
                 for orbit in self._orbitFileList:
-                    # Assume the orbit file name contains the date, e.g. LT1B_20230607102726409_V20220410T235500_20220412T000500_ABSORBIT_SCIE.xml
-                    # Extract the date part (assume the date format is YYYYMMDD, at the 3rd underscore)
                     basename = os.path.basename(orbit)
-                    parts = basename.split('_')
-                    if len(parts) >= 4:
-                        date_str = parts[2][1:9]  # Assume date is at the 3rd position, format VYYYYMMDD...
-                        if len(date_str) == 8 and date_str.isdigit():  # Ensure it's 8 digits (YYYYMMDD)
-                            orbit_dates.append(date_str)
-                        else:
-                            orbit_dates.append(None)
-                    else:
-                        orbit_dates.append(None)
+                    # Find all 8-digit sequences
+                    matches = re.findall(date_pattern, basename)
+                    date_str = None
+                    # First, try to find a date that matches one of the TIFF file dates
+                    for match in matches:
+                        if len(match) == 8 and match in valid_tiff_dates:
+                            year = int(match[:4])
+                            month = int(match[4:6])
+                            day = int(match[6:8])
+                            # Validate date range
+                            if 2000 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31:
+                                date_str = match
+                                break
+                    # If no matching date found, use the first valid date
+                    if date_str is None:
+                        for match in matches:
+                            if len(match) == 8:
+                                year = int(match[:4])
+                                month = int(match[4:6])
+                                day = int(match[6:8])
+                                # Validate date range
+                                if 2000 <= year <= 2099 and 1 <= month <= 12 and 1 <= day <= 31:
+                                    date_str = match
+                                    break
+                    orbit_dates.append(date_str)
                 
                 # Match each TIFF file with the corresponding orbit file
+                # First try to match by both date and frame identifier, then by date only
                 matched_orbit_files = []
                 for i, tiff_date in enumerate(tiff_dates):
                     if tiff_date is None:
                         matched_orbit_files.append(None)
                         continue
                     
-                    # Find the orbit file with the matching date
+                    tiff_basename = os.path.basename(self._tiffList[i])
+                    # Extract frame identifier (e.g., "02_003" or "02_004") from TIFF filename
+                    frame_match = re.search(r'_(\d+_\d+)_', tiff_basename)
+                    frame_id = frame_match.group(1) if frame_match else None
+                    
+                    # Find the orbit file with the matching date and optionally frame identifier
                     matched = False
                     for j, orbit_date in enumerate(orbit_dates):
                         if orbit_date is not None and orbit_date == tiff_date:
-                            matched_orbit_files.append(self._orbitFileList[j])
-                            matched = True
-                            break
+                            orbit_basename = os.path.basename(self._orbitFileList[j])
+                            # If frame identifier exists, try to match it too
+                            if frame_id:
+                                if frame_id in orbit_basename:
+                                    matched_orbit_files.append(self._orbitFileList[j])
+                                    matched = True
+                                    self.logger.info(f"Matched TIFF {tiff_basename} with orbit {orbit_basename} by date and frame ID")
+                                    break
+                            else:
+                                # If no frame ID, just match by date
+                                matched_orbit_files.append(self._orbitFileList[j])
+                                matched = True
+                                self.logger.info(f"Matched TIFF {tiff_basename} with orbit {orbit_basename} by date")
+                                break
+                    
+                    # If not matched by date+frame, try date only
+                    if not matched:
+                        for j, orbit_date in enumerate(orbit_dates):
+                            if orbit_date is not None and orbit_date == tiff_date:
+                                matched_orbit_files.append(self._orbitFileList[j])
+                                matched = True
+                                self.logger.info(f"Matched TIFF {tiff_basename} with orbit {os.path.basename(self._orbitFileList[j])} by date only")
+                                break
                     
                     if not matched:
                         matched_orbit_files.append(None)
