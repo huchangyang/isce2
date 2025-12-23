@@ -675,40 +675,21 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
             except Exception as e:
                 logger.warning('Could not get pass direction from frame: {}'.format(e))
             
-            # Determine correction sign based on orbit direction
-            # For ascending: use subtraction (-)
-            # For descending: use addition (+)
-            if passDirection:
-                passDirLower = str(passDirection).upper()
-                if 'ASCENDING' in passDirLower or 'ASC' in passDirLower:
-                    correctionSign = -1  # Subtraction for ascending
-                    logger.info('Detected ascending orbit, using subtraction for correction')
-                elif 'DESCENDING' in passDirLower or 'DESC' in passDirLower:
-                    correctionSign = 1  # Addition for descending
-                    logger.info('Detected descending orbit, using addition for correction')
-                else:
-                    correctionSign = -1  # Default to subtraction
-                    logger.warning('Unknown pass direction "{}", defaulting to subtraction'.format(passDirection))
-            else:
-                correctionSign = -1  # Default to subtraction if cannot determine
-                logger.warning('Could not determine pass direction, defaulting to subtraction')
-            
             # Apply range offset correction
             # Note: ampcor returns offset as "secondary relative to reference"
             # The /2 factor accounts for round-trip propagation: ground error = round-trip error / 2
-            # Correction sign depends on orbit direction (ascending: -, descending: +)
             rangePixelSize = referenceInfo.getInstrument().getRangePixelSize()
-            rangeOffsetMeters = rg_offset * rangePixelSize / 2 / 1.15
+            rangeOffsetMeters = rg_offset * rangePixelSize
             originalStartingRange = referenceInfo.startingRange
-            correctedStartingRange = originalStartingRange + correctionSign * rangeOffsetMeters
+            correctedStartingRange = originalStartingRange + rangeOffsetMeters
             referenceInfo.startingRange = correctedStartingRange
             
             # Apply azimuth offset correction
             # Similar logic: correction sign depends on orbit direction
             prf = referenceInfo.PRF
-            azimuthOffsetSeconds = az_offset / prf / 2 / 1.15
+            azimuthOffsetSeconds = az_offset / prf
             originalSensingStart = referenceInfo.getSensingStart()
-            correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=correctionSign * azimuthOffsetSeconds)
+            correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=azimuthOffsetSeconds)
             referenceInfo.sensingStart = correctedSensingStart
             
             logger.info('Updated referenceInfo.startingRange: {:.6f} m -> {:.6f} m (offset: {:.6f} pixels = {:.2f} m)'.format(

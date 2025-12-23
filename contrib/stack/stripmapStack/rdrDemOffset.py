@@ -297,8 +297,6 @@ def main(iargs=None):
         # Generate simamp_new.rdr using the updated height file to test the correction effect
         logger.info('Generating simamp_new.rdr using corrected geometry for testing...')
         try:
-            from iscesys.StdOEL.StdOELPy import create_writer
-            
             # Determine the height file name based on multilook settings
             # In stripmapStack, topo generates hgt.rdr (multilooked) and hgt.rdr.full (full resolution)
             # We'll use the multilooked version if it exists, otherwise use .full
@@ -317,7 +315,11 @@ def main(iargs=None):
             
             simampNewFile = os.path.join(inps.outdir, 'simamp_new.rdr')
             
-            stdWriter = create_writer("log", "", True, filename=os.path.join(inps.outdir, 'simamp_new.log'))
+            # Use the exact same pattern as topo.py
+            from iscesys.StdOEL.StdOELPy import create_writer
+            
+            #####Run simamp
+            stdWriter = create_writer("log","",True,filename=os.path.join(inps.outdir, 'simamp_new.log'))
             objShade = isceobj.createSimamplitude()
             objShade.setStdWriter(stdWriter)
             
@@ -333,7 +335,6 @@ def main(iargs=None):
             simImage.dataType = 'FLOAT'
             simImage.setAccessMode('write')
             simImage.setWidth(hgtImage.getWidth())
-            simImage.setLength(hgtImage.getLength())
             simImage.createImage()
             
             # Generate simulated amplitude using the corrected height file
