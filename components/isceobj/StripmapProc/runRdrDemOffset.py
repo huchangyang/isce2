@@ -604,7 +604,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         
         # Check final number of points (similar to Alos2Proc's minpoint=50 check)
         # Alos2Proc requires at least 50 points, we use a similar threshold
-        minPointsForFitting = 50  # Similar to Alos2Proc's minpoint=50
+        minPointsForFitting = 30  # Similar to Alos2Proc's minpoint=50
         if len(field._offsets) < minPointsForFitting:
             logger.warning('Too few points left after culling, {} left (minimum {} required for fitting)'.format(len(field._offsets), minPointsForFitting))
             logger.warning('Do not estimate offsets between radar and dem')
