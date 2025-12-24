@@ -68,7 +68,7 @@ def runGeo2rdr(self):
     grdr.wireInputPort(name='planet', object=planet)
     grdr.lookSide =  info.instrument.platform.pointingDirection
 
-    # grdr.orbitInterpolationMethod = 'legendre'
+    grdr.orbitInterpolationMethod = 'LEGENDRE'
 
     grdr.setSensingStart(info.getSensingStart())
     grdr.rangeFirstSample = info.startingRange

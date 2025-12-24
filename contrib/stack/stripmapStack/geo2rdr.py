@@ -172,6 +172,7 @@ def runGeo2rdrGPU(info,latImage, lonImage, demImage, outdir,
     azimuthOffsetImage.setWidth(demImage.width)
     azimuthOffsetImage.createImage()
 
+    grdr.orbitInterpolationMethod = 'legendre'
 
     grdr.setLatAccessor(latImage.getImagePointer())
     grdr.setLonAccessor(lonImage.getImagePointer())
