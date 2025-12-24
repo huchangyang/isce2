@@ -217,6 +217,80 @@ def main(iargs=None):
   print('RMSE in azimuth : '+str(RMSE_az)+' pixels')
   print('RMSE in range : '+str(RMSE_rg)+' pixels')
   print('')
+  
+  # Calculate and display residuals for each pair
+  print('='*80)
+  print('Residual analysis (observed - predicted) for each pair:')
+  print('='*80)
+  print(f'{"Pair":<25} {"Az residual":<20} {"Rg residual":<20} {"Total residual":<20}')
+  print('-'*80)
+  
+  # Reconstruct full Saz and Srg for residual calculation
+  Saz_full = Saz.copy()
+  Srg_full = Srg.copy()
+  
+  # Calculate predicted offsets for each pair
+  pair_residuals = []
+  for ni in range(len(pairDirs)):
+    date12 = os.path.basename(pairDirs[ni]).replace('.txt','')
+    date = date12.split('_')
+    idx1 = dateList.index(date[0])
+    idx2 = dateList.index(date[1])
+    
+    # Predicted offset = S[idx2] - S[idx1]
+    pred_az = Saz_full[idx2, 0] - Saz_full[idx1, 0]
+    pred_rg = Srg_full[idx2, 0] - Srg_full[idx1, 0]
+    
+    # Observed offset
+    obs_az = Laz[ni, 0]
+    obs_rg = Lrg[ni, 0]
+    
+    # Residual
+    res_az = obs_az - pred_az
+    res_rg = obs_rg - pred_rg
+    res_total = np.sqrt(res_az**2 + res_rg**2)
+    
+    pair_residuals.append({
+      'pair': date12,
+      'az_res': res_az,
+      'rg_res': res_rg,
+      'total_res': res_total,
+      'obs_az': obs_az,
+      'obs_rg': obs_rg,
+      'pred_az': pred_az,
+      'pred_rg': pred_rg
+    })
+    
+    print(f'{date12:<25} {res_az:>18.6f} {res_rg:>18.6f} {res_total:>18.6f}')
+  
+  print('='*80)
+  print('')
+  
+  # Identify problematic pairs (high residuals)
+  threshold_az = 2.0 * RMSE_az  # 2-sigma threshold
+  threshold_rg = 2.0 * RMSE_rg
+  threshold_total = np.sqrt(threshold_az**2 + threshold_rg**2)
+  
+  problematic_pairs = []
+  for pr in pair_residuals:
+    if (abs(pr['az_res']) > threshold_az or 
+        abs(pr['rg_res']) > threshold_rg or 
+        pr['total_res'] > threshold_total):
+      problematic_pairs.append(pr)
+  
+  if problematic_pairs:
+    print('='*80)
+    print('Potentially problematic pairs (residuals > 2*RMSE):')
+    print('='*80)
+    print(f'{"Pair":<25} {"Az residual":<20} {"Rg residual":<20} {"Total residual":<20}')
+    print('-'*80)
+    for pr in sorted(problematic_pairs, key=lambda x: x['total_res'], reverse=True):
+      print(f'{pr["pair"]:<25} {pr["az_res"]:>18.6f} {pr["rg_res"]:>18.6f} {pr["total_res"]:>18.6f}')
+    print('='*80)
+    print('')
+  else:
+    print('No pairs with residuals significantly above threshold (2*RMSE).')
+    print('')
   print('='*80)
   print('Estimated offsets with respect to the stack reference date:')
   print('='*80)
