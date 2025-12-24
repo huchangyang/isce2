@@ -57,9 +57,9 @@ def unpack(hdf5, slcname, polarization='HH', orbitDir=None):
     # If the orbit file is provided, find and set the orbit file list
     if orbitDir:
         try:
-            orbnames = sorted(glob.glob(os.path.join(hdf5, '*ABSORBIT_SCIE.xml'), recursive=True))
+            orbnames = sorted(glob.glob(os.path.join(orbitDir, '*ABSORBIT_SCIE.xml'), recursive=True))
             if not orbnames:
-                orbnames = sorted(glob.glob(os.path.join(hdf5, '*.txt'), recursive=True))
+                orbnames = sorted(glob.glob(os.path.join(orbitDir, '*.txt'), recursive=True))
         except IndexError:
             orbnames = []
         
