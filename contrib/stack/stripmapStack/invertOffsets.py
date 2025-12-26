@@ -48,6 +48,10 @@ def cmdLineParse(iargs = None):
 def write2h5(inps):
   # dumping all offset files to an h5 file
   dirs = glob.glob(os.path.join(inps.input,'*'))
+  # Sort directories to ensure consistent order across runs
+  # This is critical for reproducible results
+  dirs = sorted(dirs)
+  print(f'Found {len(dirs)} pair directories')
   pairsDict = {}
   for dir in dirs:
     #Assuming the directory name for a pair is reference_secondary dates (eg: 20100506_20101112)
@@ -69,10 +73,19 @@ def write2h5(inps):
       pairsDict[(Time1,Time2)] = pairObj
 
   ############################################
+  if len(pairsDict) == 0:
+    raise ValueError('No valid pair directories found with filtAzimuth.off files')
+  
+  print(f'Processing {len(pairsDict)} pairs')
   stackObj = insarStack(pairsDict = pairsDict)
   stackObj.get_platform_tracks()
   outFile = os.path.join(inps.input,'offsets.h5')
+  # Remove existing h5 file to avoid reading stale data
+  if os.path.exists(outFile):
+    print(f'Removing existing h5 file: {outFile}')
+    os.remove(outFile)
   stackObj.save2h5(output = outFile) 
+  print(f'Saved h5 file: {outFile}')
   return outFile
 
 def date_list(h5file):
@@ -305,6 +318,14 @@ def invert(inps,h5File):
     data = h5['/platform-track/observations'].get('offset-azimuth')    
     Nz, Ny, Nx = data.shape
     Npar = A.shape[1]
+    
+    # Check matrix rank for numerical stability
+    rank_A = np.linalg.matrix_rank(A)
+    expected_rank = len(dateList) - 1
+    if rank_A != expected_rank:
+        print(f'Warning: Design matrix rank ({rank_A}) != expected rank ({expected_rank})')
+        print('Network may be disconnected or have numerical issues.')
+    
     A1 = np.linalg.pinv(A)
     A1 = np.array(A1,np.float32)
 

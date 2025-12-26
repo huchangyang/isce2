@@ -8,6 +8,7 @@ import datetime
 import shutil
 import numpy as np
 import types
+import glob
 import isce
 import isceobj
 import logging
@@ -91,6 +92,103 @@ class InsarAdapter(object):
         """Save product - for stripmapStack, we may not need to save"""
         # In stripmapStack, we work directly with frames
         pass
+
+
+def updateAllFramesWithOffset(slcDir, rangeOffsetPixels, azimuthOffsetPixels, referenceFrameDir):
+    """
+    Update startingRange and sensingStart for all frames in the stack using the estimated offsets.
+    
+    Args:
+        slcDir: Directory containing all SLC frame directories
+        rangeOffsetPixels: Range offset in pixels (single-look)
+        azimuthOffsetPixels: Azimuth offset in pixels (single-look)
+        referenceFrameDir: Directory of the reference frame (to skip it or use as template)
+    """
+    logger.info('Updating all frames with estimated offsets')
+    logger.info('Range offset: {:.6f} pixels, Azimuth offset: {:.6f} pixels'.format(
+        rangeOffsetPixels, azimuthOffsetPixels))
+    
+    # Find all frame directories
+    frameDirs = glob.glob(os.path.join(slcDir, '*'))
+    frameDirs = [d for d in frameDirs if os.path.isdir(d)]
+    
+    # Get reference frame directory name for comparison
+    referenceFrameName = os.path.basename(os.path.abspath(referenceFrameDir))
+    
+    updatedCount = 0
+    skippedCount = 0
+    errorCount = 0
+    
+    for frameDir in frameDirs:
+        frameName = os.path.basename(frameDir)
+        
+        # Skip reference frame - it's already updated in main() function
+        if frameName == referenceFrameName:
+            logger.debug('Skipping reference frame {}: already updated'.format(frameName))
+            skippedCount += 1
+            continue
+        
+        frameDataPath = os.path.join(frameDir, 'data')
+        
+        # Try to open shelve database directly
+        # shelve uses multiple files (data.dat, data.dir, etc.), so we try to open it
+        # If it fails, we'll catch the exception
+        try:
+            # Load frame - try to open shelve database
+            db = shelve.open(frameDataPath, writeback=True)
+            try:
+                if 'frame' not in db:
+                    logger.warning('Skipping {}: no frame in data file'.format(frameName))
+                    skippedCount += 1
+                    continue
+                
+                frame = db['frame']
+                
+                # Get frame parameters for offset conversion
+                rangePixelSize = frame.getInstrument().getRangePixelSize()
+                prf = frame.PRF
+                
+                # Convert pixel offsets to physical units
+                rangeOffsetMeters = rangeOffsetPixels * rangePixelSize
+                azimuthOffsetSeconds = azimuthOffsetPixels / prf
+                
+                # Apply offsets
+                originalStartingRange = frame.startingRange
+                originalSensingStart = frame.getSensingStart()
+                
+                correctedStartingRange = originalStartingRange + rangeOffsetMeters
+                correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=azimuthOffsetSeconds)
+                
+                # Update frame
+                frame.startingRange = correctedStartingRange
+                if hasattr(frame, 'setSensingStart'):
+                    frame.setSensingStart(correctedSensingStart)
+                else:
+                    frame.sensingStart = correctedSensingStart
+                
+                # Sync changes
+                db.sync()
+                
+                logger.info('Updated {}: startingRange {:.6f} -> {:.6f} m, sensingStart {} -> {}'.format(
+                    frameName, originalStartingRange, correctedStartingRange,
+                    originalSensingStart, correctedSensingStart))
+                updatedCount += 1
+                
+            finally:
+                db.close()
+                
+        except (IOError, OSError, KeyError) as e:
+            # Shelve database doesn't exist or can't be opened
+            logger.debug('Skipping {}: cannot open shelve database: {}'.format(frameName, e))
+            skippedCount += 1
+        except Exception as e:
+            logger.error('Failed to update frame {}: {}'.format(frameName, e))
+            import traceback
+            logger.error(traceback.format_exc())
+            errorCount += 1
+    
+    logger.info('Frame update summary: {} updated, {} skipped, {} errors'.format(
+        updatedCount, skippedCount, errorCount))
 
 
 def main(iargs=None):
@@ -240,6 +338,10 @@ def main(iargs=None):
         correctedStartingRange = referenceInfo.startingRange
         correctedSensingStart = referenceInfo.sensingStart
         
+        # Get the estimated offsets in pixels (these will be used to update all frames)
+        rangeOffsetPixels = adapter._insar.radarDemRangeOffset
+        azimuthOffsetPixels = adapter._insar.radarDemAzimuthOffset
+        
         # Open database with writeback=True to enable in-place attribute modification
         framePath = os.path.join(inps.reference, 'data')
         db = shelve.open(framePath, writeback=True)
@@ -255,11 +357,22 @@ def main(iargs=None):
             # With writeback=True, changes are tracked automatically
             # Just need to sync to ensure changes are written to disk
             db.sync()
-            logger.info('Updated frame attributes: startingRange={:.6f}, sensingStart={}'.format(
+            logger.info('Updated reference frame attributes: startingRange={:.6f}, sensingStart={}'.format(
                 correctedStartingRange, correctedSensingStart))
         finally:
             db.close()
-        logger.info('Saved updated frame with corrected geometry')
+        logger.info('Saved updated reference frame with corrected geometry')
+        
+        # Update all frames with the same offsets
+        # Infer SLC directory from reference directory (parent directory)
+        slcDir = os.path.dirname(os.path.abspath(inps.reference))
+        logger.info('Inferred SLC directory from reference: {}'.format(slcDir))
+        
+        if not os.path.isdir(slcDir):
+            logger.warning('SLC directory does not exist: {}. Skipping update of all frames.'.format(slcDir))
+        else:
+            # Update all frames with the same offsets
+            updateAllFramesWithOffset(slcDir, rangeOffsetPixels, azimuthOffsetPixels, inps.reference)
         
         # Re-run topo with corrected geometry to regenerate all geometry files
         # This will regenerate .full files with corrected geometry and also perform multilook
