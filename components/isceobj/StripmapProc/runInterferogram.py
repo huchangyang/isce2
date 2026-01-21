@@ -486,6 +486,76 @@ def subBandIgram(self, referenceSlc, secondarySlc, subBandDir,radarWavelength):
             
             # Also compute coherence for multilooked interferogram if needed
             # This will be done later in the workflow if needed
+            
+            # Generate corresponding multilooked amplitude file
+            # Determine the amplitude file name from interferogram name
+            if '.flat' in interferogramName:
+                ampBaseName = interferogramName.replace('.flat', '.amp')
+            elif '.int' in interferogramName:
+                ampBaseName = interferogramName.replace('.int', '.amp')
+            else:
+                ampBaseName = interferogramName + '.amp'
+            
+            # Create multilooked amplitude filename
+            multilookedAmpName = multilookedBaseName + '.amp'
+            
+            # Check if multilooked amplitude already exists
+            if not os.path.exists(multilookedAmpName + '.xml'):
+                # Check if base amplitude file exists
+                if os.path.exists(ampBaseName + '.xml'):
+                    logger.info('Creating multilooked amplitude file: {}'.format(multilookedAmpName))
+                    # Determine input amplitude file for multilooking
+                    # Use the same logic as for interferogram
+                    inputAmpFile = ampBaseName
+                    if useFullFile:
+                        # If using .full file for interferogram, check if amplitude has .full version
+                        fullAmpFile = ampBaseName + '.full'
+                        if os.path.exists(fullAmpFile + '.xml'):
+                            inputAmpFile = fullAmpFile
+                    
+                    # Apply same multilooking as interferogram
+                    if useFullFile:
+                        # Apply total looks to .full file
+                        multilook(inputAmpFile, outname=multilookedAmpName, 
+                                 alks=totalAzLooks, rlks=totalRgLooks)
+                    else:
+                        # Apply additional looks to already multilooked file
+                        multilook(inputAmpFile, outname=multilookedAmpName, 
+                                 alks=numberAzimuthLooksIon, rlks=numberRangeLooksIon)
+                    
+                    # Wait briefly for file system update
+                    import time
+                    time.sleep(0.1)
+                    
+                    # Check and rename if needed (similar to interferogram handling)
+                    if os.path.exists(multilookedAmpName) and os.path.exists(multilookedAmpName + '.xml'):
+                        logger.info('Multilooked amplitude created successfully: {}'.format(multilookedAmpName))
+                    else:
+                        # Check for files with different names/extensions
+                        createdAmpFile = None
+                        if os.path.exists(multilookedBaseName + '.amp'):
+                            createdAmpFile = multilookedBaseName + '.amp'
+                        elif os.path.exists(multilookedBaseName.replace('.flat', '').replace('.int', '') + '.amp'):
+                            createdAmpFile = multilookedBaseName.replace('.flat', '').replace('.int', '') + '.amp'
+                        
+                        if createdAmpFile and createdAmpFile != multilookedAmpName:
+                            if os.path.exists(createdAmpFile):
+                                os.rename(createdAmpFile, multilookedAmpName)
+                                logger.info('Renamed multilooked amplitude from {} to {}'.format(createdAmpFile, multilookedAmpName))
+                            if os.path.exists(createdAmpFile + '.xml'):
+                                os.rename(createdAmpFile + '.xml', multilookedAmpName + '.xml')
+                            if os.path.exists(createdAmpFile + '.vrt'):
+                                os.rename(createdAmpFile + '.vrt', multilookedAmpName + '.vrt')
+                            
+                            # Ensure VRT file is created/updated
+                            if os.path.exists(multilookedAmpName + '.xml'):
+                                img = isceobj.createImage()
+                                img.load(multilookedAmpName + '.xml')
+                                img.renderVRT()
+                else:
+                    logger.warning('Base amplitude file not found: {}. Cannot create multilooked amplitude.'.format(ampBaseName))
+            else:
+                logger.info('Multilooked amplitude already exists: {}'.format(multilookedAmpName))
     
     return interferogramName
 

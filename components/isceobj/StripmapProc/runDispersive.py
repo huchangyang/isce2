@@ -247,6 +247,24 @@ def std_iono_mean_coh(f0,fL,fH,coh_mean,rgLooks,azLooks):
     
     return std_iono
     
+def ion_std(fl, fu, numberOfLooks, cor):
+    '''
+    Compute standard deviation of ionospheric phase (same as Alos2Proc)
+    
+    fl:  lower band center frequency
+    fu:  upper band center frequency
+    numberOfLooks: number of looks
+    cor: coherence, must be numpy array
+    
+    Returns:
+    std: standard deviation of ionospheric phase
+    '''
+    f0 = (fl + fu) / 2.0
+    interferogramVar = (1.0 - cor**2) / (2.0 * numberOfLooks * cor**2 + (cor==0))
+    std = fl*fu/f0/(fu**2-fl**2)*np.sqrt(fu**2*interferogramVar+fl**2*interferogramVar)
+    std[np.nonzero(cor==0)] = 0
+    return std
+    
 def theoretical_variance_fromSubBands(self, f0, fL, fH, B, Sig_phi_iono, Sig_phi_nonDisp,N):
     
     # Calculating the theoretical variance of the ionospheric phase based on the coherence of the sub-band interferograns 
@@ -1186,7 +1204,7 @@ def runDispersive(self):
     # Pass the detected unwrapped interferogram paths to getMask
     getMask(self, maskFile, std_iono, lowBandIgram=lowBandIgram, highBandIgram=highBandIgram)
     
-    # Calculating the theoretical standard deviation of the estimation based on the coherence of the interferograms
+    # Calculate number of looks and standard deviation (same as Alos2Proc)
     # Use more accurate number of looks calculation (ALOS-style) if possible
     try:
         # Compute more accurate numberOfLooks considering bandwidth and subband characteristics
@@ -1227,7 +1245,7 @@ def runDispersive(self):
         logger.info('  Range sampling rate: {:.2e} Hz'.format(rangeSamplingRate))
         logger.info('  Subband range bandwidth: {:.2e} Hz'.format(subbandRangeBandwidth))
         
-        # Use the computed numberOfLooks for variance calculation
+        # Use the computed numberOfLooks for std calculation
         totalLooks = numberOfLooks if numberOfLooks > 0 else azLooks * rgLooks
         logger.info('Using number of looks: {:.2f} (simple calculation: {:.2f})'.format(totalLooks, azLooks * rgLooks))
     except Exception as e:
@@ -1236,11 +1254,80 @@ def runDispersive(self):
         if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon:
             totalLooks = totalLooks * numberRangeLooksIon * numberAzimuthLooksIon
     
-    theoretical_variance_fromSubBands(self, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks) 
+    # Compute standard deviation of ionospheric phase (same as Alos2Proc)
+    # Read coherence files for std calculation
+    ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+    lowBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
+    ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
+    highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
     
-    # Use adaptive Gaussian filtering if explicitly requested, otherwise use original iterative filtering
-    useAdaptiveFilter = getattr(self, 'useAdaptiveGaussianFilter', False)
-    useAdaptiveFilter = True
+    # Get dimensions from dispersive phase file
+    img = isceobj.createImage()
+    img.load(outDispersive + '.xml')
+    width = img.width
+    length = img.length
+    
+    # Read coherence files
+    cor = None
+    if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
+        try:
+            # Try .vrt first, then .xml
+            vrt_low = lowBandCor + '.vrt'
+            vrt_high = highBandCor + '.vrt'
+            if not os.path.exists(vrt_low):
+                vrt_low = lowBandCor + '.xml'
+            if not os.path.exists(vrt_high):
+                vrt_high = highBandCor + '.xml'
+            
+            ds_cor_low = gdal.Open(vrt_low, gdal.GA_ReadOnly)
+            ds_cor_high = gdal.Open(vrt_high, gdal.GA_ReadOnly)
+            
+            if ds_cor_low and ds_cor_high:
+                nbands_low = ds_cor_low.RasterCount
+                nbands_high = ds_cor_high.RasterCount
+                band_to_read = 1  # StripmapProc coherence files are single band
+                
+                if band_to_read <= nbands_low and band_to_read <= nbands_high:
+                    cor_low = ds_cor_low.GetRasterBand(band_to_read).ReadAsArray()
+                    cor_high = ds_cor_high.GetRasterBand(band_to_read).ReadAsArray()
+                    
+                    # Check dimensions match
+                    if cor_low.shape == (length, width) and cor_high.shape == (length, width):
+                        cor = (cor_low + cor_high) / 2.0
+                        cor[np.nonzero(cor<0)] = 0.0
+                        cor[np.nonzero(cor>1)] = 0.0
+                        logger.info('Successfully read coherence files for std calculation')
+                    else:
+                        logger.warning('Coherence dimensions ({}, {}) do not match ionosphere dimensions ({}, {})'.format(
+                            cor_low.shape, cor_high.shape, (length, width)))
+                
+                ds_cor_low = None
+                ds_cor_high = None
+        except Exception as e:
+            logger.warning('Could not read coherence files for std calculation: {}'.format(e))
+    
+    # Compute std using ion_std function (same as Alos2Proc)
+    if cor is not None:
+        std_dispersive = ion_std(fL, fH, totalLooks, cor)
+        std_nonDispersive = ion_std(fL, fH, totalLooks, cor)  # Same formula for non-dispersive
+        logger.info('Computed standard deviation of ionospheric phase using ion_std function (Alos2Proc method)')
+    else:
+        logger.warning('Could not compute std from coherence, using theoretical variance method as fallback')
+        theoretical_variance_fromSubBands(self, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks) 
+        # Read the computed std files
+        std_dispersive = np.fromfile(sigmaDispersive, dtype=np.float32).reshape(length, width)
+        std_nonDispersive = np.fromfile(sigmaNonDispersive, dtype=np.float32).reshape(length, width)
+    
+    # Save std files (same format as Alos2Proc, but using .sig extension for StripmapProc compatibility)
+    std_dispersive.astype(np.float32).tofile(sigmaDispersive)
+    write_xml(sigmaDispersive, width, length, 1, "FLOAT", "BIL")
+    std_nonDispersive.astype(np.float32).tofile(sigmaNonDispersive)
+    write_xml(sigmaNonDispersive, width, length, 1, "FLOAT", "BIL")
+    logger.info('Saved standard deviation files: {} and {}'.format(sigmaDispersive, sigmaNonDispersive)) 
+    
+    # Use adaptive Gaussian filtering (default, same as Alos2Proc)
+    # Original iterative filtering is available as fallback if useAdaptiveGaussianFilter=False
+    useAdaptiveFilter = getattr(self, 'useAdaptiveGaussianFilter', True)
     if useAdaptiveFilter:
         # Use adaptive Gaussian filtering (similar to Alos2Proc)
         logger.info('Using adaptive Gaussian filtering for ionospheric phase')
@@ -1259,16 +1346,16 @@ def runDispersive(self):
         ionos[mask==0] = 0
         std[mask==0] = 0
         
-        # Get filtering parameters (defaults match alosStack.xml)
-        # Default values from alosStack.xml:
+        # Get filtering parameters (defaults match Alos2Proc/alosStack.xml)
+        # Default values from Alos2Proc/alosStack.xml:
         # - maximum window size: 301
         # - minimum window size: 11
         # - window size of secondary filtering: 5
         # - apply polynomial fit in adaptive filtering window: True
         # - whether do secondary filtering: True
-        size_max = getattr(self, 'filteringWinsizeMaxIon', 501)
-        size_min = getattr(self, 'filteringWinsizeMinIon', 31)
-        size_secondary = getattr(self, 'filteringWinsizeSecondaryIon', 11)
+        size_max = getattr(self, 'filteringWinsizeMaxIon', 301)
+        size_min = getattr(self, 'filteringWinsizeMinIon', 11)
+        size_secondary = getattr(self, 'filteringWinsizeSecondaryIon', 5)
         std_out0 = getattr(self, 'filterStdIon', None)  # None means auto-determine based on mode
         fitAdaptive = getattr(self, 'fitAdaptiveIon', True)
         filtSecondary = getattr(self, 'filtSecondaryIon', True)
@@ -1282,7 +1369,7 @@ def runDispersive(self):
         
         # If std_out0 is None, use a reasonable default (matching ALOS-2 high-resolution modes)
         if std_out0 is None:
-            std_out0 = 0.015  # Default for stripmap (matches ALOS-2 SPT/SM1 modes), can be overridden by user
+            std_out0 = 0.010  # Default for stripmap (matches ALOS-2 SPT/SM1 modes), can be overridden by user
         
         if size_min > size_max:
             size_max = size_min
@@ -1363,8 +1450,11 @@ def runDispersive(self):
         std_filt = None
         window_size = None
         if filtIon:
+            logger.info('Calling adaptive_gaussian for dispersive phase filtering...')
             ionos_filt, std_filt, window_size = adaptive_gaussian(
                 ionos.copy(), std.copy(), size_min, size_max, std_out0, fit=fitAdaptive)
+            logger.info('adaptive_gaussian returned: window_size is None={}, std_filt is None={}'.format(
+                window_size is None, std_filt is None))
             
             # Apply secondary filtering if requested
             if filtSecondary:
@@ -1399,6 +1489,25 @@ def runDispersive(self):
         if filtIon and std_filt is not None:
             std_filt.astype(np.float32).tofile(sigmaDispersive + ".filt")
             write_xml(sigmaDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
+            # Save window size file (same as Alos2Proc)
+            if window_size is not None:
+                windowSizeDispersive = outDispersive + ".filt.win"
+                windowSizeDispersive = os.path.abspath(windowSizeDispersive)
+                print('Saving dispersive window size file: {}'.format(windowSizeDispersive))
+                logger.info('Saving dispersive window size file: {}'.format(windowSizeDispersive))
+                window_size.astype(np.float32).tofile(windowSizeDispersive)
+                write_xml(windowSizeDispersive, width, length, 1, "FLOAT", "BIL")
+                print('Saved dispersive window size file: {}'.format(windowSizeDispersive))
+                logger.info('Saved dispersive window size file: {}'.format(windowSizeDispersive))
+            else:
+                print('WARNING: Window size is None for dispersive phase!')
+                logger.warning('Window size is None for dispersive phase (filtIon={}, std_filt is not None={})'.format(
+                    filtIon, std_filt is not None))
+        else:
+            print('WARNING: Skipping window file save: filtIon={}, std_filt is None={}'.format(
+                filtIon, std_filt is None))
+            logger.warning('Skipping window file save: filtIon={}, std_filt is None={}'.format(
+                filtIon, std_filt is None))
         
         # Filter non-dispersive phase
         nonDisp = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
@@ -1462,8 +1571,9 @@ def runDispersive(self):
         
         nonDisp_filt = None
         std_nonDisp_filt = None
+        window_size_nonDisp = None
         if filtIon:
-            nonDisp_filt, std_nonDisp_filt, _ = adaptive_gaussian(
+            nonDisp_filt, std_nonDisp_filt, window_size_nonDisp = adaptive_gaussian(
                 nonDisp.copy(), std_nonDisp.copy(), size_min, size_max, std_out0, fit=fitAdaptive)
             
             # Apply secondary filtering to non-dispersive phase if requested
@@ -1495,6 +1605,25 @@ def runDispersive(self):
         if filtIon and std_nonDisp_filt is not None:
             std_nonDisp_filt.astype(np.float32).tofile(sigmaNonDispersive + ".filt")
             write_xml(sigmaNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
+            # Save window size file (same as Alos2Proc)
+            if window_size_nonDisp is not None:
+                windowSizeNonDispersive = outNonDispersive + ".filt.win"
+                windowSizeNonDispersive = os.path.abspath(windowSizeNonDispersive)
+                print('Saving non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                logger.info('Saving non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                window_size_nonDisp.astype(np.float32).tofile(windowSizeNonDispersive)
+                write_xml(windowSizeNonDispersive, width, length, 1, "FLOAT", "BIL")
+                print('Saved non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                logger.info('Saved non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+            else:
+                print('WARNING: Window size is None for non-dispersive phase!')
+                logger.warning('Window size is None for non-dispersive phase (filtIon={}, std_nonDisp_filt is not None={})'.format(
+                    filtIon, std_nonDisp_filt is not None))
+        else:
+            print('WARNING: Skipping window file save for non-dispersive: filtIon={}, std_nonDisp_filt is None={}'.format(
+                filtIon, std_nonDisp_filt is None))
+            logger.warning('Skipping window file save for non-dispersive: filtIon={}, std_nonDisp_filt is None={}'.format(
+                filtIon, std_nonDisp_filt is None))
         
         del ionos, std, mask, nonDisp, std_nonDisp
         if ionos_filt is not None:
@@ -1550,119 +1679,7 @@ def runDispersive(self):
     else:
         logger.info('Skipping iterative unwrapping error correction (already corrected before computation)')
     
-    # Resample ionospheric phase back to original multilooked resolution if additional looks were used
-    if useMultilookedUnw and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
-        logger.info('Resampling ionospheric phase back to original multilooked resolution')
-        
-        # Get dimensions of multilooked ionosphere
-        img_ion = isceobj.createImage()
-        img_ion.load(outDispersive + '.xml')
-        width_ion = img_ion.width
-        length_ion = img_ion.length
-        
-        # Get dimensions of original multilooked interferogram
-        # Use the same logic as lowBandIgram to find the correct unwrapped interferogram
-        ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
-        
-        # Try to find the unwrapped interferogram that was actually used
-        # First check if we used multilooked unwrapped interferogram
-        if useMultilookedUnw and numberRangeLooksIon is not None and numberAzimuthLooksIon is not None:
-            # Try multilooked unwrapped interferogram first
-            ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-            originalUnw = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename.replace('.flat', ml2 + '.unw'))
-            if not os.path.exists(originalUnw + '.xml'):
-                # Try without filt_ prefix
-                originalUnw = os.path.join(ifgDirname, self.insar.ifgFilename.replace('.flat', ml2 + '.unw'))
-        else:
-            # Use regular unwrapped interferogram
-            originalUnw = os.path.join(ifgDirname, 'filt_' + self.insar.ifgFilename)
-            if '.flat' in originalUnw:
-                originalUnw = originalUnw.replace('.flat', '.unw')
-            elif '.int' in originalUnw:
-                originalUnw = originalUnw.replace('.int', '.unw')
-            else:
-                originalUnw += '.unw'
-        
-        # If still not found, try using lowBandIgram path directly (it was successfully loaded earlier)
-        if not os.path.exists(originalUnw + '.xml'):
-            if os.path.exists(lowBandIgram + '.xml'):
-                originalUnw = lowBandIgram
-                logger.info('Using lowBandIgram path for resampling: {}'.format(originalUnw))
-        
-        if os.path.exists(originalUnw + '.xml'):
-            img_orig = isceobj.createImage()
-            img_orig.load(originalUnw + '.xml')
-            width_orig = img_orig.width
-            length_orig = img_orig.length
-            
-            # Only resample if dimensions are different
-            if width_ion != width_orig or length_ion != length_orig:
-                from scipy.interpolate import interp1d
-                
-                # Resample dispersive phase
-                ionos_ml = np.fromfile(outDispersive, dtype=np.float32).reshape(length_ion, width_ion)
-                
-                # Resample in range direction first (creates intermediate array with length_ion rows and width_orig columns)
-                index_rg_ml = np.linspace(0, width_ion-1, num=width_ion, endpoint=True)
-                if width_orig != width_ion:
-                    index_rg_orig = np.linspace(0, width_orig-1, num=width_orig, endpoint=True) * (width_ion-1)/(width_orig-1) if width_orig > 1 else np.array([0])
-                else:
-                    index_rg_orig = index_rg_ml
-                
-                # Intermediate array: resampled in range but not yet in azimuth
-                ionos_resampled_rg = np.zeros((length_ion, width_orig), dtype=np.float32)
-                for i in range(length_ion):
-                    if width_orig == width_ion:
-                        ionos_resampled_rg[i, :] = ionos_ml[i, :]
-                    else:
-                        f = interp1d(index_rg_ml, ionos_ml[i, :], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                        ionos_resampled_rg[i, :] = f(index_rg_orig)
-                
-                # Resample in azimuth direction
-                if length_orig != length_ion:
-                    index_az_ml = np.linspace(0, length_ion-1, num=length_ion, endpoint=True)
-                    index_az_orig = np.linspace(0, length_orig-1, num=length_orig, endpoint=True) * (length_ion-1)/(length_orig-1) if length_orig > 1 else np.array([0])
-                    ionos_final = np.zeros((length_orig, width_orig), dtype=np.float32)
-                    for j in range(width_orig):
-                        f = interp1d(index_az_ml, ionos_resampled_rg[:, j], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                        ionos_final[:, j] = f(index_az_orig)
-                else:
-                    ionos_final = ionos_resampled_rg
-                
-                # Save resampled dispersive phase
-                ionos_final.astype(np.float32).tofile(outDispersive)
-                write_xml(outDispersive, width_orig, length_orig, 1, "FLOAT", "BIL")
-                
-                # Resample non-dispersive phase
-                nonDisp_ml = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length_ion, width_ion)
-                
-                # Resample in range direction first (creates intermediate array with length_ion rows and width_orig columns)
-                nonDisp_resampled_rg = np.zeros((length_ion, width_orig), dtype=np.float32)
-                for i in range(length_ion):
-                    if width_orig == width_ion:
-                        nonDisp_resampled_rg[i, :] = nonDisp_ml[i, :]
-                    else:
-                        f = interp1d(index_rg_ml, nonDisp_ml[i, :], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                        nonDisp_resampled_rg[i, :] = f(index_rg_orig)
-                
-                # Resample in azimuth direction
-                if length_orig != length_ion:
-                    nonDisp_final = np.zeros((length_orig, width_orig), dtype=np.float32)
-                    for j in range(width_orig):
-                        f = interp1d(index_az_ml, nonDisp_resampled_rg[:, j], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                        nonDisp_final[:, j] = f(index_az_orig)
-                else:
-                    nonDisp_final = nonDisp_resampled_rg
-                
-                # Save resampled non-dispersive phase
-                nonDisp_final.astype(np.float32).tofile(outNonDispersive)
-                write_xml(outNonDispersive, width_orig, length_orig, 1, "FLOAT", "BIL")
-                
-                logger.info('Ionospheric phase resampled from {}x{} to {}x{}'.format(width_ion, length_ion, width_orig, length_orig))
-                
-                del ionos_ml, ionos_resampled_rg, ionos_final, nonDisp_ml, nonDisp_resampled_rg, nonDisp_final
-            else:
-                logger.info('Ionospheric phase already at original resolution, no resampling needed')
-        else:
-            logger.warning('Original unwrapped interferogram not found, skipping resampling')
+    # Note: Resampling of ionospheric phase back to original multilooked resolution is not needed here
+    # because MintPy will automatically handle the resampling when generating ionStack.h5
+    # (see stackDict.py write2hdf5 method, which uses geom_obj as size reference for ionosphere files)
 

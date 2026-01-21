@@ -145,6 +145,11 @@ class config(object):
         self.f.write('mm : ' + self.referenceMetaData + '\n')
         self.f.write('ss : ' + self.secondaryMetaData + '\n')
         self.f.write('outfile : '+ self.outfile + '\n')
+        # Add water mask if available (from run_01_reference output)
+        # Write path even if file doesn't exist yet (will be created in run_01_reference)
+        # If not specified, refineSecondaryTiming.py will auto-detect
+        if hasattr(self, 'waterMaskFile') and self.waterMaskFile:
+            self.f.write('water-mask : ' + self.waterMaskFile + '\n')
 
     def denseOffsets(self, function):
         self.f.write('##########################'+'\n')
@@ -286,6 +291,28 @@ class config(object):
             self.f.write('number_range_looks_ion : ' + str(self.numberRangeLooksIon) + '\n')
         if hasattr(self, 'numberAzimuthLooksIon'):
             self.f.write('number_azimuth_looks_ion : ' + str(self.numberAzimuthLooksIon) + '\n')
+        # Adaptive Gaussian filtering parameters (matching StripmapProc defaults)
+        if hasattr(self, 'filteringWinsizeMaxIon'):
+            self.f.write('filtering_winsize_max_ion : ' + str(self.filteringWinsizeMaxIon) + '\n')
+        if hasattr(self, 'filteringWinsizeMinIon'):
+            self.f.write('filtering_winsize_min_ion : ' + str(self.filteringWinsizeMinIon) + '\n')
+        if hasattr(self, 'filteringWinsizeSecondaryIon'):
+            self.f.write('filtering_winsize_secondary_ion : ' + str(self.filteringWinsizeSecondaryIon) + '\n')
+        if hasattr(self, 'filterStdIon'):
+            if self.filterStdIon is not None:
+                self.f.write('filter_std_ion : ' + str(self.filterStdIon) + '\n')
+        if hasattr(self, 'useAdaptiveGaussian'):
+            self.f.write('use_adaptive_gaussian : ' + str(self.useAdaptiveGaussian) + '\n')
+        if hasattr(self, 'fitIon'):
+            self.f.write('fit_ion : ' + str(self.fitIon) + '\n')
+        if hasattr(self, 'filtIon'):
+            self.f.write('filt_ion : ' + str(self.filtIon) + '\n')
+        if hasattr(self, 'fitAdaptiveIon'):
+            self.f.write('fit_adaptive_ion : ' + str(self.fitAdaptiveIon) + '\n')
+        if hasattr(self, 'filtSecondaryIon'):
+            self.f.write('filt_secondary_ion : ' + str(self.filtSecondaryIon) + '\n')
+        if hasattr(self, 'adjustPhasePolynomial'):
+            self.f.write('adjust_phase_polynomial : ' + str(self.adjustPhasePolynomial) + '\n')
         self.f.write('outDir : ' + self.outDir + '\n')
         self.f.write('##########################'+'\n')
 
@@ -388,10 +415,26 @@ class run(object):
         configObj.topo('[Function-{0}]'.format(counter))
         counter += 1
         
-        # Add rdr_dem_offset after topo to refine geometry with estimated offsets
+        # Generate water mask in radar coordinates (first time, before rdrDemOffset)
+        # This allows rdrDemOffset to use water mask for filtering
+        configObj.latFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference/lat.rdr')
+        configObj.lonFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference/lon.rdr')
+        configObj.waterMaskFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference/waterMask.rdr')
+        configObj.createWaterMask('[Function-{0}]'.format(counter))
+        counter += 1
+        
+        # Add rdr_dem_offset after initial water mask to refine geometry with estimated offsets
         # Only if doRdrDemOffset is enabled
         if getattr(self, 'doRdrDemOffset', False):
             configObj.rdrDemOffset('[Function-{0}]'.format(counter))
+            counter += 1
+            
+            # Regenerate water mask after rdrDemOffset (geometry parameters have been updated)
+            # Use the same paths as before
+            configObj.latFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference/lat.rdr')
+            configObj.lonFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference/lon.rdr')
+            configObj.waterMaskFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference/waterMask.rdr')
+            configObj.createWaterMask('[Function-{0}]'.format(counter))
             counter += 1
 
         if split:
@@ -400,13 +443,6 @@ class run(object):
             configObj.shelve = os.path.join(configObj.slcDir, 'data')
             configObj.splitRangeSpectrum('[Function-{0}]'.format(counter))
             counter += 1
-
-        # generate water mask in radar coordinates
-        configObj.latFile = os.path.join(self.workDir, 'geom_reference/lat.rdr')
-        configObj.lonFile = os.path.join(self.workDir, 'geom_reference/lon.rdr')
-        configObj.waterMaskFile = os.path.join(self.workDir, 'geom_reference/waterMask.rdr')
-        configObj.createWaterMask('[Function-{0}]'.format(counter))
-        counter += 1
 
         configObj.finalize()
         del configObj
@@ -462,6 +498,8 @@ class run(object):
             configObj.referenceMetaData = os.path.join(self.slcDir, stackReference)
             configObj.secondaryMetaData = os.path.join(self.slcDir, secondary)
             configObj.outfile = os.path.join(self.workDir, 'offsets', secondary ,'misreg')
+            # Set water mask file path (from run_01_reference output, full resolution in merged/geom_reference)
+            configObj.waterMaskFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference', 'waterMask.rdr')
             configObj.refineSecondaryTiming('[Function-1]')
             configObj.finalize()
             self.runf.write(self.text_cmd+'stripmapWrapper.py -c '+ configName+'\n')
@@ -484,6 +522,8 @@ class run(object):
             configObj.referenceMetaData = os.path.join(self.slcDir, pair[0])
             configObj.secondaryMetaData = os.path.join(self.slcDir, pair[1])
             configObj.outfile = os.path.join(self.workDir, 'refineSecondaryTiming','pairs', pair[0] + '_' + pair[1] ,'misreg')
+            # Set water mask file path (from run_01_reference output, full resolution in merged/geom_reference)
+            configObj.waterMaskFile = os.path.join(self.workDir, self.stack_folder, 'geom_reference', 'waterMask.rdr')
             configObj.refineSecondaryTiming('[Function-1]')
             configObj.finalize()
             del configObj
@@ -697,47 +737,60 @@ class run(object):
             
             # Determine input interferogram for FilterAndCoherence
             # For full-band interferograms: filter before additional multilooking
-            # For sub-band interferograms (HighBand/LowBand): filter after additional multilooking
-            # (because dispersive_nonDispersive expects filt_*_*rlks_*alks files)
+            # For sub-band interferograms (HighBand/LowBand): skip filtering for additional multilooked versions
+            # (to match Alos2Proc behavior where filtering is optional before unwrapping)
+            originalFiltStrength = None
             if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
                 ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
                 # Check if this is a sub-band (HighBand or LowBand) processing
                 if low_or_high in ['/LowBand/', '/HighBand/']:
                     # For sub-bands, use the multilooked interferogram (after additional multilooking)
                     configObj.igram = configObj.outDir + ml2 + '.int'
+                    # Skip filtering for sub-band additional multilooked interferograms
+                    # (filtering is optional, similar to Alos2Proc)
+                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.int'
+                    configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
+                    # Temporarily set filtStrength to 0 to skip filtering (but still calculate coherence)
+                    originalFiltStrength = configObj.filtStrength
+                    configObj.filtStrength = '0.0'
                 else:
                     # For full-band, use the base interferogram (before additional multilooking)
                     configObj.igram = configObj.outDir + '.int'
+                    # Full-band: filter output should NOT have ml2 suffix (filtering is before additional multilooking)
+                    if float(configObj.filtStrength) > 0.:
+                        configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
+                        configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
+                    else:
+                        configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.int'
+                        configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.cor'
             else:
                 ml2 = ''
                 configObj.igram = configObj.outDir + '.int'  # Use regular file
-            
-            # Determine output filenames for filtered interferogram and coherence
-            # For full-band: filter output should NOT have ml2 suffix (filtering is before additional multilooking)
-            # For sub-bands: filter output should have ml2 suffix (filtering is after additional multilooking)
-            if float(configObj.filtStrength) > 0.:
-                if low_or_high in ['/LowBand/', '/HighBand/']:
-                    # Sub-bands: use ml2 suffix (filtering is after additional multilooking)
-                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.int'
-                    configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
-                else:
-                    # Full-band: no ml2 suffix (filtering is before additional multilooking)
+                # Regular interferogram filtering
+                if float(configObj.filtStrength) > 0.:
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
-            else:
-                # do not add prefix filt_ to output file if no filtering is applied.
-                if low_or_high in ['/LowBand/', '/HighBand/']:
-                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.int'
-                    configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
                 else:
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.cor'
+            
             configObj.filterCoherence('[Function-2]')
+            
+            # Restore original filtStrength if it was modified for sub-bands
+            if originalFiltStrength is not None:
+                configObj.filtStrength = originalFiltStrength
 
             # skip phase unwrapping if input method == no
             if self.unwMethod.lower() != 'no':
-                configObj.igram = configObj.filtIgram
-                configObj.unwIfg = os.path.splitext(configObj.igram)[0]
+                # For sub-band additional multilooked interferograms, use the unfiltered multilooked interferogram directly
+                # For other cases, use filtIgram (which may be filtered or unfiltered depending on filtStrength)
+                if low_or_high in ['/LowBand/', '/HighBand/'] and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
+                    # Use the unfiltered multilooked interferogram directly (configObj.igram was set at line 748)
+                    configObj.unwIfg = os.path.splitext(configObj.igram)[0]
+                else:
+                    # Use filtIgram (filtered or unfiltered depending on filtStrength)
+                    configObj.igram = configObj.filtIgram
+                    configObj.unwIfg = os.path.splitext(configObj.igram)[0]
                 configObj.noMCF = noMCF
                 configObj.reference = os.path.join(self.slcDir,stackReference +'/data') 
                 configObj.defoMax = defoMax
@@ -775,19 +828,23 @@ class run(object):
             # Determine file suffixes based on additional multilooking
             if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
                 ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-                # Use multilooked files: filt_*_*rlks_*alks_snaphu.unw
+                # For sub-band interferograms, unwrapping uses the unfiltered multilooked interferogram
+                # The unwrapped file name is: pair[0]_pair[1]_ml2_snaphu.unw (no filt_ prefix)
+                # So the prefix should be: pair[0]_pair[1]_ml2 (not filt_pair[0]_pair[1]_ml2)
                 configObj.lowBandIgram  = os.path.join(self.workDir,
                                                        'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                       'filt_' + pair[0] + '_'  + pair[1] + ml2)
+                                                       pair[0] + '_'  + pair[1] + ml2)
                 configObj.highBandIgram = os.path.join(self.workDir,
                                                        'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                       'filt_' + pair[0] + '_'  + pair[1] + ml2)
+                                                       pair[0] + '_'  + pair[1] + ml2)
+                # Coherence files are generated by FilterAndCoherence without filt_ prefix
+                # when filtStrength is 0.0 (for sub-band additional multilooked interferograms)
                 configObj.lowBandCor  = os.path.join(self.workDir,
                                                      'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                     'filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor')
+                                                     pair[0] + '_'  + pair[1] + ml2 + '.cor')
                 configObj.highBandCor = os.path.join(self.workDir,
                                                      'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                     'filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor')
+                                                     pair[0] + '_'  + pair[1] + ml2 + '.cor')
             else:
                 # Use regular files (no additional multilooking)
                 configObj.lowBandIgram  = os.path.join(self.workDir,

@@ -52,16 +52,26 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
         if not self.doDispersive:
             print('Estimating dispersive phase not requested ... skipping sub-band interferograms')
             return
-        logger.info("Filtering the low-band interferogram")
+        # Check if subband filtering is enabled (default: False, similar to Alos2Proc)
+        filterSubbandInt = getattr(self, 'filterSubbandInt', False)
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
+        if not filterSubbandInt:
+            logger.info("Subband interferogram filtering is disabled. Skipping filtering but will generate phsig.cor.")
+        else:
+            logger.info("Filtering the low-band interferogram")
 
     elif igramSpectrum == "high":
         if not self.doDispersive:
             print('Estimating dispersive phase not requested ... skipping sub-band interferograms')
             return
-        logger.info("Filtering the high-band interferogram")
+        # Check if subband filtering is enabled (default: False, similar to Alos2Proc)
+        filterSubbandInt = getattr(self, 'filterSubbandInt', False)
         ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
-
+        if not filterSubbandInt:
+            logger.info("Subband interferogram filtering is disabled. Skipping filtering but will generate phsig.cor.")
+        else:
+            logger.info("Filtering the high-band interferogram")
+    import pdb; pdb.set_trace()
     # Check if ionospheric looks are specified and look for multilooked interferogram
     # For low and high band, we may need to filter multilooked interferograms for ionospheric estimation
     useMultilookedIgram = False
@@ -108,6 +118,7 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
     img1 = isceobj.createImage()
     img1.load(topoflatIntFilename + '.xml')
     widthInt = img1.getWidth()
+    lengthInt = img1.getLength()
     
     # Ensure VRT file exists (may be missing after file renaming)
     if not os.path.exists(topoflatIntFilename + '.vrt') and os.path.exists(topoflatIntFilename + '.xml'):
@@ -119,59 +130,82 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
     intImage.setAccessMode('read')
     intImage.createImage()
 
+    # Check if filtering should be performed
+    # For subbands, filterSubbandInt may be False, but we still need to generate phsig.cor
+    filterSubbandInt = getattr(self, 'filterSubbandInt', True)  # Default True for full-band
+    if igramSpectrum in ["low", "high"]:
+        filterSubbandInt = getattr(self, 'filterSubbandInt', False)
+    
+    # If filtering is disabled for subbands, we still need to generate phsig.cor
+    # So we'll perform filtering with strength=0 (no-op filtering) to maintain the same code path
+    use_zero_strength_filter = False
+    if igramSpectrum in ["low", "high"] and not filterSubbandInt:
+        use_zero_strength_filter = True
+        logger.info("Subband filtering disabled, but will perform zero-strength filtering to generate phsig.cor")
+    
     # Create the filtered interferogram
-    # If using multilooked interferogram, preserve the multilook suffix in output filename
-    if useMultilookedIgram:
-        # Extract the multilook suffix from input filename
-        if '.flat' in topoflatIntFilename:
-            baseName = topoflatIntFilename.replace('.flat', '')
-            filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(baseName) + '.flat')
-        elif '.int' in topoflatIntFilename:
-            baseName = topoflatIntFilename.replace('.int', '')
-            filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(baseName) + '.int')
+    if filterSubbandInt or igramSpectrum == "full" or use_zero_strength_filter:
+        # If using multilooked interferogram, preserve the multilook suffix in output filename
+        if useMultilookedIgram:
+            # Extract the multilook suffix from input filename
+            if '.flat' in topoflatIntFilename:
+                baseName = topoflatIntFilename.replace('.flat', '')
+                filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(baseName) + '.flat')
+            elif '.int' in topoflatIntFilename:
+                baseName = topoflatIntFilename.replace('.int', '')
+                filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(baseName) + '.int')
+            else:
+                filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(topoflatIntFilename))
         else:
-            filtIntFilename = os.path.join(ifgDirname, 'filt_' + os.path.basename(topoflatIntFilename))
-    else:
-        filtIntFilename = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
-    
-    filtImage = isceobj.createIntImage()
-    filtImage.setFilename(filtIntFilename)
-    filtImage.setWidth(widthInt)
-    filtImage.setAccessMode('write')
-    filtImage.createImage()
-    
-    objFilter = Filter()
-    objFilter.wireInputPort(name='interferogram',object=intImage)
-    objFilter.wireOutputPort(name='filtered interferogram',object=filtImage)
-    if filterStrength is not None:
-        self.insar.filterStrength = filterStrength
-    
-    objFilter.goldsteinWerner(alpha=self.insar.filterStrength)
+            filtIntFilename = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename)
+        
+        filtImage = isceobj.createIntImage()
+        filtImage.setFilename(filtIntFilename)
+        filtImage.setWidth(widthInt)
+        filtImage.setLength(lengthInt)  # Ensure length is set for correct file size
+        filtImage.setAccessMode('write')
+        filtImage.createImage()
+        
+        objFilter = Filter()
+        objFilter.wireInputPort(name='interferogram',object=intImage)
+        objFilter.wireOutputPort(name='filtered interferogram',object=filtImage)
+        if filterStrength is not None:
+            self.insar.filterStrength = filterStrength
+        # Use zero strength if filtering is disabled for subbands (no-op filtering)
+        filter_alpha = 0.0 if use_zero_strength_filter else self.insar.filterStrength
+        objFilter.goldsteinWerner(alpha=filter_alpha)
 
-    intImage.finalizeImage()
-    filtImage.finalizeImage()
-    del filtImage
-    
-    #Create phase sigma correlation file here
-    filtImage = isceobj.createIntImage()
-    filtImage.setFilename(filtIntFilename)
-    filtImage.setWidth(widthInt)
-    filtImage.setAccessMode('read')
-    filtImage.createImage()
+        intImage.finalizeImage()
+        filtImage.finalizeImage()
+        del filtImage
+        
+        #Create phase sigma correlation file here
+        filtImage = isceobj.createIntImage()
+        filtImage.setFilename(filtIntFilename)
+        filtImage.setWidth(widthInt)
+        filtImage.setLength(lengthInt)  # Ensure length is set
+        filtImage.setAccessMode('read')
+        filtImage.createImage()
 
 
     phsigImage = isceobj.createImage()
     phsigImage.dataType='FLOAT'
     phsigImage.bands = 1
     phsigImage.setWidth(widthInt)
+    phsigImage.setLength(lengthInt)
     phsigImage.setFilename(os.path.join(ifgDirname , self.insar.coherenceFilename))
     phsigImage.setAccessMode('write')
     phsigImage.setImageType('cor')#the type in this case is not for mdx.py displaying but for geocoding method
     phsigImage.createImage()
+    
+    # Debug: Log the dimensions used for phsig.cor
+    logger.info(f"Generating phsig.cor with dimensions: width={widthInt}, length={lengthInt}")
+    logger.info(f"phsig.cor will be saved to: {os.path.join(ifgDirname, self.insar.coherenceFilename)}")
 
     # Get amplitude file - use multilooked version if available
+    # Important: ampImage must match the dimensions of filtImage (which may be filtered multilooked interferogram)
     if useMultilookedIgram:
-        # Use multilooked amplitude file
+        # Use amplitude matching the input multilooked interferogram (topophase_48rlks_48alks.amp)
         if '.flat' in topoflatIntFilename:
             resampAmpImage = topoflatIntFilename.replace('.flat', '.amp')
         elif '.int' in topoflatIntFilename:
@@ -200,6 +234,7 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
 
     ampImage = isceobj.createAmpImage()
     ampImage.setWidth(widthInt)
+    ampImage.setLength(lengthInt)
     ampImage.setFilename(resampAmpImage)
     #IU.copyAttributes(self.insar.resampAmpImage, ampImage)
     #IU.copyAttributes(resampAmpImage, ampImage)
@@ -213,9 +248,12 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
 
     icuObj.icu(intImage = filtImage, ampImage=ampImage, phsigImage=phsigImage)
 
+    # Finalize images
+    # intImage was already finalized after filtering (line 169)
     filtImage.finalizeImage()
     phsigImage.finalizeImage()
     phsigImage.renderHdr()
+    phsigImage.renderVRT()  # Ensure VRT is created for proper metadata
     ampImage.finalizeImage()
 
 

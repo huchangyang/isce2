@@ -56,10 +56,13 @@ def geoboxToAzrgbox(frame, geobox, israw=False, isnative=False, margin=0.02):
     rgs = []
     azs = []
     zrange = [-500. , 9000.]
-    combos = [ [geobox[0]-margin, geobox[2]-margin],
-               [geobox[0]-margin, geobox[3]+margin],
-               [geobox[1]+margin, geobox[3]-margin],
-               [geobox[1]+margin, geobox[2]+margin] ]
+    # Fix: Correct corner point calculations
+    # geobox = [S, N, W, E] in degrees
+    # Four corners: SW, SE, NE, NW
+    combos = [ [geobox[0]-margin, geobox[2]-margin],  # SW: [S-margin, W-margin]
+               [geobox[0]-margin, geobox[3]+margin],  # SE: [S-margin, E+margin]
+               [geobox[1]+margin, geobox[3]+margin],  # NE: [N+margin, E+margin]
+               [geobox[1]+margin, geobox[2]-margin] ]  # NW: [N+margin, W-margin]
 
     if len(zrange) == 0:
         zrange = [-500., 9000.]   #Should work for earth

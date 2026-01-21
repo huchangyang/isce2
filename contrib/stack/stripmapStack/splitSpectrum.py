@@ -14,7 +14,7 @@ import shelve
 import copy
 import time
 #import matplotlib.pyplot as plt
-from contrib.splitSpectrum import SplitRangeSpectrum as splitSpectrum
+from contrib.alos2proc.alos2proc import rg_filter
 from isceobj.Constants import SPEED_OF_LIGHT
 from osgeo import gdal
 
@@ -47,21 +47,48 @@ def cmdLineParse(iargs = None):
 
 
 def split(fullBandSlc, lowBandSlc, highBandSlc, fs, bL, bH, fL, fH):
-
-    ss = splitSpectrum()
-
-    ss.blocksize = 100
-    ss.memsize = 512
-    ss.inputDS = fullBandSlc + ".vrt"
-    ss.lbDS = lowBandSlc  
-    ss.hbDS = highBandSlc  
-    ss.rangeSamplingRate = fs
-    ss.lowBandWidth = bL
-    ss.highBandWidth = bH
-    ss.lowCenterFrequency = fL
-    ss.highCenterFrequency = fH
-
-    ss.split()
+    '''
+    Split range spectrum using rg_filter
+    
+    Parameters:
+    -----------
+    fullBandSlc: input full-band SLC file (without extension)
+    lowBandSlc: output low-band SLC file (without extension)
+    highBandSlc: output high-band SLC file (without extension)
+    fs: range sampling rate (Hz)
+    bL: low-band bandwidth (Hz)
+    bH: high-band bandwidth (Hz)
+    fL: low-band center frequency (Hz)
+    fH: high-band center frequency (Hz)
+    '''
+    
+    # Number of output files
+    nout = 2
+    
+    # Output files
+    outputfile = [lowBandSlc, highBandSlc]
+    
+    # Bandwidth normalized by sampling frequency [0, 1]
+    bw = [bL / fs, bH / fs]
+    
+    # Center frequency normalized by sampling frequency
+    bc = [fL / fs, fH / fs]
+    
+    # rg_filter parameters
+    # nfilter: filter length (odd number), using 257 similar to alosStack
+    # nfft: FFT length, using 2048 similar to alosStack for better frequency resolution
+    # beta: Kaiser window beta, using 0.1 (same as topsStack and alosStack)
+    # zero_cf: move center frequency to zero? 0: Yes
+    # offset: offset in samples for moving center frequency, using 0.0 for stripmap
+    nfilter = 257
+    nfft = 2048
+    beta = 0.1
+    zero_cf = 0
+    offset = 0.0
+    
+    # Call rg_filter
+    rg_filter(fullBandSlc, nout, outputfile, bw, bc, 
+              nfilter, nfft, beta, zero_cf, offset)
 
 def createSlcImage(slcName, width):
 
@@ -146,12 +173,11 @@ def main(iargs=None):
         highBandSlc = os.path.join(outDirH, fullBandSlc)
 
         print(inps.slc, lowBandSlc, highBandSlc, fs, inps.bwL, inps.bwH, inps.dcL, inps.dcH)
-        print("strat")
+        print("start")
         split(inps.slc, lowBandSlc, highBandSlc, fs, inps.bwL, inps.bwH, inps.dcL, inps.dcH)
         print("end")
-        length, width = getShape(inps.slc + ".vrt")
-        createSlcImage(lowBandSlc, width)
-        createSlcImage(highBandSlc, width)
+        # Note: rg_filter automatically creates XML and VRT files for output files
+        # No need to call createSlcImage() as rg_filter handles this
 
         f0 = SPEED_OF_LIGHT/radarWavelength
         fH = f0 + inps.dcH

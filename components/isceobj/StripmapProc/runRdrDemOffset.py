@@ -37,6 +37,151 @@ from mroipac.looks.Looks import Looks
 logger = logging.getLogger('isce.insar.runRdrDemOffset')
 
 
+def loadWaterMask(maskfile, reference_image):
+    '''
+    Load water mask file. Supports multiple formats:
+    - GeoTIFF/other GDAL formats
+    - NumPy .npy file
+    - ISCE .rdr file (binary format with XML metadata)
+    - Binary file (same size as reference image)
+    
+    Returns: 2D numpy array where 1=land, 0=water
+    '''
+    if maskfile is None or not os.path.exists(maskfile):
+        return None
+    
+    try:
+        # Try GDAL first (for GeoTIFF, etc.)
+        try:
+            from osgeo import gdal
+            ds = gdal.Open(maskfile, gdal.GA_ReadOnly)
+            if ds is not None:
+                mask = ds.GetRasterBand(1).ReadAsArray()
+                ds = None
+                logger.info('Loaded water mask from GDAL file: {} (shape: {})'.format(maskfile, mask.shape))
+                return mask
+        except:
+            pass
+        
+        # Try NumPy format
+        if maskfile.endswith('.npy'):
+            mask = np.load(maskfile)
+            logger.info('Loaded water mask from NumPy file: {} (shape: {})'.format(maskfile, mask.shape))
+            return mask
+        
+        # Try loading as ISCE .rdr file (binary format with XML metadata)
+        rdr_xml = maskfile + '.xml' if not maskfile.endswith('.xml') else maskfile
+        if maskfile.endswith('.rdr') or os.path.exists(rdr_xml):
+            try:
+                mask_img = isceobj.createImage()
+                mask_img.load(rdr_xml)
+                mask_img.setAccessMode('read')
+                mask_img.createImage()
+                width = mask_img.getWidth()
+                length = mask_img.getLength()
+                
+                mask = np.zeros((length, width), dtype=np.uint8)
+                for i in range(length):
+                    line = mask_img.getLine(i)
+                    if isinstance(line, np.ndarray):
+                        mask[i, :] = line
+                    else:
+                        mask[i, :] = np.array(line, dtype=np.uint8)
+                
+                mask_img.finalizeImage()
+                logger.info('Loaded water mask from ISCE .rdr file: {} (shape: {})'.format(maskfile, mask.shape))
+                return mask
+            except Exception as e:
+                pass
+        
+        # Try loading as binary file (need reference image dimensions)
+        if reference_image is not None:
+            try:
+                ref_img = isceobj.createSlcImage()
+                ref_img.load(reference_image + '.xml')
+                ref_img.setAccessMode('READ')
+                ref_img.createImage()
+                width = ref_img.getWidth()
+                length = ref_img.getLength()
+                ref_img.finalizeImage()
+                
+                mask = np.fromfile(maskfile, dtype=np.uint8).reshape(length, width)
+                logger.info('Loaded water mask from binary file: {} (shape: {})'.format(maskfile, mask.shape))
+                return mask
+            except:
+                pass
+        
+        logger.warning('Could not load water mask from {}, skipping'.format(maskfile))
+        return None
+    except Exception as e:
+        logger.warning('Error loading water mask: {}, skipping'.format(str(e)))
+        return None
+
+
+def applyWaterMask(field, water_mask, reference_image=None):
+    '''
+    Apply water mask to filter out offset points in water regions.
+    Note: In waterMask.rdr, 1 = land, 0 = water. We filter out water pixels (value = 0).
+    
+    Args:
+        field: OffsetField object
+        water_mask: 2D numpy array (None if no mask), 1=land, 0=water
+        reference_image: Reference image path (for coordinate mapping if needed)
+    
+    Returns:
+        Filtered OffsetField
+    '''
+    if water_mask is None:
+        return field
+    
+    logger.info('Applying water mask to filter out water pixels...')
+    original_count = len(field._offsets)
+    
+    filtered_offsets = []
+    removed_water = 0
+    
+    for offsetx in field._offsets:
+        fields = "{}".format(offsetx).split()
+        if len(fields) < 4:
+            filtered_offsets.append(offsetx)  # Keep malformed entries for now
+            continue
+        
+        try:
+            # Get pixel coordinates
+            # Format: RgLoc RgOffset AzLoc AzOffset SNR RgCov AzCov CrossCov
+            # fields[0] = RgLoc (range location, x coordinate, column)
+            # fields[2] = AzLoc (azimuth location, y coordinate, row)
+            x = int(float(fields[0]))  # RgLoc (range sample/column)
+            y = int(float(fields[2]))  # AzLoc (azimuth line/row)
+            
+            # Note: ampcor coordinates may be 1-based, convert to 0-based for numpy indexing
+            # If coordinates are >= 1 and out of bounds, try 1-based to 0-based conversion
+            if (x >= water_mask.shape[1] or y >= water_mask.shape[0] or x < 0 or y < 0) and x >= 1 and y >= 1:
+                x = x - 1
+                y = y - 1
+            
+            # Check if within mask bounds
+            if y >= 0 and y < water_mask.shape[0] and x >= 0 and x < water_mask.shape[1]:
+                # In waterMask.rdr: 1 = land, 0 = water
+                # Filter out water pixels (value = 0), keep land pixels (value = 1)
+                if water_mask[y, x] == 0:
+                    removed_water += 1
+                    continue
+            
+            # Keep non-water points
+            filtered_offsets.append(offsetx)
+        except (ValueError, IndexError) as e:
+            # If coordinate conversion fails, keep the point
+            filtered_offsets.append(offsetx)
+            continue
+    
+    field._offsets = filtered_offsets
+    logger.info('After water mask filtering: {} points left (removed {} water pixels)'.format(
+        len(filtered_offsets), removed_water))
+    
+    return field
+
+
 def runRdrDemOffset(self):
     '''Estimate offsets between radar image and DEM
     '''
@@ -134,8 +279,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         azimuthLooks = max(1, int(demDeltaLat / azimuthPixelSize + 0.5))
         logger.info('Calculated azimuth looks: {} (SAR: {:.2f} m, DEM: {:.2f} m)'.format(
             azimuthLooks, azimuthPixelSize, demDeltaLat))
-    rangeLooks = 3
-    azimuthLooks = 3
+    
     logger.info('Selected multilook parameters: {} range looks, {} azimuth looks'.format(
         rangeLooks, azimuthLooks))
     
@@ -442,41 +586,195 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         from iscesys.StdOEL.StdOELPy import create_writer
         
         field = offsets
+        originalField = offsets  # Keep original for sigma filtering
         stdWriter = create_writer("log", "", True, filename='off.log')
         
-        # Cull offsets using iterative distance sequence (similar to Alos2Proc's fitoff approach)
-        # Reference: Alos2Proc uses fitoff with nsig=1.5, maxrms=0.5, minpoint=50
-        # We use iterative distance-based culling to achieve similar effect
-        snrThreshold = 2  # Similar to Alos2Proc's nsig=1.5 (stricter threshold)
-
-        # Optional thresholds for later covariance-based culling (in pixel^2 units).
-        # Points whose estimated uncertainty (covariance) is larger than the threshold will be removed.
-        sigmaThresholdRange = 0.01      # threshold for range covariance
-        sigmaThresholdAzimuth = 0.1     # threshold for azimuth covariance
-
-        # Optional statistical culling based purely on the distribution of rg / az offsets.
-        offsetNSigmaRange = 1.0
-        offsetNSigmaAzimuth = 2.0
-        # Use distance sequence to progressively remove outliers
-        # Similar to fitoff's iterative approach, we tighten the distance threshold progressively
-        for distance in [10, 5, 3, 1]:  # Progressive tightening (similar to fitoff iterations)
-            pointsBefore = len(field._offsets)
-            objOff = isceobj.createOffoutliers()
-            objOff.wireInputPort(name='offsets', object=field)
-            objOff.setSNRThreshold(snrThreshold)
-            objOff.setDistance(distance)
-            objOff.setStdWriter(stdWriter)
-            objOff.offoutliers()
-            field = objOff.getRefinedOffsetField()
-            pointsAfter = len(field._offsets)
-            logger.info('{} points left after culling at distance {} with SNR threshold {} (removed {} points)'.format(
-                pointsAfter, distance, snrThreshold, pointsBefore - pointsAfter))
-
-            # No early stopping - let the culling process complete all distance steps
-            # This ensures we remove outliers progressively, similar to fitoff's iterative approach
-            # Reference: Alos2Proc's fitoff continues until convergence or minpoint is reached
-
-        if (offsetNSigmaRange is not None) or (offsetNSigmaAzimuth is not None):
+        logger.info('Starting with {} offset points'.format(len(field._offsets)))
+        
+        # Load water mask if available (from geometry directory)
+        # Strategy: Generate and save multilooked water mask, similar to refineSecondaryTiming.py
+        # This ensures coordinate system matches exactly with multilooked matching images
+        water_mask = None
+        water_mask_path = None
+        geometryDir = os.path.abspath(self.insar.geometryDirname)
+        
+        # First, try to find multilooked water mask (if it exists)
+        # Format: waterMask_{rangeLooks}rlks_{azimuthLooks}alks.rdr
+        multilooked_mask_filename = 'waterMask_{}rlks_{}alks.rdr'.format(rangeLooks, azimuthLooks)
+        multilooked_mask_paths = [
+            os.path.join(geometryDir, multilooked_mask_filename),
+            os.path.join(geometryDir, 'merged', 'geom_reference', multilooked_mask_filename),
+            os.path.join(geometryDir, 'geom_reference', multilooked_mask_filename),
+            os.path.join(os.path.dirname(geometryDir), 'merged', 'geom_reference', multilooked_mask_filename),
+            os.path.join(os.path.dirname(geometryDir), 'geom_reference', multilooked_mask_filename),
+        ]
+        
+        # Try to load multilooked water mask first
+        multilooked_mask_loaded = False
+        for mask_path in multilooked_mask_paths:
+            if os.path.exists(mask_path):
+                water_mask = loadWaterMask(mask_path, referenceSlc)
+                if water_mask is not None:
+                    # Verify dimensions match
+                    if water_mask.shape[0] == lengthLooked and water_mask.shape[1] == widthLooked:
+                        logger.info('Loaded multilooked water mask from: {} (shape: {}x{})'.format(
+                            mask_path, water_mask.shape[0], water_mask.shape[1]))
+                        water_mask_path = mask_path
+                        multilooked_mask_loaded = True
+                        break
+                    else:
+                        logger.warning('Multilooked water mask dimensions mismatch: expected {}x{}, got {}x{}'.format(
+                            lengthLooked, widthLooked, water_mask.shape[0], water_mask.shape[1]))
+        
+        # If multilooked mask not found, try to load full resolution mask and generate multilooked version
+        if not multilooked_mask_loaded:
+            # Try to find full resolution water mask in typical locations
+            possible_mask_paths = [
+                os.path.join(geometryDir, 'waterMask.rdr'),
+                os.path.join(geometryDir, 'merged', 'geom_reference', 'waterMask.rdr'),
+                os.path.join(geometryDir, 'geom_reference', 'waterMask.rdr'),
+                os.path.join(os.path.dirname(geometryDir), 'merged', 'geom_reference', 'waterMask.rdr'),
+                os.path.join(os.path.dirname(geometryDir), 'geom_reference', 'waterMask.rdr'),
+            ]
+            
+            full_res_mask = None
+            full_res_mask_path = None
+            for mask_path in possible_mask_paths:
+                if os.path.exists(mask_path):
+                    full_res_mask = loadWaterMask(mask_path, referenceSlc)
+                    if full_res_mask is not None:
+                        full_res_mask_path = mask_path
+                        logger.info('Loaded full resolution water mask from: {} (shape: {}x{})'.format(
+                            mask_path, full_res_mask.shape[0], full_res_mask.shape[1]))
+                        break
+            
+            if full_res_mask is not None:
+                # Check if multilooking is needed
+                mask_height, mask_width = full_res_mask.shape
+                logger.info('Multilooked image dimensions: {}x{} (length x width, range looks: {}, azimuth looks: {})'.format(
+                    lengthLooked, widthLooked, rangeLooks, azimuthLooks))
+                
+                # If dimensions already match, use as-is (no multilooking needed)
+                if mask_height == lengthLooked and mask_width == widthLooked:
+                    logger.info('Water mask dimensions already match multilooked image dimensions, using as-is')
+                    water_mask = full_res_mask
+                    water_mask_path = full_res_mask_path
+                elif (rangeLooks > 1) or (azimuthLooks > 1):
+                    # Generate multilooked water mask
+                    logger.info('Generating multilooked water mask: {} range looks, {} azimuth looks'.format(
+                        rangeLooks, azimuthLooks))
+                    
+                    # Use the actual multilooked image dimensions as target
+                    multilooked_height = lengthLooked
+                    multilooked_width = widthLooked
+                    
+                    water_mask_multilooked = np.zeros((multilooked_height, multilooked_width), dtype=np.uint8)
+                    
+                    # Calculate scaling factors
+                    scale_y = mask_height / multilooked_height
+                    scale_x = mask_width / multilooked_width
+                    
+                    logger.info('Scaling factors: y={:.4f}, x={:.4f}'.format(scale_y, scale_x))
+                    
+                    for i in range(multilooked_height):
+                        for j in range(multilooked_width):
+                            # Map multilooked coordinates back to full resolution coordinates
+                            # Use center of the multilooked pixel to find corresponding full resolution block
+                            y_center = (i + 0.5) * scale_y
+                            x_center = (j + 0.5) * scale_x
+                            
+                            # Extract block around the center point
+                            y_start = max(0, int(y_center - azimuthLooks / 2))
+                            y_end = min(mask_height, int(y_start + azimuthLooks))
+                            x_start = max(0, int(x_center - rangeLooks / 2))
+                            x_end = min(mask_width, int(x_start + rangeLooks))
+                            
+                            # Handle edge cases
+                            if y_end > y_start and x_end > x_start:
+                                block = full_res_mask[y_start:y_end, x_start:x_end]
+                                # Majority voting: if majority are land (1), result is land (1), otherwise water (0)
+                                if np.mean(block) > 0.5:
+                                    water_mask_multilooked[i, j] = 1  # Land
+                                else:
+                                    water_mask_multilooked[i, j] = 0  # Water
+                            else:
+                                # Edge case: use nearest pixel
+                                y_idx = min(int(y_center), mask_height - 1)
+                                x_idx = min(int(x_center), mask_width - 1)
+                                water_mask_multilooked[i, j] = full_res_mask[y_idx, x_idx]
+                    
+                    water_mask = water_mask_multilooked
+                    logger.info('Generated multilooked water mask shape: {}x{} (height x width)'.format(
+                        water_mask.shape[0], water_mask.shape[1]))
+                    
+                    # Save multilooked water mask for future use
+                    # Save to the same directory as the full resolution mask
+                    if full_res_mask_path:
+                        multilooked_save_dir = os.path.dirname(full_res_mask_path)
+                        multilooked_save_path = os.path.join(multilooked_save_dir, multilooked_mask_filename)
+                    else:
+                        # Fallback to geometry directory
+                        multilooked_save_path = os.path.join(geometryDir, multilooked_mask_filename)
+                    
+                    try:
+                        # Save as ISCE .rdr format (binary + XML)
+                        # Similar to how amplitude images are saved
+                        mask_img = isceobj.createImage()
+                        mask_img.setFilename(multilooked_save_path)
+                        mask_img.setWidth(multilooked_width)
+                        mask_img.setLength(multilooked_height)
+                        mask_img.setAccessMode('write')
+                        mask_img.setDataType('BYTE')
+                        mask_img.setBands(1)
+                        mask_img.createImage()
+                        
+                        # Write data directly to binary file (similar to amplitude image saving)
+                        with open(multilooked_save_path, 'wb') as maskfp:
+                            water_mask.astype(np.uint8).tofile(maskfp)
+                        
+                        mask_img.finalizeImage()
+                        mask_img.renderHdr()
+                        
+                        logger.info('Saved multilooked water mask to: {}'.format(multilooked_save_path))
+                        water_mask_path = multilooked_save_path
+                    except Exception as e:
+                        logger.warning('Failed to save multilooked water mask: {}'.format(str(e)))
+                else:
+                    # No multilooking needed, dimensions already match
+                    water_mask = full_res_mask
+                    water_mask_path = full_res_mask_path
+        
+        if water_mask is None:
+            logger.info('No water mask found, skipping water pixel filtering')
+        
+        # Step 0: Apply water mask if available (before any other filtering)
+        # Note: water_mask is now multilooked to match the multilooked matching images
+        # Offset point coordinates are in the multilooked image coordinate system
+        if water_mask is not None:
+            logger.info('Water mask dimensions: {}x{} (matches multilooked image: {}x{})'.format(
+                water_mask.shape[0], water_mask.shape[1], lengthLooked, widthLooked))
+            field = applyWaterMask(field, water_mask, referenceSlc)
+        
+        # Step 1: Initial SNR filtering with large distance threshold
+        # This preserves points even with large systematic offsets
+        snrThreshold = 2.0
+        objOff = isceobj.createOffoutliers()
+        objOff.wireInputPort(name='offsets', object=field)
+        objOff.setSNRThreshold(snrThreshold)
+        objOff.setDistance(100.0)  # Large distance to avoid removing valid large offsets
+        objOff.setStdWriter(stdWriter)
+        objOff.offoutliers()
+        field = objOff.getRefinedOffsetField()
+        logger.info('After initial SNR filtering: {} points left'.format(len(field._offsets)))
+        
+        # Step 2: MAD-based outlier removal (similar to autoRIFT's filtDisp)
+        # This is more robust than standard deviation for outlier detection
+        if len(field._offsets) >= 3:
+            logger.info('Applying MAD-based outlier removal...')
+            
+            # Extract range and azimuth offsets
+            # Format: RgLoc RgOffset AzLoc AzOffset SNR RgCov AzCov CrossCov
+            # fields[0] = RgLoc, fields[1] = RgOffset, fields[2] = AzLoc, fields[3] = AzOffset
             rg_list = []
             az_list = []
             for offsetx in field:
@@ -484,84 +782,123 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
                 fields = offsetStr.split()
                 if len(fields) >= 4:
                     try:
-                        rg_list.append(float(fields[1]))  # dx: range offset
-                        az_list.append(float(fields[3]))  # dy: azimuth offset
-                    except ValueError:
+                        rg_list.append(float(fields[1]))  # RgOffset (fields[1])
+                        az_list.append(float(fields[3]))  # AzOffset (fields[3])
+                    except (ValueError, IndexError):
                         continue
-
-            if len(rg_list) >= 2 and len(az_list) >= 2:
+            
+            if len(rg_list) >= 3 and len(az_list) >= 3:
                 rg_array = np.array(rg_list, dtype=np.float64)
                 az_array = np.array(az_list, dtype=np.float64)
-
-                rg_mean = float(np.mean(rg_array))
-                az_mean = float(np.mean(az_array))
-                rg_std = float(np.std(rg_array))
-                az_std = float(np.std(az_array))
-
-                filtered_offsets_stat = []
-                removedStat = 0
-
-                for offsetx in field:
-                    offsetStr = "{}".format(offsetx)
-                    fields = offsetStr.split()
-                    if len(fields) < 4:
-                        removedStat += 1
-                        continue
-                    try:
-                        rg_off = float(fields[1])
-                        az_off = float(fields[3])
-                    except ValueError:
-                        removedStat += 1
-                        continue
-
-                    drop = False
-                    if offsetNSigmaRange is not None and rg_std > 0.0:
-                        if abs(rg_off - rg_mean) > offsetNSigmaRange * rg_std:
-                            drop = True
-                    if offsetNSigmaAzimuth is not None and az_std > 0.0:
-                        if abs(az_off - az_mean) > offsetNSigmaAzimuth * az_std:
-                            drop = True
-
-                    if drop:
-                        removedStat += 1
-                    else:
-                        filtered_offsets_stat.append(offsetx)
-
-                logger.info(
-                    '{} points left after statistical offset-based culling (removed {} points; '
-                    'range mean = {:.4f}, std = {:.4f}, Nσ = {}; '
-                    'azimuth mean = {:.4f}, std = {:.4f}, Nσ = {}).'.format(
-                        len(filtered_offsets_stat), removedStat,
-                        rg_mean, rg_std, offsetNSigmaRange,
-                        az_mean, az_std, offsetNSigmaAzimuth)
-                )
-
-                field._offsets = filtered_offsets_stat
+                
+                # Iterative MAD filtering (similar to autoRIFT)
+                MadScalar = 4.0  # Similar to autoRIFT's default
+                maxIterations = 5
+                minPointsToKeep = max(3, len(field._offsets) // 10)  # Keep at least 10% or 3 points
+                
+                valid_mask = np.ones(len(field._offsets), dtype=bool)
+                
+                for iteration in range(maxIterations):
+                    # Get current valid points
+                    rg_valid = rg_array[valid_mask]
+                    az_valid = az_array[valid_mask]
+                    
+                    if len(rg_valid) < 3:
+                        break
+                    
+                    # Calculate median and MAD
+                    rg_median = np.median(rg_valid)
+                    az_median = np.median(az_valid)
+                    rg_mad = np.median(np.abs(rg_valid - rg_median))
+                    az_mad = np.median(np.abs(az_valid - az_median))
+                    
+                    # Avoid division by zero
+                    if rg_mad < 1e-10:
+                        rg_mad = np.std(rg_valid) if len(rg_valid) > 1 else 1.0
+                    if az_mad < 1e-10:
+                        az_mad = np.std(az_valid) if len(az_valid) > 1 else 1.0
+                    
+                    # Calculate thresholds
+                    rg_threshold = MadScalar * rg_mad
+                    az_threshold = MadScalar * az_mad
+                    
+                    # Update mask: keep points within threshold
+                    # Format: RgLoc RgOffset AzLoc AzOffset SNR RgCov AzCov CrossCov
+                    new_mask = valid_mask.copy()
+                    for i, offsetx in enumerate(field._offsets):
+                        if not valid_mask[i]:
+                            continue
+                        offsetStr = "{}".format(offsetx)
+                        fields = offsetStr.split()
+                        if len(fields) >= 4:
+                            try:
+                                rg_off = float(fields[1])  # RgOffset (fields[1])
+                                az_off = float(fields[3])  # AzOffset (fields[3])
+                                
+                                if (abs(rg_off - rg_median) > rg_threshold or 
+                                    abs(az_off - az_median) > az_threshold):
+                                    new_mask[i] = False
+                            except (ValueError, IndexError):
+                                new_mask[i] = False
+                        else:
+                            new_mask[i] = False
+                    
+                    removed = np.sum(valid_mask) - np.sum(new_mask)
+                    valid_mask = new_mask
+                    
+                    logger.info('MAD iteration {}: {} points valid, removed {} outliers (rg_mad={:.3f}, az_mad={:.3f})'.format(
+                        iteration + 1, np.sum(valid_mask), removed, rg_mad, az_mad))
+                    
+                    # Stop if no points removed or too few points remaining
+                    if removed == 0 or np.sum(valid_mask) < minPointsToKeep:
+                        break
+                
+                # Apply mask to field
+                mad_filtered_offsets = [field._offsets[i] for i in range(len(field._offsets)) if valid_mask[i]]
+                field._offsets = mad_filtered_offsets
+                logger.info('After MAD-based filtering: {} points left'.format(len(field._offsets)))
             else:
-                logger.info('Not enough points for statistical offset-based culling ({} points). '
-                            'Skipping this step.'.format(len(field._offsets)))
+                logger.info('Not enough points for MAD filtering ({} points), skipping'.format(len(field._offsets)))
+        
+        # Step 3: Sigma filtering with adaptive threshold (after MAD to refine based on matching uncertainty)
+        # This is based on per-point matching uncertainty, independent of offset values
+        logger.info('Points before sigma culling: {}'.format(len(field._offsets)))
+        
+        # Adaptive sigma threshold: stricter if we have many points, more lenient if few
+        if len(field._offsets) >= 20:
+            sigmaThresholdRange = 0.01   # Standard threshold
+            sigmaThresholdAzimuth = 0.1
+        elif len(field._offsets) >= 10:
+            sigmaThresholdRange = 0.05   # More lenient
+            sigmaThresholdAzimuth = 0.5
+        else:
+            sigmaThresholdRange = 0.1    # Very lenient to preserve points
+            sigmaThresholdAzimuth = 1.0
+            logger.warning('Few points remaining, using lenient sigma threshold: range={:.4f}, azimuth={:.4f}'.format(
+                sigmaThresholdRange, sigmaThresholdAzimuth))
+        
+        # Build a lookup table from original offsets using (range line, range sample) as key
+        originalOffsetMap = {}
+        for offsetx in originalField:
+            offsetStr = "{}".format(offsetx)
+            fields = offsetStr.split()
+            if len(fields) >= 8:
+                ref_line = int(float(fields[0]))
+                ref_sample = float(fields[1])
+                originalOffsetMap[(ref_line, ref_sample)] = fields
 
-        # Optionally apply an additional culling based on per-point standard deviation / covariance.
-        # We use the covariance terms stored in the original offset field (from ampcor),
-        # and keep only the points whose uncertainties are below the specified thresholds.
-        if (sigmaThresholdRange is not None) or (sigmaThresholdAzimuth is not None):
-            # Build a lookup table from original offsets using (range line, range sample) as key
-            originalOffsetMap = {}
-            for offsetx in offsets:
-                offsetStr = "{}".format(offsetx)
-                fields = offsetStr.split()
-                if len(fields) >= 8:
-                    ref_line = int(float(fields[0]))
-                    ref_sample = float(fields[1])
-                    originalOffsetMap[(ref_line, ref_sample)] = fields
-
-            filtered_offsets = []
-            removedSigma = 0
+        sigma_filtered_offsets = []
+        removedSigma = 0
+        
+        # Only perform sigma filtering if we have enough points
+        if len(field._offsets) < 3:
+            logger.info('Too few points for sigma culling, skipping')
+            sigma_filtered_offsets = field._offsets
+        else:
             for offsetx in field:
                 offsetStr = "{}".format(offsetx)
                 fields = offsetStr.split()
                 if len(fields) < 4:
-                    # Malformed entry, skip it
                     removedSigma += 1
                     continue
 
@@ -571,7 +908,6 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
 
                 orig_fields = originalOffsetMap.get(key, None)
                 if (orig_fields is None) or (len(orig_fields) < 8):
-                    # Cannot recover covariance info for this point, drop it
                     removedSigma += 1
                     continue
 
@@ -585,15 +921,50 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
                     removedSigma += 1
                     continue
 
-                filtered_offsets.append(offsetx)
-
-            logger.info('{} points left after sigma-based culling (removed {} points with large covariance; '
-                        'range threshold = {}, azimuth threshold = {})'.format(
-                            len(filtered_offsets), removedSigma,
-                            sigmaThresholdRange, sigmaThresholdAzimuth))
-
-            # Replace the internal list of offsets with the sigma-filtered subset
-            field._offsets = filtered_offsets
+                sigma_filtered_offsets.append(offsetx)
+            
+            logger.info('After sigma culling (threshold range={:.4f}, azimuth={:.4f}): {} points left (removed {})'.format(
+                sigmaThresholdRange, sigmaThresholdAzimuth, len(sigma_filtered_offsets), removedSigma))
+            
+            # If too many points removed AND remaining points are insufficient, relax threshold and retry
+            # Only use relaxed threshold if we have very few points left (< 50) after strict filtering
+            if (len(sigma_filtered_offsets) < len(field._offsets) * 0.3 and 
+                len(field._offsets) >= 5 and 
+                len(sigma_filtered_offsets) < 50):
+                logger.info('Too many points removed and insufficient points remaining ({} < 50), retrying with relaxed threshold'.format(
+                    len(sigma_filtered_offsets)))
+                relaxed_threshold_range = sigmaThresholdRange * 10.0
+                relaxed_threshold_azimuth = sigmaThresholdAzimuth * 10.0
+                sigma_filtered_offsets = []
+                removedSigma = 0
+                for offsetx in field:
+                    offsetStr = "{}".format(offsetx)
+                    fields = offsetStr.split()
+                    if len(fields) < 4:
+                        removedSigma += 1
+                        continue
+                    ref_line = int(float(fields[0]))
+                    ref_sample = float(fields[1])
+                    key = (ref_line, ref_sample)
+                    orig_fields = originalOffsetMap.get(key, None)
+                    if (orig_fields is None) or (len(orig_fields) < 8):
+                        removedSigma += 1
+                        continue
+                    cov_range = float(orig_fields[5])
+                    cov_azimuth = float(orig_fields[6])
+                    if ((relaxed_threshold_range is not None and abs(cov_range) > relaxed_threshold_range) or
+                        (relaxed_threshold_azimuth is not None and abs(cov_azimuth) > relaxed_threshold_azimuth)):
+                        removedSigma += 1
+                        continue
+                    sigma_filtered_offsets.append(offsetx)
+                
+                logger.info('After relaxed sigma culling (threshold range={:.4f}, azimuth={:.4f}): {} points left'.format(
+                    relaxed_threshold_range, relaxed_threshold_azimuth, len(sigma_filtered_offsets)))
+            elif len(sigma_filtered_offsets) >= 50:
+                logger.info('Sufficient points remaining ({} >= 50), keeping strict threshold results'.format(
+                    len(sigma_filtered_offsets)))
+        
+        field._offsets = sigma_filtered_offsets
 
         # Save culled offsets to a new .off file
         # Note: getRefinedOffsetField() may lose some fields (SNR, Corr, AzOffset)
@@ -807,24 +1178,19 @@ def create_xml(fileName, width, length, fileType):
 
 def writeOffset(offset, fileName):
     '''
-    Write offset file in ampcor format (similar to Alos2ProcPublic.writeOffset).
+    Write offset file in ampcor format.
     
-    .off file format (ampcor standard):
+    .off file format:
     Each line contains 8 fields:
-    1. Reference image line number (integer, azimuth position)
-    2. Reference image sample number (float, range position, sub-pixel precision)
-    3. Secondary image line number (integer, azimuth position)
-    4. Secondary image sample number (float, range position, sub-pixel precision)
-    5. Range offset (float, pixels) - offset in range direction
-    6. Azimuth offset (float, pixels) - offset in azimuth direction
-    7. SNR (float) - Signal-to-Noise Ratio of the correlation
-    8. Correlation coefficient (float) - Quality metric of the match
-    
-    Format: {:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}
+    1. RgLoc (int) - Range location (range sample/column)
+    2. RgOffset (float, pixels) - Range offset
+    3. AzLoc (int) - Azimuth location (azimuth line/row)
+    4. AzOffset (float, pixels) - Azimuth offset
+    5. SNR (float) - Signal-to-Noise Ratio
+    6. RgCov (float) - Range covariance
+    7. AzCov (float) - Azimuth covariance
+    8. CrossCov (float) - Cross covariance
     '''
-    # Write header line with column descriptions
-    # Note: Offset.__str__() returns: x dx y dy snr sigmax sigmay sigmaxy
-    # Column names reflect actual data content
     header = "# {:>7} {:>10} {:>7} {:>12} {:>11} {:>11} {:>11} {:>11}\n".format(
         "RgLoc", "RgOffset", "AzLoc", "AzOffset", "SNR", "RgCov", "AzCov", "CrossCov"
     )
@@ -837,14 +1203,14 @@ def writeOffset(offset, fileName):
         offsetsPlainx = "{}".format(offsetx)
         offsetsPlainx = offsetsPlainx.split()
         offsetsPlain = offsetsPlain + "{:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}\n".format(
-            int(float(offsetsPlainx[0])),      # Ref line (azimuth)
-            float(offsetsPlainx[1]),           # Ref sample (range, sub-pixel)
-            int(float(offsetsPlainx[2])),      # Sec line (azimuth)
-            float(offsetsPlainx[3]),           # Sec sample (range, sub-pixel)
-            float(offsetsPlainx[4]),           # Range offset (pixels)
-            float(offsetsPlainx[5]),           # Azimuth offset (pixels)
-            float(offsetsPlainx[6]),           # SNR
-            float(offsetsPlainx[7])            # Correlation coefficient
+            int(float(offsetsPlainx[0])),      # RgLoc
+            float(offsetsPlainx[1]),           # RgOffset
+            int(float(offsetsPlainx[2])),      # AzLoc
+            float(offsetsPlainx[3]),           # AzOffset
+            float(offsetsPlainx[4]),           # SNR
+            float(offsetsPlainx[5]),           # RgCov
+            float(offsetsPlainx[6]),           # AzCov
+            float(offsetsPlainx[7])            # CrossCov
         )
 
     with open(fileName, 'w') as f:
@@ -876,8 +1242,6 @@ def writeOffsetWithOriginalInfo(culledField, originalField, fileName):
             originalOffsetMap[key] = fields
     
     # Write header
-    # Note: Offset.__str__() returns: x dx y dy snr sigmax sigmay sigmaxy
-    # Column names reflect actual data content
     header = "# {:>7} {:>10} {:>7} {:>12} {:>11} {:>11} {:>11} {:>11}\n".format(
         "RgLoc", "RgOffset", "AzLoc", "AzOffset", "SNR", "RgCov", "AzCov", "CrossCov"
     )
@@ -891,35 +1255,34 @@ def writeOffsetWithOriginalInfo(culledField, originalField, fileName):
     for offsetx in culledField:
         offsetStr = "{}".format(offsetx)
         fields = offsetStr.split()
-        if len(fields) >= 5:  # At least ref_line, ref_sample, sec_line, sec_sample, rg_offset
-            ref_line = int(float(fields[0]))
-            ref_sample = float(fields[1])
-            key = (ref_line, ref_sample)
+        if len(fields) >= 4:
+            rg_loc = int(float(fields[0]))
+            rg_offset = float(fields[1])
+            key = (rg_loc, rg_offset)
             
             # Try to find matching original offset to preserve all fields
             if key in originalOffsetMap:
                 orig_fields = originalOffsetMap[key]
-                # Use original fields which have all 8 values
                 offsetsPlain = offsetsPlain + "{:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}\n".format(
-                    int(float(orig_fields[0])),      # Ref line (azimuth)
-                    float(orig_fields[1]),           # Ref sample (range, sub-pixel)
-                    int(float(orig_fields[2])),      # Sec line (azimuth)
-                    float(orig_fields[3]),           # Sec sample (range, sub-pixel)
-                    float(orig_fields[4]),           # Range offset (pixels) - use from original
-                    float(orig_fields[5]),           # Azimuth offset (pixels) - preserve from original
-                    float(orig_fields[6]),           # SNR - preserve from original
-                    float(orig_fields[7])            # Correlation coefficient - preserve from original
+                    int(float(orig_fields[0])),      # RgLoc
+                    float(orig_fields[1]),           # RgOffset
+                    int(float(orig_fields[2])),      # AzLoc
+                    float(orig_fields[3]),           # AzOffset
+                    float(orig_fields[4]),           # SNR
+                    float(orig_fields[5]),           # RgCov
+                    float(orig_fields[6]),           # AzCov
+                    float(orig_fields[7])            # CrossCov
                 )
             else:
                 # Fallback: use culled offset fields, fill missing with zeros
-                sec_line = int(float(fields[2])) if len(fields) > 2 else int(float(fields[0]))
-                sec_sample = float(fields[3]) if len(fields) > 3 else float(fields[1])
-                rg_offset = float(fields[4]) if len(fields) > 4 else 0.0
-                az_offset = float(fields[5]) if len(fields) > 5 else 0.0
-                snr = float(fields[6]) if len(fields) > 6 else 0.0
-                corr = float(fields[7]) if len(fields) > 7 else 0.0
+                az_loc = int(float(fields[2])) if len(fields) > 2 else 0
+                az_offset = float(fields[3]) if len(fields) > 3 else 0.0
+                snr = float(fields[4]) if len(fields) > 4 else 0.0
+                rg_cov = float(fields[5]) if len(fields) > 5 else 0.0
+                az_cov = float(fields[6]) if len(fields) > 6 else 0.0
+                cross_cov = float(fields[7]) if len(fields) > 7 else 0.0
                 offsetsPlain = offsetsPlain + "{:8d} {:10.3f} {:8d} {:12.3f} {:11.5f} {:11.6f} {:11.6f} {:11.6f}\n".format(
-                    ref_line, ref_sample, sec_line, sec_sample, rg_offset, az_offset, snr, corr
+                    rg_loc, rg_offset, az_loc, az_offset, snr, rg_cov, az_cov, cross_cov
         )
 
     with open(fileName, 'w') as f:

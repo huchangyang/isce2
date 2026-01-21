@@ -92,8 +92,8 @@ def createParser():
     # Adaptive Gaussian filtering parameters (matching StripmapProc defaults)
     parser.add_argument('--filtering_winsize_max_ion', dest='filteringWinsizeMaxIon', type=int, default=301,
             help='maximum window size for adaptive Gaussian filtering (default=301)')
-    parser.add_argument('--filtering_winsize_min_ion', dest='filteringWinsizeMinIon', type=int, default=11,
-            help='minimum window size for adaptive Gaussian filtering (default=11)')
+    parser.add_argument('--filtering_winsize_min_ion', dest='filteringWinsizeMinIon', type=int, default=31,
+            help='minimum window size for adaptive Gaussian filtering (default=31)')
     parser.add_argument('--filtering_winsize_secondary_ion', dest='filteringWinsizeSecondaryIon', type=int, default=5,
             help='window size for secondary Gaussian filtering (default=5)')
     parser.add_argument('--filter_std_ion', dest='filterStdIon', type=float, default=None,
@@ -181,6 +181,24 @@ def polyfit_2d(data, weight, order):
     
     return (data_fit, coeff)
 
+def ion_std(fl, fu, numberOfLooks, cor):
+    '''
+    Compute standard deviation of ionospheric phase (same as Alos2Proc/StripmapProc)
+    
+    fl:  lower band center frequency
+    fu:  upper band center frequency
+    numberOfLooks: number of looks
+    cor: coherence, must be numpy array
+    
+    Returns:
+    std: standard deviation of ionospheric phase
+    '''
+    f0 = (fl + fu) / 2.0
+    interferogramVar = (1.0 - cor**2) / (2.0 * numberOfLooks * cor**2 + (cor==0))
+    std = fl*fu/f0/(fu**2-fl**2)*np.sqrt(fu**2*interferogramVar+fl**2*interferogramVar)
+    std[np.nonzero(cor==0)] = 0
+    return std
+
 def adaptive_gaussian(data, std, size_min, size_max, std_out0, fit=True):
     '''
     Adaptive Gaussian filtering (from Alos2Proc)
@@ -198,6 +216,9 @@ def adaptive_gaussian(data, std, size_min, size_max, std_out0, fit=True):
     (length, width) = data.shape
     
     # Assume zero-value samples are invalid
+    # Save original valid pixel mask to distinguish truly masked pixels from boundary effects
+    original_valid_mask = (data != 0) * (std != 0)
+    
     index = np.nonzero(np.logical_or(data==0, std==0))
     data[index] = 0
     std[index] = 0
@@ -235,7 +256,24 @@ def adaptive_gaussian(data, std, size_min, size_max, std_out0, fit=True):
     for i in range(size_num):
         size = int(size_min + i * 2)
         print('current window size: %4d, min window size: %4d, max window size: %4d' % (size, size_min, size_max), end='\r', flush=True)
-        index = np.nonzero(ss.fftconvolve(wgt!=0, gaussian_filters[i]!=0, mode='same') < 0.5)
+        # Calculate effective weight coverage
+        # Use a lower threshold for boundary pixels to avoid marking valid pixels as invalid
+        # due to boundary effects (zero-padding in fftconvolve)
+        weight_coverage = ss.fftconvolve(wgt!=0, gaussian_filters[i]!=0, mode='same')
+        # For boundary pixels (where original data is valid), use a more lenient threshold
+        # This prevents valid boundary pixels from being incorrectly marked as invalid
+        # Use adaptive threshold: lower for originally valid pixels, especially near boundaries
+        size_half = int((size - 1) / 2)
+        # Create boundary mask: pixels within size_half of image edges
+        boundary_mask = np.zeros((length, width), dtype=bool)
+        boundary_mask[:size_half, :] = True  # Top edge
+        boundary_mask[-size_half:, :] = True  # Bottom edge
+        boundary_mask[:, :size_half] = True  # Left edge
+        boundary_mask[:, -size_half:] = True  # Right edge
+        # Use even lower threshold for valid pixels near boundaries
+        threshold = np.where(original_valid_mask & boundary_mask, 0.2, 
+                           np.where(original_valid_mask, 0.3, 0.5))
+        index = np.nonzero(weight_coverage < threshold)
         scale = ss.fftconvolve(wgt, gaussian_filters[i], mode='same')
         scale[index] = 0
         var_filt = ss.fftconvolve(wgt, gaussian_filters[i]**2, mode='same') / (scale**2 + (scale==0))
@@ -346,26 +384,61 @@ def adjust_phase_polynomial(lowBandIgram, highBandIgram, outputDir, lowBandCoher
     width = img_low.width
     length = img_low.length
     
-    # Read phase data (band 2 for unwrapped phase)
+    # Read amplitude (band 0) and phase (band 1) data
+    # Note: Invalid regions (originally 0 in wrapped phase) may be unwrapped to 0, ±2π, etc.
+    # So we use amplitude to identify valid pixels (amplitude > 0)
+    lowerAmp = np.fromfile(lowBandIgram, dtype=np.float32).reshape(length*2, width)[0:length*2:2, :]
     lowerUnw = np.fromfile(lowBandIgram, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
+    upperAmp = np.fromfile(highBandIgram, dtype=np.float32).reshape(length*2, width)[0:length*2:2, :]
     upperUnw = np.fromfile(highBandIgram, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
+    
+    # Create valid pixel mask based on amplitude (more reliable than phase)
+    # Invalid regions typically have zero or very small amplitude
+    valid_mask = (lowerAmp > 0) * (upperAmp > 0)
     
     # Prepare weight using coherence if available
     if lowBandCoherence and highBandCoherence and os.path.exists(lowBandCoherence + '.xml') and os.path.exists(highBandCoherence + '.xml'):
-        cor_low = np.fromfile(lowBandCoherence, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
-        cor_high = np.fromfile(highBandCoherence, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
-        # Use average coherence as weight, with high power (similar to ALOS corOrderAdj=20)
-        cor = (cor_low + cor_high) / 2.0
-        cor[np.nonzero(cor<0)] = 0.0
-        cor[np.nonzero(cor>1)] = 0.0
-        wgt = cor**20  # Similar to corOrderAdj=20 in ALOS
-        wgt[np.nonzero(lowerUnw==0)] = 0
-        wgt[np.nonzero(upperUnw==0)] = 0
+        try:
+            # Check coherence file format (single band or BIL format with 2 bands)
+            img_cor_low = isceobj.createImage()
+            img_cor_low.load(lowBandCoherence + '.xml')
+            cor_low_bands = img_cor_low.bands
+            
+            img_cor_high = isceobj.createImage()
+            img_cor_high.load(highBandCoherence + '.xml')
+            cor_high_bands = img_cor_high.bands
+            
+            # Read coherence data based on format
+            if cor_low_bands == 2:  # BIL format (amplitude + coherence)
+                cor_low = np.fromfile(lowBandCoherence, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
+            else:  # Single band format
+                cor_low = np.fromfile(lowBandCoherence, dtype=np.float32).reshape(length, width)
+            
+            if cor_high_bands == 2:  # BIL format (amplitude + coherence)
+                cor_high = np.fromfile(highBandCoherence, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
+            else:  # Single band format
+                cor_high = np.fromfile(highBandCoherence, dtype=np.float32).reshape(length, width)
+            
+            # Check dimensions match
+            if cor_low.shape != (length, width) or cor_high.shape != (length, width):
+                raise ValueError('Coherence dimensions ({}, {}) do not match interferogram dimensions ({}, {})'.format(
+                    cor_low.shape, cor_high.shape, (length, width)))
+            
+            # Use average coherence as weight, with high power (similar to ALOS corOrderAdj=20)
+            cor = (cor_low + cor_high) / 2.0
+            cor[np.nonzero(cor<0)] = 0.0
+            cor[np.nonzero(cor>1)] = 0.0
+            wgt = cor**20  # Similar to corOrderAdj=20 in ALOS
+            wgt[np.nonzero(~valid_mask)] = 0  # Mask out invalid pixels using amplitude
+        except Exception as e:
+            logger.warning('Could not read coherence files for phase adjustment: {}. Using binary mask.'.format(e))
+            # Use binary mask if coherence reading fails
+            wgt = np.ones((length, width), dtype=np.float32)
+            wgt[np.nonzero(~valid_mask)] = 0  # Mask out invalid pixels using amplitude
     else:
         # Use binary mask if coherence not available
         wgt = np.ones((length, width), dtype=np.float32)
-        wgt[np.nonzero(lowerUnw==0)] = 0
-        wgt[np.nonzero(upperUnw==0)] = 0
+        wgt[np.nonzero(~valid_mask)] = 0  # Mask out invalid pixels using amplitude
     
     # Compute phase difference
     phase_diff = lowerUnw - upperUnw
@@ -373,8 +446,8 @@ def adjust_phase_polynomial(lowBandIgram, highBandIgram, outputDir, lowBandCoher
     # Fit polynomial surface to phase difference (order 2, similar to ALOS)
     diff_fit, coeff = polyfit_2d(phase_diff, wgt, 2)
     
-    # Adjust upper band phase
-    flag2 = (lowerUnw != 0)
+    # Adjust upper band phase (use valid_mask based on amplitude, not phase)
+    flag2 = valid_mask
     index2 = np.nonzero(flag2)
     
     # Phase for adjustment: round the difference to nearest 2π
@@ -396,12 +469,18 @@ def adjust_phase_polynomial(lowBandIgram, highBandIgram, outputDir, lowBandCoher
     highBandIgramAdjusted = os.path.join(outputDir, os.path.basename(highBandIgram) + '.adjusted')
     
     # Read original file structure (amplitude + phase)
+    # BIL format: data is stored as (length*2, width) where rows are interleaved
+    # Row 0, 2, 4, ... = band 0 (amplitude)
+    # Row 1, 3, 5, ... = band 1 (phase)
     original_data = np.fromfile(highBandIgram, dtype=np.float32).reshape(length*2, width)
     original_data[1:length*2:2, :] = upperUnw_adjusted
     
     # Save adjusted file
     original_data.astype(np.float32).tofile(highBandIgramAdjusted)
-    write_xml(highBandIgramAdjusted, width, length*2, 2, "FLOAT", "BIL")
+    
+    # Write XML: for BIL format with 2 bands, length should be the original image length (not length*2)
+    # The XML length parameter refers to the number of image rows, not the number of data rows in the file
+    write_xml(highBandIgramAdjusted, width, length, 2, "FLOAT", "BIL")
     
     logger.info('Adjusted high band interferogram saved to: {}'.format(highBandIgramAdjusted))
     
@@ -409,13 +488,50 @@ def adjust_phase_polynomial(lowBandIgram, highBandIgram, outputDir, lowBandCoher
 
 
 def check_consistency(lowBandIgram, highBandIgram, outputDir):
-
-
-    jumpFile = os.path.join(outputDir , "jumps.bil")
-    cmd = 'imageMath.py -e="round((a_1-b_1)/(2.0*PI))" --a={0}  --b={1} -o {2} -t float  -s BIL'.format(lowBandIgram, highBandIgram, jumpFile)
-    print(cmd)
-    os.system(cmd)
-
+    """
+    Check consistency between low and high band unwrapped interferograms
+    by computing the number of 2π jumps between them.
+    
+    Returns the path to the jumps file (single band float format).
+    """
+    jumpFile = os.path.join(outputDir, "jumps.bil")
+    
+    # Get image dimensions from low band interferogram
+    img_low = isceobj.createImage()
+    img_low.load(lowBandIgram + '.xml')
+    width = img_low.width
+    length = img_low.length
+    
+    # Read phase data from both interferograms
+    # Both are BIL format: band 0 = amplitude, band 1 = phase
+    low_data = np.fromfile(lowBandIgram, dtype=np.float32).reshape(length*2, width)
+    low_phase = low_data[1:length*2:2, :]
+    
+    high_data = np.fromfile(highBandIgram, dtype=np.float32).reshape(length*2, width)
+    high_phase = high_data[1:length*2:2, :]
+    
+    # Compute jumps: round((phase_low - phase_high) / (2π))
+    phase_diff = low_phase - high_phase
+    jumps = np.round(phase_diff / (2.0 * np.pi))
+    
+    # Save as BIL format (2 bands) for compatibility with imageMath.py
+    # Band 0: jumps (same as band 1)
+    # Band 1: jumps
+    # This ensures imageMath.py can read it correctly when used with --c option
+    # BIL format: data is stored as (length*2, width) where rows are interleaved
+    jumps_bil = np.zeros((length*2, width), dtype=np.float32)
+    jumps_bil[0:length*2:2, :] = jumps  # Band 0
+    jumps_bil[1:length*2:2, :] = jumps  # Band 1
+    
+    jumps_bil.astype(np.float32).tofile(jumpFile)
+    # Write XML: for BIL format with 2 bands, length should be the original image length (not length*2)
+    write_xml(jumpFile, width, length, 2, "FLOAT", "BIL")
+    
+    logger.info('Jumps file saved to: {}'.format(jumpFile))
+    logger.info('  Jumps range: [{:.0f}, {:.0f}]'.format(np.nanmin(jumps), np.nanmax(jumps)))
+    logger.info('  Non-zero jumps: {} / {} pixels ({:.2f}%)'.format(
+        np.sum(jumps != 0), jumps.size, 100.0 * np.sum(jumps != 0) / jumps.size))
+    
     return jumpFile
 
 
@@ -436,29 +552,36 @@ def dispersive_nonDispersive(lowBandIgram, highBandIgram, f0, fL, fH, outDispers
     if m and d:
 
         coef = (fL*fH)/(f0*(fH**2 - fL**2))
-        #cmd = 'imageMath.py -e="{0}*((a_1-{8}-2*PI*c)*{1}-(b_1-{9}-2*PI*(c+f))*{2})" --a={3} --b={4} --c={5} --f={6} -o {7} -t float32 -s BIL'.format(coef,fH, fL, lowBandIgram, highBandIgram, m , d, outDispersive, refL, refH)
-        cmd = 'imageMath.py -e="{0}*((a_1-2*PI*c)*{1}-(b_1+(2.0*PI*g)-2*PI*(c+f))*{2})" --a={3} --b={4} --c={5} --f={6} --g={7} -o {8} -t float32 -s BIL'.format(coef,fH, fL, lowBandIgram, highBandIgram, m , d, jumpFile, outDispersive)
+        # Use amplitude (a_0, b_0) to mask out invalid pixels in the calculation
+        # This ensures that invalid regions (originally 0 in wrapped phase, unwrapped to 0, ±2π, etc.)
+        # do not participate in the ionosphere estimation
+        # Note: c_0 and g_0 are used to access band 0 of jumps file (BIL format, 2 bands)
+        cmd = 'imageMath.py -e="((a_0>0)*(b_0>0))*({0}*((a_1-2*PI*c_0)*{1}-(b_1+(2.0*PI*g_0)-2*PI*(c_0+f))*{2}))" --a={3} --b={4} --c={5} --f={6} --g={7} -o {8} -t float32 -s BIL'.format(coef,fH, fL, lowBandIgram, highBandIgram, m , d, jumpFile, outDispersive)
         print(cmd)
         os.system(cmd)
 
         coefn = f0/(fH**2-fL**2)
-        #cmd = 'imageMath.py -e="{0}*((a_1-{8}-2*PI*c)*{1}-(b_1-{9}-2*PI*(c+f))*{2})" --a={3} --b={4} --c={5} --f={6} -o {7} -t float32 -s BIL'.format(coefn,fH, fL, highBandIgram, lowBandIgram, m , d, outNonDispersive, refH, refL)
-        cmd = 'imageMath.py -e="{0}*((a_1+(2.0*PI*g)-2*PI*c)*{1}-(b_1-2*PI*(c+f))*{2})" --a={3} --b={4} --c={5} --f={6} --g={7} -o {8} -t float32 -s BIL'.format(coefn,fH, fL, highBandIgram, lowBandIgram, m , d, jumpFile, outNonDispersive)
+        # Use amplitude to mask out invalid pixels
+        # Note: c_0 and g_0 are used to access band 0 of jumps file (BIL format, 2 bands)
+        cmd = 'imageMath.py -e="((a_0>0)*(b_0>0))*({0}*((a_1+(2.0*PI*g_0)-2*PI*c_0)*{1}-(b_1-2*PI*(c_0+f))*{2}))" --a={3} --b={4} --c={5} --f={6} --g={7} -o {8} -t float32 -s BIL'.format(coefn,fH, fL, highBandIgram, lowBandIgram, m , d, jumpFile, outNonDispersive)
         print(cmd)
         os.system(cmd)
 
     else:
         
         coef = (fL*fH)/(f0*(fH**2 - fL**2))
-        #cmd = 'imageMath.py -e="{0}*((a_1-{6})*{1}-(b_1-{7})*{2})" --a={3} --b={4} -o {5} -t float32 -s BIL'.format(coef,fH, fL, lowBandIgram, highBandIgram, outDispersive, refL, refH)
-        cmd = 'imageMath.py -e="{0}*(a_1*{1}-(b_1+2.0*PI*c)*{2})" --a={3} --b={4} --c={5}  -o {6} -t float32 -s BIL'.format(coef,fH, fL, lowBandIgram, highBandIgram, jumpFile, outDispersive)
+        # Use amplitude (a_0, b_0) to mask out invalid pixels in the calculation
+        # This ensures that invalid regions do not participate in the ionosphere estimation
+        # Note: c_0 is used to access band 0 of jumps file (BIL format, 2 bands)
+        cmd = 'imageMath.py -e="((a_0>0)*(b_0>0))*({0}*(a_1*{1}-(b_1+2.0*PI*c_0)*{2}))" --a={3} --b={4} --c={5}  -o {6} -t float32 -s BIL'.format(coef,fH, fL, lowBandIgram, highBandIgram, jumpFile, outDispersive)
 
         print(cmd)
         os.system(cmd)
 
         coefn = f0/(fH**2-fL**2)
-        #cmd = 'imageMath.py -e="{0}*((a_1-{6})*{1}-(b_1-{7})*{2})" --a={3} --b={4} -o {5} -t float32 -s BIL'.format(coefn,fH, fL, highBandIgram, lowBandIgram, outNonDispersive, refH, refL) 
-        cmd = 'imageMath.py -e="{0}*((a_1+2.0*PI*c)*{1}-(b_1)*{2})" --a={3} --b={4} --c={5} -o {6} -t float32 -s BIL'.format(coefn,fH, fL, highBandIgram, lowBandIgram, jumpFile, outNonDispersive)
+        # Use amplitude to mask out invalid pixels
+        # Note: c_0 is used to access band 0 of jumps file (BIL format, 2 bands)
+        cmd = 'imageMath.py -e="((a_0>0)*(b_0>0))*({0}*((a_1+2.0*PI*c_0)*{1}-(b_1)*{2}))" --a={3} --b={4} --c={5} -o {6} -t float32 -s BIL'.format(coefn,fH, fL, highBandIgram, lowBandIgram, jumpFile, outNonDispersive)
         print(cmd)
         os.system(cmd)
 
@@ -713,11 +836,20 @@ def getMask(inps, maskFile, lowBandIgram=None, highBandIgram=None):
         if ret != 0:
             raise RuntimeError('Failed to generate mask file using connected components. Command: {}'.format(cmd))
     else:
-        print ('generating a mask based on unwrapped files. Pixels with phase = 0 are masked out.')
-        cmd = 'imageMath.py -e="(a_1!=0)*(b_1!=0)" --a={0} --b={1} -t byte -s BIL -o {2}'.format(lowBandIgram , highBandIgram , maskFile)
+        # Use amplitude to identify valid pixels
+        # Note: Due to phase wrapping, invalid regions (originally 0 in wrapped phase)
+        # may be unwrapped to 0, ±2π, ±4π, etc. However, invalid regions typically
+        # have zero or very small amplitude. So we use amplitude (band 0) to identify valid pixels.
+        print ('generating a mask based on unwrapped file amplitudes.')
+        print ('  Note: Invalid regions (originally 0 in wrapped phase) may be unwrapped to 0, ±2π, etc.')
+        print ('  Using amplitude (band 0) to identify valid pixels (amplitude > 0).')
+        # Check amplitude (band 0) > 0 for both interferograms
+        # This is more reliable than checking phase != 0, since unwrapped phase
+        # from invalid regions can be 0, ±2π, ±4π, etc.
+        cmd = 'imageMath.py -e="(a_0>0)*(b_0>0)" --a={0} --b={1} -t byte -s BIL -o {2}'.format(lowBandIgram , highBandIgram , maskFile)
         ret = os.system(cmd)
         if ret != 0:
-            raise RuntimeError('Failed to generate mask file using unwrapped files. Command: {}'.format(cmd))
+            raise RuntimeError('Failed to generate mask file using unwrapped file amplitudes. Command: {}'.format(cmd))
     
     # Apply water body mask if available (matching StripmapProc behavior)
     # Check for water body file in the interferogram directory
@@ -783,7 +915,8 @@ def unwrapp_error_correction(f0, B, dispFile, nonDispFile,lowBandIgram, highBand
 
     #cmd = 'imageMath.py -e="round(((a_1-{7}) - (b_1-{8}) - (2.0*{0}/3.0/{1})*c + (2.0*{0}/3.0/{1})*f )/2.0/PI)" --a={2} --b={3} --c={4} --f={5}  -o {6} -t float32 -s BIL'.format(B, f0, highBandIgram, lowBandIgram, nonDispFile, dispFile, dFile, refH, refL)
 
-    cmd = 'imageMath.py -e="round(((a_1+(2.0*PI*g)) - (b_1) - (2.0*{0}/3.0/{1})*c + (2.0*{0}/3.0/{1})*f )/2.0/PI)" --a={2} --b={3} --c={4} --f={5} --g={6}  -o {7} -t float32 -s BIL'.format(B, f0, highBandIgram, lowBandIgram, nonDispFile, dispFile, jumpsFile, dFile)
+    # Note: g_0 is used to access band 0 of jumps file (BIL format, 2 bands)
+    cmd = 'imageMath.py -e="round(((a_1+(2.0*PI*g_0)) - (b_1) - (2.0*{0}/3.0/{1})*c + (2.0*{0}/3.0/{1})*f )/2.0/PI)" --a={2} --b={3} --c={4} --f={5} --g={6}  -o {7} -t float32 -s BIL'.format(B, f0, highBandIgram, lowBandIgram, nonDispFile, dispFile, jumpsFile, dFile)
 
     print(cmd)
 
@@ -793,7 +926,8 @@ def unwrapp_error_correction(f0, B, dispFile, nonDispFile,lowBandIgram, highBand
 
     #cmd = 'imageMath.py -e="round(((a_1 - {6}) + (b_1-{7}) - 2.0*c - 2.0*f )/4.0/PI - g/2)" --a={0} --b={1} --c={2} --f={3} --g={4} -o {5} -t float32 -s BIL'.format(lowBandIgram, highBandIgram, nonDispFile, dispFile, dFile, mFile, refL, refH)
 
-    cmd = 'imageMath.py -e="round(((a_1 ) + (b_1+(2.0*PI*k)) - 2.0*c - 2.0*f )/4.0/PI - g/2)" --a={0} --b={1} --c={2} --f={3} --g={4} --k={5} -o {6} -t float32 -s BIL'.format(lowBandIgram, highBandIgram, nonDispFile, dispFile, dFile, jumpsFile, mFile)
+    # Note: k_0 is used to access band 0 of jumps file, g_0 is used to access band 0 of dJumps file (both BIL format, 2 bands)
+    cmd = 'imageMath.py -e="round(((a_1 ) + (b_1+(2.0*PI*k_0)) - 2.0*c - 2.0*f )/4.0/PI - g_0/2)" --a={0} --b={1} --c={2} --f={3} --g={4} --k={5} -o {6} -t float32 -s BIL'.format(lowBandIgram, highBandIgram, nonDispFile, dispFile, dFile, jumpsFile, mFile)
 
     print(cmd)
 
@@ -822,74 +956,6 @@ def getBandFrequencies(inps):
        B = np.abs(chirpSlope)*pulseLength
 
     return wvl0, wvlL, wvlH, B
-
-
-def computeNumberOfLooks(inps, wvl0, wvlL, wvlH, B, f0, fL, fH):
-    '''
-    Compute more accurate number of looks for subband interferograms (ALOS-style)
-    This considers bandwidth, azimuth bandwidth, and subband characteristics
-    '''
-    # Get looks from input parameters
-    azLooks = getattr(inps, 'azLooks', 1)
-    rgLooks = getattr(inps, 'rngLooks', 1)
-    numberRangeLooksIon = getattr(inps, 'numberRangeLooksIon', 16)
-    numberAzimuthLooksIon = getattr(inps, 'numberAzimuthLooksIon', 16)
-    
-    # Try to get azimuth bandwidth from shelve files
-    try:
-        with shelve.open(inps.lowBandShelve, flag='r') as db:
-            frameL = db['frame']
-            # Try to get azimuth bandwidth (may not be available for all sensors)
-            if hasattr(frameL.instrument, 'pulseRepetitionFrequency'):
-                prf = frameL.instrument.pulseRepetitionFrequency
-                # Estimate azimuth bandwidth (for stripmap, typically ~PRF)
-                # This is a simplified estimate
-                azimuthBandwidth = prf * 0.85  # Typical factor for stripmap
-            else:
-                # Fallback: use wavelength-based estimate
-                azimuthBandwidth = SPEED_OF_LIGHT / wvl0 * 0.1  # Rough estimate
-    except:
-        # Fallback if shelve access fails
-        azimuthBandwidth = SPEED_OF_LIGHT / wvl0 * 0.1
-    
-    # Try to get range sampling rate
-    try:
-        with shelve.open(inps.lowBandShelve, flag='r') as db:
-            frameL = db['frame']
-            if hasattr(frameL.instrument, 'rangeSamplingRate'):
-                rangeSamplingRate = frameL.instrument.rangeSamplingRate
-            else:
-                # Estimate from bandwidth
-                rangeSamplingRate = B * 1.2  # Typical oversampling factor
-    except:
-        rangeSamplingRate = B * 1.2
-    
-    # Try to get azimuth line interval (pixel spacing in azimuth)
-    try:
-        with shelve.open(inps.lowBandShelve, flag='r') as db:
-            frameL = db['frame']
-            if hasattr(frameL, 'azimuthLineInterval'):
-                azimuthLineInterval = frameL.azimuthLineInterval
-            else:
-                # Estimate: typically PRF / ground speed
-                azimuthLineInterval = 1.0 / (azimuthBandwidth / (SPEED_OF_LIGHT / wvl0))
-    except:
-        azimuthLineInterval = 1.0 / (azimuthBandwidth / (SPEED_OF_LIGHT / wvl0))
-    
-    # Compute number of looks (ALOS-style formula)
-    # Assume subband range bandwidth is 1/3 of original range bandwidth
-    # This matches the subband splitting approach
-    subbandRangeBandwidth = B / 3.0
-    
-    numberOfLooks = (azimuthLineInterval * azLooks * numberAzimuthLooksIon / (1.0/azimuthBandwidth)) * \
-                    (subbandRangeBandwidth / rangeSamplingRate * rgLooks * numberRangeLooksIon)
-    
-    logger.info('Computed number of looks for subband interferograms: {:.2f}'.format(numberOfLooks))
-    logger.info('  Azimuth bandwidth: {:.2f} Hz'.format(azimuthBandwidth))
-    logger.info('  Range sampling rate: {:.2e} Hz'.format(rangeSamplingRate))
-    logger.info('  Subband range bandwidth: {:.2e} Hz'.format(subbandRangeBandwidth))
-    
-    return numberOfLooks
 
 
 def main(iargs=None):
@@ -987,6 +1053,17 @@ def main(iargs=None):
     f0 = SPEED_OF_LIGHT/wvl
     fL = SPEED_OF_LIGHT/wvlL
     fH = SPEED_OF_LIGHT/wvlH
+    
+    # Log frequency information for verification
+    logger.info('Band frequency information:')
+    logger.info('  Center wavelength (wvl0): {:.6f} m'.format(wvl))
+    logger.info('  Lower band wavelength (wvlL): {:.6f} m'.format(wvlL))
+    logger.info('  Upper band wavelength (wvlH): {:.6f} m'.format(wvlH))
+    logger.info('  Center frequency (f0): {:.2f} Hz ({:.6f} GHz)'.format(f0, f0/1e9))
+    logger.info('  Lower band frequency (fL): {:.2f} Hz ({:.6f} GHz)'.format(fL, fL/1e9))
+    logger.info('  Upper band frequency (fH): {:.2f} Hz ({:.6f} GHz)'.format(fH, fH/1e9))
+    logger.info('  Frequency difference (fH - fL): {:.2f} Hz ({:.6f} GHz)'.format(fH - fL, (fH - fL)/1e9))
+    logger.info('  Total bandwidth (B): {:.2e} Hz ({:.6f} GHz)'.format(B, B/1e9))
 
     ###Determine looks
     #azLooks, rgLooks = self.insar.numberOfLooks( referenceFrame, self.posting,
@@ -1075,37 +1152,122 @@ def main(iargs=None):
     jumpsFile = check_consistency(lowBandIgramForIono, highBandIgramForIonoAdjusted, inps.outDir)
 
     #########################################################
+    # generating a mask which will help filtering the estimated dispersive and non-dispersive phase
+    # Generate mask BEFORE estimating ionosphere to mask out zero-value pixels at edges
+    # Use multilooked interferograms for mask generation if they were used for ionosphere estimation
+    getMask(inps, maskFile, lowBandIgram=lowBandIgramForIono, highBandIgram=highBandIgramForIono)
+    
+    #########################################################
     # estimating the dispersive and non-dispersive components
     # Use adjusted high band interferogram if available
     dispersive_nonDispersive(lowBandIgramForIono, highBandIgramForIonoAdjusted, f0, fL, fH, outDispersive, outNonDispersive, jumpsFile)
-
-    # generating a mask which will help filtering the estimated dispersive and non-dispersive phase
-    # Use multilooked interferograms for mask generation if they were used for ionosphere estimation
-    getMask(inps, maskFile, lowBandIgram=lowBandIgramForIono, highBandIgram=highBandIgramForIono)
-    # Calculating the theoretical standard deviation of the estimation based on the coherence of the interferograms
-    # Use more accurate number of looks calculation (ALOS-style) if possible
-    try:
-        numberOfLooks = computeNumberOfLooks(inps, wvl, wvlL, wvlH, B, f0, fL, fH)
-        # Use the computed numberOfLooks for variance calculation
-        # Note: theoretical_variance_fromSubBands uses totalLooks, so we'll pass numberOfLooks
-        # But we need to check if the function can handle this properly
-        # For now, we'll compute a conversion factor
-        azLooks = getattr(inps, 'azLooks', 1)
-        rgLooks = getattr(inps, 'rngLooks', 1)
-        simpleTotalLooks = azLooks * rgLooks
-        if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon:
-            simpleTotalLooks = simpleTotalLooks * numberRangeLooksIon * numberAzimuthLooksIon
-        # Use the more accurate calculation if available
-        totalLooks = numberOfLooks if numberOfLooks > 0 else simpleTotalLooks
-        logger.info('Using number of looks: {:.2f} (simple calculation: {:.2f})'.format(totalLooks, simpleTotalLooks))
-    except Exception as e:
-        logger.warning('Failed to compute accurate number of looks: {}. Using simple calculation.'.format(e))
-        azLooks = getattr(inps, 'azLooks', 1)
-        rgLooks = getattr(inps, 'rngLooks', 1)
-        totalLooks = azLooks * rgLooks
-        if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon:
-            totalLooks = totalLooks * numberRangeLooksIon * numberAzimuthLooksIon
-    theoretical_variance_fromSubBands(inps, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks) 
+    
+    # Apply mask to zero out invalid pixels (edges with zero values) in the initial estimates
+    # This prevents zero-value pixels from affecting the initial ionosphere estimation
+    logger.info('Applying mask to initial ionosphere estimates to mask out zero-value pixels')
+    img = isceobj.createImage()
+    img.load(outDispersive + '.xml')
+    width = img.width
+    length = img.length
+    
+    mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
+    
+    # Apply mask to dispersive phase
+    dispersive = np.fromfile(outDispersive, dtype=np.float32).reshape(length, width)
+    dispersive[np.nonzero(mask==0)] = 0.0
+    dispersive.astype(np.float32).tofile(outDispersive)
+    
+    # Apply mask to non-dispersive phase
+    nonDispersive = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
+    nonDispersive[np.nonzero(mask==0)] = 0.0
+    nonDispersive.astype(np.float32).tofile(outNonDispersive)
+    
+    # Calculate number of looks and standard deviation (same as StripmapProc/Alos2Proc)
+    # For multilooked subband interferograms, total looks = original looks * additional ionospheric looks
+    azLooks = getattr(inps, 'azLooks', 1)
+    rgLooks = getattr(inps, 'rngLooks', 1)
+    totalLooks = azLooks * rgLooks
+    if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon:
+        totalLooks = totalLooks * numberRangeLooksIon * numberAzimuthLooksIon
+    logger.info('Using number of looks: {:.2f} (azLooks={:.0f}, rgLooks={:.0f}, azLooksIon={:.0f}, rgLooksIon={:.0f})'.format(
+        totalLooks, azLooks, rgLooks, 
+        numberAzimuthLooksIon if useMultilookedUnw and numberAzimuthLooksIon else 1,
+        numberRangeLooksIon if useMultilookedUnw and numberRangeLooksIon else 1))
+    
+    # Compute standard deviation of ionospheric phase (same as Alos2Proc/StripmapProc)
+    # Read coherence files for std calculation
+    # Get dimensions from dispersive phase file
+    img = isceobj.createImage()
+    img.load(outDispersive + '.xml')
+    width = img.width
+    length = img.length
+    
+    # Read coherence files
+    cor = None
+    if inps.lowBandCoherence and inps.highBandCoherence and os.path.exists(inps.lowBandCoherence + '.xml') and os.path.exists(inps.highBandCoherence + '.xml'):
+        try:
+            # Check coherence file format (single band or BIL format with 2 bands)
+            img_cor_low = isceobj.createImage()
+            img_cor_low.load(inps.lowBandCoherence + '.xml')
+            cor_low_bands = img_cor_low.bands
+            
+            img_cor_high = isceobj.createImage()
+            img_cor_high.load(inps.highBandCoherence + '.xml')
+            cor_high_bands = img_cor_high.bands
+            
+            # Read coherence data based on format
+            if cor_low_bands == 2:  # BIL format (amplitude + coherence)
+                cor_low = np.fromfile(inps.lowBandCoherence, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
+            else:  # Single band format
+                cor_low = np.fromfile(inps.lowBandCoherence, dtype=np.float32).reshape(length, width)
+            
+            if cor_high_bands == 2:  # BIL format (amplitude + coherence)
+                cor_high = np.fromfile(inps.highBandCoherence, dtype=np.float32).reshape(length*2, width)[1:length*2:2, :]
+            else:  # Single band format
+                cor_high = np.fromfile(inps.highBandCoherence, dtype=np.float32).reshape(length, width)
+            
+            # Check dimensions match
+            if cor_low.shape == (length, width) and cor_high.shape == (length, width):
+                cor = (cor_low + cor_high) / 2.0
+                cor[np.nonzero(cor<0)] = 0.0
+                cor[np.nonzero(cor>1)] = 0.0
+                # Apply mask to coherence to ensure invalid regions are excluded
+                mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
+                cor[np.nonzero(mask==0)] = 0.0
+                logger.info('Successfully read coherence files for std calculation')
+            else:
+                logger.warning('Coherence dimensions ({}, {}) do not match ionosphere dimensions ({}, {})'.format(
+                    cor_low.shape, cor_high.shape, (length, width)))
+        except Exception as e:
+            logger.warning('Could not read coherence files for std calculation: {}'.format(e))
+    
+    # Compute std using ion_std function (same as Alos2Proc/StripmapProc)
+    # Load mask to apply to std calculation
+    mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
+    
+    if cor is not None:
+        std_dispersive = ion_std(fL, fH, totalLooks, cor)
+        std_nonDispersive = ion_std(fL, fH, totalLooks, cor)  # Same formula for non-dispersive
+        # Apply mask to std to ensure invalid regions have zero std
+        std_dispersive[np.nonzero(mask==0)] = 0.0
+        std_nonDispersive[np.nonzero(mask==0)] = 0.0
+        logger.info('Computed standard deviation of ionospheric phase using ion_std function (Alos2Proc/StripmapProc method)')
+    else:
+        logger.warning('Could not compute std from coherence, using theoretical variance method as fallback')
+        theoretical_variance_fromSubBands(inps, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks)
+        # Read the computed std files
+        std_dispersive = np.fromfile(sigmaDispersive, dtype=np.float32).reshape(length, width)
+        std_nonDispersive = np.fromfile(sigmaNonDispersive, dtype=np.float32).reshape(length, width)
+        # Apply mask to std to ensure invalid regions have zero std
+        std_dispersive[np.nonzero(mask==0)] = 0.0
+        std_nonDispersive[np.nonzero(mask==0)] = 0.0
+    
+    # Save std files (same format as Alos2Proc/StripmapProc, using .sig extension)
+    std_dispersive.astype(np.float32).tofile(sigmaDispersive)
+    write_xml(sigmaDispersive, width, length, 1, "FLOAT", "BIL")
+    std_nonDispersive.astype(np.float32).tofile(sigmaNonDispersive)
+    write_xml(sigmaNonDispersive, width, length, 1, "FLOAT", "BIL")
+    logger.info('Saved standard deviation files: {} and {}'.format(sigmaDispersive, sigmaNonDispersive)) 
 
     # Use adaptive Gaussian filtering if explicitly requested, otherwise use original iterative filtering
     useAdaptiveFilter = getattr(inps, 'useAdaptiveGaussian', True)
@@ -1129,7 +1291,7 @@ def main(iargs=None):
         
         # Get filtering parameters (defaults match StripmapProc/alosStack.xml)
         size_max = getattr(inps, 'filteringWinsizeMaxIon', 301)
-        size_min = getattr(inps, 'filteringWinsizeMinIon', 11)
+        size_min = getattr(inps, 'filteringWinsizeMinIon', 31)
         size_secondary = getattr(inps, 'filteringWinsizeSecondaryIon', 5)
         std_out0 = getattr(inps, 'filterStdIon', None)
         fitAdaptive = getattr(inps, 'fitAdaptiveIon', True)
@@ -1142,9 +1304,9 @@ def main(iargs=None):
         if (not fitIon) and (not filtIon):
             raise Exception('either fit_ion or filt_ion should be True when doing ionospheric correction')
         
-        # If std_out0 is None, use a reasonable default
+        # If std_out0 is None, use a reasonable default (matching StripmapProc)
         if std_out0 is None:
-            std_out0 = 0.05  # Default fallback
+            std_out0 = 0.005  # Default for stripmap (matches ALOS-2 SPT/SM1 modes), can be overridden by user
         
         if size_min > size_max:
             size_max = size_min
@@ -1204,9 +1366,13 @@ def main(iargs=None):
                 f = np.exp(-x**2/(2.0*(size_secondary/2.0)**2)) / ((size_secondary/2.0) * np.sqrt(2.0*np.pi))
                 g2d = np.outer(f, f)
                 g2d = g2d / np.sum(g2d)
-                # Apply secondary filtering
-                scale = ss.fftconvolve((ionos_filt!=0).astype(np.float32), g2d, mode='same')
-                ionos_filt = (ionos_filt!=0) * ss.fftconvolve(ionos_filt, g2d, mode='same') / (scale + (scale==0))
+            # Apply secondary filtering
+            # Use mask to prevent masked regions from being filled
+            mask_filt = (ionos_filt!=0).astype(np.float32)
+            scale = ss.fftconvolve(mask_filt, g2d, mode='same')
+            ionos_filt_filtered = ss.fftconvolve(ionos_filt, g2d, mode='same') / (scale + (scale==0))
+            # Only update pixels that were valid before filtering (preserve mask)
+            ionos_filt = mask_filt * ionos_filt_filtered
         
         # Combine fit and filt results (ALOS-style)
         if fitIon and filtIon:
@@ -1218,12 +1384,32 @@ def main(iargs=None):
         else:
             ionos_final = ionos
         
+        # Apply mask to final result to ensure masked regions remain zero
+        # This is critical because filtering can "leak" values from boundary regions
+        mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
+        ionos_final[np.nonzero(mask==0)] = 0.0
+        
         # Save filtered results
         ionos_final.astype(np.float32).tofile(outDispersive + ".filt")
         write_xml(outDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         if filtIon and std_filt is not None:
+            std_filt[np.nonzero(mask==0)] = 0.0  # Also mask std
             std_filt.astype(np.float32).tofile(sigmaDispersive + ".filt")
             write_xml(sigmaDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
+            # Save window size file (same as Alos2Proc/StripmapProc)
+            if window_size is not None:
+                windowSizeDispersive = outDispersive + ".filt.win"
+                windowSizeDispersive = os.path.abspath(windowSizeDispersive)
+                print('Saving dispersive window size file: {}'.format(windowSizeDispersive))
+                logger.info('Saving dispersive window size file: {}'.format(windowSizeDispersive))
+                window_size.astype(np.float32).tofile(windowSizeDispersive)
+                write_xml(windowSizeDispersive, width, length, 1, "FLOAT", "BIL")
+                print('Saved dispersive window size file: {}'.format(windowSizeDispersive))
+                logger.info('Saved dispersive window size file: {}'.format(windowSizeDispersive))
+            else:
+                print('WARNING: Window size is None for dispersive phase!')
+                logger.warning('Window size is None for dispersive phase (filtIon={}, std_filt is not None={})'.format(
+                    filtIon, std_filt is not None))
         
         # Filter non-dispersive phase
         nonDisp = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
@@ -1255,21 +1441,26 @@ def main(iargs=None):
         
         nonDisp_filt = None
         std_nonDisp_filt = None
+        window_size_nonDisp = None
         if filtIon:
-            nonDisp_filt, std_nonDisp_filt, _ = adaptive_gaussian(
+            nonDisp_filt, std_nonDisp_filt, window_size_nonDisp = adaptive_gaussian(
                 nonDisp.copy(), std_nonDisp.copy(), size_min, size_max, std_out0, fit=fitAdaptive)
             
             # Apply secondary filtering to non-dispersive phase if requested
             if filtSecondary:
                 # Create Gaussian kernel if not already created (from dispersive phase filtering)
-                if g2d is None:
+                if 'g2d' not in locals() or g2d is None:
                     hsize = (size_secondary - 1) / 2
                     x = np.arange(-hsize, hsize + 1)
                     f = np.exp(-x**2/(2.0*(size_secondary/2.0)**2)) / ((size_secondary/2.0) * np.sqrt(2.0*np.pi))
                     g2d = np.outer(f, f)
                     g2d = g2d / np.sum(g2d)
-                scale = ss.fftconvolve((nonDisp_filt!=0).astype(np.float32), g2d, mode='same')
-                nonDisp_filt = (nonDisp_filt!=0) * ss.fftconvolve(nonDisp_filt, g2d, mode='same') / (scale + (scale==0))
+                # Use mask to prevent masked regions from being filled
+                mask_filt = (nonDisp_filt!=0).astype(np.float32)
+                scale = ss.fftconvolve(mask_filt, g2d, mode='same')
+                nonDisp_filt_filtered = ss.fftconvolve(nonDisp_filt, g2d, mode='same') / (scale + (scale==0))
+                # Only update pixels that were valid before filtering (preserve mask)
+                nonDisp_filt = mask_filt * nonDisp_filt_filtered
         
         # Combine fit and filt results for non-dispersive phase
         if fitIon and filtIon:
@@ -1286,6 +1477,20 @@ def main(iargs=None):
         if filtIon and std_nonDisp_filt is not None:
             std_nonDisp_filt.astype(np.float32).tofile(sigmaNonDispersive + ".filt")
             write_xml(sigmaNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
+            # Save window size file (same as Alos2Proc/StripmapProc)
+            if window_size_nonDisp is not None:
+                windowSizeNonDispersive = outNonDispersive + ".filt.win"
+                windowSizeNonDispersive = os.path.abspath(windowSizeNonDispersive)
+                print('Saving non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                logger.info('Saving non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                window_size_nonDisp.astype(np.float32).tofile(windowSizeNonDispersive)
+                write_xml(windowSizeNonDispersive, width, length, 1, "FLOAT", "BIL")
+                print('Saved non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                logger.info('Saved non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+            else:
+                print('WARNING: Window size is None for non-dispersive phase!')
+                logger.warning('Window size is None for non-dispersive phase (filtIon={}, std_nonDisp_filt is not None={})'.format(
+                    filtIon, std_nonDisp_filt is not None))
         
         del ionos, std, mask, nonDisp, std_nonDisp
         if ionos_filt is not None:
@@ -1322,6 +1527,25 @@ def main(iargs=None):
     outDispersive = outDispersive + ".unwCor"
     outNonDispersive = outNonDispersive + ".unwCor"
     dispersive_nonDispersive(inps.lowBandIgram, highBandIgramForIonoAdjusted, f0, fL, fH, outDispersive, outNonDispersive, jumpsFile, m=mFile , d=dFile)
+    
+    # Apply mask to corrected estimates to mask out zero-value pixels
+    logger.info('Applying mask to corrected ionosphere estimates to mask out zero-value pixels')
+    img = isceobj.createImage()
+    img.load(outDispersive + '.xml')
+    width = img.width
+    length = img.length
+    
+    mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
+    
+    # Apply mask to corrected dispersive phase
+    dispersive = np.fromfile(outDispersive, dtype=np.float32).reshape(length, width)
+    dispersive[np.nonzero(mask==0)] = 0.0
+    dispersive.astype(np.float32).tofile(outDispersive)
+    
+    # Apply mask to corrected non-dispersive phase
+    nonDispersive = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
+    nonDispersive[np.nonzero(mask==0)] = 0.0
+    nonDispersive.astype(np.float32).tofile(outNonDispersive)
 
     # Filter the corrected estimates
     if useAdaptiveFilter:
@@ -1357,9 +1581,10 @@ def main(iargs=None):
         
         ionos_filt = None
         std_filt = None
+        window_size_corrected = None
         g2d = None
         if filtIon:
-            ionos_filt, std_filt, _ = adaptive_gaussian(
+            ionos_filt, std_filt, window_size_corrected = adaptive_gaussian(
                 ionos.copy(), std.copy(), size_min, size_max, std_out0, fit=fitAdaptive)
             
             if filtSecondary:
@@ -1382,11 +1607,33 @@ def main(iargs=None):
         else:
             ionos_final = ionos
         
+        # Apply mask to filtered results to ensure masked regions remain zero
+        # This is critical because filtering can fill masked regions with non-zero values
+        # from neighboring valid pixels, especially at boundaries
+        mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
+        ionos_final[np.nonzero(mask==0)] = 0.0
+        if filtIon and std_filt is not None:
+            std_filt[np.nonzero(mask==0)] = 0.0
+        
         ionos_final.astype(np.float32).tofile(outDispersive + ".filt")
         write_xml(outDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         if filtIon and std_filt is not None:
             std_filt.astype(np.float32).tofile(sigmaDispersive + ".filt")
             write_xml(sigmaDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
+            # Save window size file for corrected dispersive phase (same as Alos2Proc/StripmapProc)
+            if window_size_corrected is not None:
+                windowSizeDispersive = outDispersive + ".filt.win"
+                windowSizeDispersive = os.path.abspath(windowSizeDispersive)
+                print('Saving corrected dispersive window size file: {}'.format(windowSizeDispersive))
+                logger.info('Saving corrected dispersive window size file: {}'.format(windowSizeDispersive))
+                window_size_corrected.astype(np.float32).tofile(windowSizeDispersive)
+                write_xml(windowSizeDispersive, width, length, 1, "FLOAT", "BIL")
+                print('Saved corrected dispersive window size file: {}'.format(windowSizeDispersive))
+                logger.info('Saved corrected dispersive window size file: {}'.format(windowSizeDispersive))
+            else:
+                print('WARNING: Window size is None for corrected dispersive phase!')
+                logger.warning('Window size is None for corrected dispersive phase (filtIon={}, std_filt is not None={})'.format(
+                    filtIon, std_filt is not None))
         
         nonDisp = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
         std_nonDisp = np.fromfile(sigmaNonDispersive, dtype=np.float32).reshape(length, width)
@@ -1417,8 +1664,9 @@ def main(iargs=None):
         
         nonDisp_filt = None
         std_nonDisp_filt = None
+        window_size_nonDisp_corrected = None
         if filtIon:
-            nonDisp_filt, std_nonDisp_filt, _ = adaptive_gaussian(
+            nonDisp_filt, std_nonDisp_filt, window_size_nonDisp_corrected = adaptive_gaussian(
                 nonDisp.copy(), std_nonDisp.copy(), size_min, size_max, std_out0, fit=fitAdaptive)
             
             if filtSecondary:
@@ -1447,6 +1695,20 @@ def main(iargs=None):
         if filtIon and std_nonDisp_filt is not None:
             std_nonDisp_filt.astype(np.float32).tofile(sigmaNonDispersive + ".filt")
             write_xml(sigmaNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
+            # Save window size file for corrected non-dispersive phase (same as Alos2Proc/StripmapProc)
+            if window_size_nonDisp_corrected is not None:
+                windowSizeNonDispersive = outNonDispersive + ".filt.win"
+                windowSizeNonDispersive = os.path.abspath(windowSizeNonDispersive)
+                print('Saving corrected non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                logger.info('Saving corrected non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                window_size_nonDisp_corrected.astype(np.float32).tofile(windowSizeNonDispersive)
+                write_xml(windowSizeNonDispersive, width, length, 1, "FLOAT", "BIL")
+                print('Saved corrected non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+                logger.info('Saved corrected non-dispersive window size file: {}'.format(windowSizeNonDispersive))
+            else:
+                print('WARNING: Window size is None for corrected non-dispersive phase!')
+                logger.warning('Window size is None for corrected non-dispersive phase (filtIon={}, std_nonDisp_filt is not None={})'.format(
+                    filtIon, std_nonDisp_filt is not None))
         
         del ionos, std, mask, nonDisp, std_nonDisp
         if ionos_filt is not None:
@@ -1471,150 +1733,6 @@ def main(iargs=None):
                         iteration = inps.dispersive_filter_iterations,
                         theta = inps.kernel_rotation)
     
-    # Resample ionospheric phase back to original interferogram resolution (first multilook, before extra ionospheric looks)
-    # The final ionospheric phase should have the same dimensions as the original interferogram
-    if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
-        # Get dimensions of multilooked ionosphere (at extra multilooked resolution)
-        img_ion = isceobj.createImage()
-        img_ion.load(outDispersive + '.filt.xml')
-        width_ion = img_ion.width
-        length_ion = img_ion.length
-        
-        # Get dimensions of original interferogram (first multilook, before extra ionospheric looks)
-        # The original interferogram is the one before extra multilooking (e.g., filt_xxx.int, not filt_xxx_6rlks_6alks.int)
-        # Find the original interferogram file (first multilook)
-        originalIntFile = None
-        ifgDirname = os.path.dirname(inps.lowBandIgram)
-        
-        # Try to find the original interferogram file (first multilook, before extra multilooking)
-        # The lowBandIgramPrefix may contain the multilook suffix (e.g., filt_20250813_20250910_6rlks_6alks)
-        # We need to remove the multilook suffix to find the original file
-        # Original file could be: filt_20250813_20250910.int (filtered) or 20250813_20250910.int (unfiltered)
-        import glob
-        import re
-        baseName = inps.lowBandIgramPrefix
-        
-        # Remove the multilook suffix from baseName if present
-        # Pattern: _Xrlks_Yalks where X and Y are numbers
-        ml2_pattern = r'_\d+rlks_\d+alks$'
-        if re.search(ml2_pattern, baseName):
-            # Remove the multilook suffix
-            baseName = re.sub(ml2_pattern, '', baseName)
-            logger.info('Removed multilook suffix from baseName, using: {}'.format(baseName))
-        
-        # First, try to find filtered original interferogram (filt_xxx.int)
-        # This is the first multilook + filtered version (before extra multilooking)
-        pattern_filt = os.path.join(ifgDirname, baseName + '.int')
-        if os.path.exists(pattern_filt + '.xml'):
-            originalIntFile = pattern_filt
-            logger.info('Found original filtered interferogram: {}'.format(originalIntFile))
-        else:
-            # If filtered version doesn't exist, try to find unfiltered original (xxx.int)
-            # Remove 'filt_' prefix if present
-            baseNameUnfilt = baseName
-            if baseNameUnfilt.startswith('filt_'):
-                baseNameUnfilt = baseNameUnfilt[5:]  # Remove 'filt_' prefix
-            pattern_unfilt = os.path.join(ifgDirname, baseNameUnfilt + '.int')
-            if os.path.exists(pattern_unfilt + '.xml'):
-                originalIntFile = pattern_unfilt
-                logger.info('Found original unfiltered interferogram: {}'.format(originalIntFile))
-            else:
-                # Last resort: search all .int files in directory
-                # Look for files that don't have the extra multilook pattern
-                allIntFiles = glob.glob(os.path.join(ifgDirname, '*.int'))
-                ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-                for intFile in allIntFiles:
-                    # Remove .int extension and .xml if present for comparison
-                    intFileBase = os.path.basename(intFile).replace('.int', '').replace('.xml', '')
-                    # Check if this file doesn't have the multilook suffix
-                    # and matches either the filtered or unfiltered base name
-                    if ml2 not in intFileBase:
-                        if baseName in intFileBase or baseNameUnfilt in intFileBase:
-                            originalIntFile = intFile.replace('.xml', '')
-                            logger.info('Found original interferogram (alternative search): {}'.format(originalIntFile))
-                            break
-        
-        # If we found the original interferogram, use its dimensions for resampling
-        if originalIntFile and os.path.exists(originalIntFile + '.xml'):
-            img_orig = isceobj.createImage()
-            img_orig.load(originalIntFile + '.xml')
-            width_orig = img_orig.width
-            length_orig = img_orig.length
-            
-            logger.info('Original interferogram found: {} ({}x{})'.format(originalIntFile, length_orig, width_orig))
-            logger.info('Ionospheric phase current resolution: {}x{}'.format(length_ion, width_ion))
-            
-            # Always resample to match original interferogram dimensions
-            from scipy.interpolate import interp1d
-            
-            logger.info('Resampling ionospheric phase from {}x{} to {}x{} (original interferogram resolution)'.format(
-                width_ion, length_ion, width_orig, length_orig))
-            
-            # Resample dispersive phase
-            ionos_ml = np.fromfile(outDispersive + '.filt', dtype=np.float32).reshape(length_ion, width_ion)
-            
-            # Resample in range direction first
-            index_rg_ml = np.linspace(0, width_ion-1, num=width_ion, endpoint=True)
-            if width_orig != width_ion:
-                index_rg_orig = np.linspace(0, width_orig-1, num=width_orig, endpoint=True) * (width_ion-1)/(width_orig-1) if width_orig > 1 else np.array([0])
-            else:
-                index_rg_orig = index_rg_ml
-            
-            ionos_resampled_rg = np.zeros((length_ion, width_orig), dtype=np.float32)
-            for i in range(length_ion):
-                if width_orig == width_ion:
-                    ionos_resampled_rg[i, :] = ionos_ml[i, :]
-                else:
-                    f = interp1d(index_rg_ml, ionos_ml[i, :], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    ionos_resampled_rg[i, :] = f(index_rg_orig)
-            
-            # Resample in azimuth direction
-            if length_orig != length_ion:
-                index_az_ml = np.linspace(0, length_ion-1, num=length_ion, endpoint=True)
-                index_az_orig = np.linspace(0, length_orig-1, num=length_orig, endpoint=True) * (length_ion-1)/(length_orig-1) if length_orig > 1 else np.array([0])
-                ionos_final = np.zeros((length_orig, width_orig), dtype=np.float32)
-                for j in range(width_orig):
-                    f = interp1d(index_az_ml, ionos_resampled_rg[:, j], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    ionos_final[:, j] = f(index_az_orig)
-            else:
-                ionos_final = ionos_resampled_rg
-            
-            # Save resampled dispersive phase
-            ionos_final.astype(np.float32).tofile(outDispersive + ".filt")
-            write_xml(outDispersive + ".filt", width_orig, length_orig, 1, "FLOAT", "BIL")
-            
-            # Resample non-dispersive phase
-            nonDisp_ml = np.fromfile(outNonDispersive + '.filt', dtype=np.float32).reshape(length_ion, width_ion)
-            
-            nonDisp_resampled_rg = np.zeros((length_ion, width_orig), dtype=np.float32)
-            for i in range(length_ion):
-                if width_orig == width_ion:
-                    nonDisp_resampled_rg[i, :] = nonDisp_ml[i, :]
-                else:
-                    f = interp1d(index_rg_ml, nonDisp_ml[i, :], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    nonDisp_resampled_rg[i, :] = f(index_rg_orig)
-            
-            if length_orig != length_ion:
-                nonDisp_final = np.zeros((length_orig, width_orig), dtype=np.float32)
-                for j in range(width_orig):
-                    f = interp1d(index_az_ml, nonDisp_resampled_rg[:, j], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    nonDisp_final[:, j] = f(index_az_orig)
-            else:
-                nonDisp_final = nonDisp_resampled_rg
-            
-            # Save resampled non-dispersive phase
-            nonDisp_final.astype(np.float32).tofile(outNonDispersive + ".filt")
-            write_xml(outNonDispersive + ".filt", width_orig, length_orig, 1, "FLOAT", "BIL")
-            
-            logger.info('Ionospheric phase resampled from {}x{} to {}x{} (original interferogram resolution)'.format(
-                width_ion, length_ion, width_orig, length_orig))
-            
-            del ionos_ml, ionos_resampled_rg, ionos_final, nonDisp_ml, nonDisp_resampled_rg, nonDisp_final
-        else:
-            # Construct expected pattern for warning message
-            expected_pattern = os.path.join(ifgDirname, baseName + '.int')
-            logger.warning('Original interferogram file not found, cannot resample. Expected file pattern: {}'.format(expected_pattern))
-            logger.warning('Ionospheric phase will remain at extra multilooked resolution: {}x{}'.format(length_ion, width_ion))
 
 
 if __name__ == '__main__':
