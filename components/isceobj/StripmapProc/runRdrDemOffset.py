@@ -442,6 +442,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         from iscesys.StdOEL.StdOELPy import create_writer
         
         field = offsets
+        originalField = offsets  # Keep original for sigma filtering (originalOffsetMap)
         stdWriter = create_writer("log", "", True, filename='off.log')
         
         # Cull offsets using iterative distance sequence (similar to Alos2Proc's fitoff approach)
@@ -492,76 +493,115 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
             if len(rg_list) >= 2 and len(az_list) >= 2:
                 rg_array = np.array(rg_list, dtype=np.float64)
                 az_array = np.array(az_list, dtype=np.float64)
-
-                rg_mean = float(np.mean(rg_array))
-                az_mean = float(np.mean(az_array))
-                rg_std = float(np.std(rg_array))
-                az_std = float(np.std(az_array))
-
-                filtered_offsets_stat = []
-                removedStat = 0
-
-                for offsetx in field:
-                    offsetStr = "{}".format(offsetx)
-                    fields = offsetStr.split()
-                    if len(fields) < 4:
-                        removedStat += 1
-                        continue
-                    try:
-                        rg_off = float(fields[1])
-                        az_off = float(fields[3])
-                    except ValueError:
-                        removedStat += 1
-                        continue
-
-                    drop = False
-                    if offsetNSigmaRange is not None and rg_std > 0.0:
-                        if abs(rg_off - rg_mean) > offsetNSigmaRange * rg_std:
-                            drop = True
-                    if offsetNSigmaAzimuth is not None and az_std > 0.0:
-                        if abs(az_off - az_mean) > offsetNSigmaAzimuth * az_std:
-                            drop = True
-
-                    if drop:
-                        removedStat += 1
-                    else:
-                        filtered_offsets_stat.append(offsetx)
-
-                logger.info(
-                    '{} points left after statistical offset-based culling (removed {} points; '
-                    'range mean = {:.4f}, std = {:.4f}, Nσ = {}; '
-                    'azimuth mean = {:.4f}, std = {:.4f}, Nσ = {}).'.format(
-                        len(filtered_offsets_stat), removedStat,
-                        rg_mean, rg_std, offsetNSigmaRange,
-                        az_mean, az_std, offsetNSigmaAzimuth)
-                )
-
-                field._offsets = filtered_offsets_stat
+                
+                # Iterative MAD filtering (similar to autoRIFT)
+                MadScalar = 4.0  # Similar to autoRIFT's default
+                maxIterations = 5
+                minPointsToKeep = max(3, len(field._offsets) // 10)  # Keep at least 10% or 3 points
+                
+                valid_mask = np.ones(len(field._offsets), dtype=bool)
+                
+                for iteration in range(maxIterations):
+                    # Get current valid points
+                    rg_valid = rg_array[valid_mask]
+                    az_valid = az_array[valid_mask]
+                    
+                    if len(rg_valid) < 3:
+                        break
+                    
+                    # Calculate median and MAD
+                    rg_median = np.median(rg_valid)
+                    az_median = np.median(az_valid)
+                    rg_mad = np.median(np.abs(rg_valid - rg_median))
+                    az_mad = np.median(np.abs(az_valid - az_median))
+                    
+                    # Avoid division by zero
+                    if rg_mad < 1e-10:
+                        rg_mad = np.std(rg_valid) if len(rg_valid) > 1 else 1.0
+                    if az_mad < 1e-10:
+                        az_mad = np.std(az_valid) if len(az_valid) > 1 else 1.0
+                    
+                    # Calculate thresholds
+                    rg_threshold = MadScalar * rg_mad
+                    az_threshold = MadScalar * az_mad
+                    
+                    # Update mask: keep points within threshold
+                    # Format: RgLoc RgOffset AzLoc AzOffset SNR RgCov AzCov CrossCov
+                    new_mask = valid_mask.copy()
+                    for i, offsetx in enumerate(field._offsets):
+                        if not valid_mask[i]:
+                            continue
+                        offsetStr = "{}".format(offsetx)
+                        fields = offsetStr.split()
+                        if len(fields) >= 4:
+                            try:
+                                rg_off = float(fields[1])  # RgOffset (fields[1])
+                                az_off = float(fields[3])  # AzOffset (fields[3])
+                                
+                                if (abs(rg_off - rg_median) > rg_threshold or 
+                                    abs(az_off - az_median) > az_threshold):
+                                    new_mask[i] = False
+                            except (ValueError, IndexError):
+                                new_mask[i] = False
+                        else:
+                            new_mask[i] = False
+                    
+                    removed = np.sum(valid_mask) - np.sum(new_mask)
+                    valid_mask = new_mask
+                    
+                    logger.info('MAD iteration {}: {} points valid, removed {} outliers (rg_mad={:.3f}, az_mad={:.3f})'.format(
+                        iteration + 1, np.sum(valid_mask), removed, rg_mad, az_mad))
+                    
+                    # Stop if no points removed or too few points remaining
+                    if removed == 0 or np.sum(valid_mask) < minPointsToKeep:
+                        break
+                
+                # Apply mask to field
+                mad_filtered_offsets = [field._offsets[i] for i in range(len(field._offsets)) if valid_mask[i]]
+                field._offsets = mad_filtered_offsets
+                logger.info('After MAD-based filtering: {} points left'.format(len(field._offsets)))
             else:
-                logger.info('Not enough points for statistical offset-based culling ({} points). '
-                            'Skipping this step.'.format(len(field._offsets)))
+                logger.info('Not enough points for MAD filtering ({} points), skipping'.format(len(field._offsets)))
+        
+        # Step 3: Sigma filtering with adaptive threshold (after MAD to refine based on matching uncertainty)
+        # This is based on per-point matching uncertainty, independent of offset values
+        logger.info('Points before sigma culling: {}'.format(len(field._offsets)))
+        
+        # Adaptive sigma threshold: stricter if we have many points, more lenient if few
+        if len(field._offsets) >= 20:
+            sigmaThresholdRange = 0.01   # Standard threshold
+            sigmaThresholdAzimuth = 10
+        elif len(field._offsets) >= 10:
+            sigmaThresholdRange = 0.05   # More lenient
+            sigmaThresholdAzimuth = 20
+        else:
+            sigmaThresholdRange = 0.1    # Very lenient to preserve points
+            sigmaThresholdAzimuth = 30
+            logger.warning('Few points remaining, using lenient sigma threshold: range={:.4f}, azimuth={:.4f}'.format(
+                sigmaThresholdRange, sigmaThresholdAzimuth))
+        
+        # Build a lookup table from original offsets using (range line, range sample) as key
+        originalOffsetMap = {}
+        for offsetx in originalField:
+            offsetStr = "{}".format(offsetx)
+            fields = offsetStr.split()
+            if len(fields) >= 8:
+                ref_line = int(float(fields[0]))
+                ref_sample = float(fields[1])
+                originalOffsetMap[(ref_line, ref_sample)] = fields
 
-        # Optionally apply an additional culling based on per-point standard deviation / covariance.
-        # We use the covariance terms stored in the original offset field (from ampcor),
-        # and keep only the points whose uncertainties are below the specified thresholds.
-        if (sigmaThresholdRange is not None) or (sigmaThresholdAzimuth is not None):
-            # Build a lookup table from original offsets using (range line, range sample) as key
-            originalOffsetMap = {}
-            for offsetx in offsets:
-                offsetStr = "{}".format(offsetx)
-                fields = offsetStr.split()
-                if len(fields) >= 8:
-                    ref_line = int(float(fields[0]))
-                    ref_sample = float(fields[1])
-                    originalOffsetMap[(ref_line, ref_sample)] = fields
-
-            filtered_offsets = []
-            removedSigma = 0
+        sigma_filtered_offsets = []
+        removedSigma = 0
+        
+        # Only perform sigma filtering if we have enough points
+        if len(field._offsets) < 3:
+            logger.info('Too few points for sigma culling, skipping')
+            sigma_filtered_offsets = field._offsets
+        else:
             for offsetx in field:
                 offsetStr = "{}".format(offsetx)
                 fields = offsetStr.split()
                 if len(fields) < 4:
-                    # Malformed entry, skip it
                     removedSigma += 1
                     continue
 
@@ -571,7 +611,6 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
 
                 orig_fields = originalOffsetMap.get(key, None)
                 if (orig_fields is None) or (len(orig_fields) < 8):
-                    # Cannot recover covariance info for this point, drop it
                     removedSigma += 1
                     continue
 
@@ -585,15 +624,50 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
                     removedSigma += 1
                     continue
 
-                filtered_offsets.append(offsetx)
-
-            logger.info('{} points left after sigma-based culling (removed {} points with large covariance; '
-                        'range threshold = {}, azimuth threshold = {})'.format(
-                            len(filtered_offsets), removedSigma,
-                            sigmaThresholdRange, sigmaThresholdAzimuth))
-
-            # Replace the internal list of offsets with the sigma-filtered subset
-            field._offsets = filtered_offsets
+                sigma_filtered_offsets.append(offsetx)
+            
+            logger.info('After sigma culling (threshold range={:.4f}, azimuth={:.4f}): {} points left (removed {})'.format(
+                sigmaThresholdRange, sigmaThresholdAzimuth, len(sigma_filtered_offsets), removedSigma))
+            
+            # If too many points removed AND remaining points are insufficient, relax threshold and retry
+            # Only use relaxed threshold if we have very few points left (< 50) after strict filtering
+            if (len(sigma_filtered_offsets) < len(field._offsets) * 0.3 and 
+                len(field._offsets) >= 5 and 
+                len(sigma_filtered_offsets) < 50):
+                logger.info('Too many points removed and insufficient points remaining ({} < 50), retrying with relaxed threshold'.format(
+                    len(sigma_filtered_offsets)))
+                relaxed_threshold_range = sigmaThresholdRange * 10.0
+                relaxed_threshold_azimuth = sigmaThresholdAzimuth * 10.0
+                sigma_filtered_offsets = []
+                removedSigma = 0
+                for offsetx in field:
+                    offsetStr = "{}".format(offsetx)
+                    fields = offsetStr.split()
+                    if len(fields) < 4:
+                        removedSigma += 1
+                        continue
+                    ref_line = int(float(fields[0]))
+                    ref_sample = float(fields[1])
+                    key = (ref_line, ref_sample)
+                    orig_fields = originalOffsetMap.get(key, None)
+                    if (orig_fields is None) or (len(orig_fields) < 8):
+                        removedSigma += 1
+                        continue
+                    cov_range = float(orig_fields[5])
+                    cov_azimuth = float(orig_fields[6])
+                    if ((relaxed_threshold_range is not None and abs(cov_range) > relaxed_threshold_range) or
+                        (relaxed_threshold_azimuth is not None and abs(cov_azimuth) > relaxed_threshold_azimuth)):
+                        removedSigma += 1
+                        continue
+                    sigma_filtered_offsets.append(offsetx)
+                
+                logger.info('After relaxed sigma culling (threshold range={:.4f}, azimuth={:.4f}): {} points left'.format(
+                    relaxed_threshold_range, relaxed_threshold_azimuth, len(sigma_filtered_offsets)))
+            elif len(sigma_filtered_offsets) >= 50:
+                logger.info('Sufficient points remaining ({} >= 50), keeping strict threshold results'.format(
+                    len(sigma_filtered_offsets)))
+        
+        field._offsets = sigma_filtered_offsets
 
         # Save culled offsets to a new .off file
         # Note: getRefinedOffsetField() may lose some fields (SNR, Corr, AzOffset)
