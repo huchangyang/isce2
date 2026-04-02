@@ -14,6 +14,32 @@ import numpy as np
 
 logger = logging.getLogger('isce.insar.runDispersive')
 
+DEFAULT_IONO_COHERENCE_THRESHOLD = 0.75
+
+def resolve_coherence_path(cor_path):
+    """
+    Return path to an existing coherence product (.cor + .xml), handling
+    filt_ vs non-filt_ naming differences.
+    """
+    if not cor_path:
+        return cor_path
+    if os.path.exists(cor_path + '.xml'):
+        return cor_path
+    directory, fname = os.path.split(cor_path)
+    if not fname.endswith('.cor'):
+        return cor_path
+    stem = fname[:-4]
+    candidates = []
+    if stem.startswith('filt_'):
+        candidates.append(os.path.join(directory, stem[5:] + '.cor'))
+    else:
+        candidates.append(os.path.join(directory, 'filt_' + stem + '.cor'))
+    for candidate in candidates:
+        if os.path.exists(candidate + '.xml'):
+            logger.info('Resolved coherence file: {} -> {}'.format(cor_path, candidate))
+            return candidate
+    return cor_path
+
 def getValue(dataFile, band, y_ref, x_ref):
     ds = gdal.Open(dataFile, gdal.GA_ReadOnly)
     length = ds.RasterYSize
@@ -634,9 +660,9 @@ def getMask(self, maskFile,std_iono, lowBandIgram=None, highBandIgram=None):
         numberAzimuthLooksIon = getattr(self.insar, 'numberAzimuthLooksIon', None)
     
     if numberRangeLooksIon is None:
-        numberRangeLooksIon = getattr(self, 'numberRangeLooks', 1)
+        numberRangeLooksIon = getattr(self, 'numberRangeLooks', 16)
     if numberAzimuthLooksIon is None:
-        numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooks', 1)
+        numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooks', 16)
     
     # Determine looks used for multilooking
     referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
@@ -694,9 +720,13 @@ def getMask(self, maskFile,std_iono, lowBandIgram=None, highBandIgram=None):
     ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
     highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
 
-    if (self.dispersive_filter_mask_type == "coherence") and (not self.dispersive_filter_mask_type == "median_filter"):
-        print ('generating a mask based on coherence files of sub-band interferograms with a threshold of {0}'.format(self.dispersive_filter_coherence_threshold))
-        cmd = 'imageMath.py -e="(a>{0})*(b>{0})" --a={1} --b={2} -t byte -s BIL -o {3}'.format(self.dispersive_filter_coherence_threshold, lowBandCor, highBandCor, maskFile)
+    lowBandCor = resolve_coherence_path(lowBandCor)
+    highBandCor = resolve_coherence_path(highBandCor)
+    threshold = getattr(self, 'dispersive_filter_coherence_threshold', DEFAULT_IONO_COHERENCE_THRESHOLD)
+
+    if self.dispersive_filter_mask_type == "coherence":
+        print ('generating a mask based on coherence files of sub-band interferograms with a threshold of {0}'.format(threshold))
+        cmd = 'imageMath.py -e="(a>{0})*(b>{0})" --a={1} --b={2} -t byte -s BIL -o {3}'.format(threshold, lowBandCor, highBandCor, maskFile)
         ret = os.system(cmd)
         if ret != 0:
             raise RuntimeError('Failed to generate mask file using coherence files. Command: {}'.format(cmd))
@@ -881,9 +911,9 @@ def runDispersive(self):
         numberAzimuthLooksIon = getattr(self.insar, 'numberAzimuthLooksIon', None)
     
     if numberRangeLooksIon is None:
-        numberRangeLooksIon = getattr(self, 'numberRangeLooks', 1)
+        numberRangeLooksIon = getattr(self, 'numberRangeLooks', 16)
     if numberAzimuthLooksIon is None:
-        numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooks', 1)
+        numberAzimuthLooksIon = getattr(self, 'numberAzimuthLooks', 16)
     
     # Determine looks used for multilooking
     referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
@@ -982,7 +1012,7 @@ def runDispersive(self):
     # Correct unwrapping errors before computing ionosphere (similar to Alos2Proc)
     logger.info('Correcting unwrapping errors before computing ionosphere')
     adjFlag = getattr(self, 'adjFlagIon', 1)  # Default: polynomial adjustment
-    corThresholdAdj = getattr(self, 'corThresholdAdjIon', 0.97)
+    corThresholdAdj = getattr(self, 'corThresholdAdjIon', 0.90)
     corOrderAdj = getattr(self, 'corOrderAdjIon', 20)
     
     # Read unwrapped interferograms
@@ -1008,6 +1038,8 @@ def runDispersive(self):
             lowBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
             ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
             highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
+            lowBandCor = resolve_coherence_path(lowBandCor)
+            highBandCor = resolve_coherence_path(highBandCor)
             
             if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
                 try:
@@ -1239,8 +1271,7 @@ def runDispersive(self):
     theoretical_variance_fromSubBands(self, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks) 
     
     # Use adaptive Gaussian filtering if explicitly requested, otherwise use original iterative filtering
-    useAdaptiveFilter = getattr(self, 'useAdaptiveGaussianFilter', False)
-    useAdaptiveFilter = True
+    useAdaptiveFilter = getattr(self, 'useAdaptiveGaussianFilter', True)
     if useAdaptiveFilter:
         # Use adaptive Gaussian filtering (similar to Alos2Proc)
         logger.info('Using adaptive Gaussian filtering for ionospheric phase')
@@ -1274,7 +1305,7 @@ def runDispersive(self):
         filtSecondary = getattr(self, 'filtSecondaryIon', True)
         fitIon = getattr(self, 'fitIon', True)
         filtIon = getattr(self, 'filtIon', True)
-        corThresholdFit = getattr(self, 'fitIonCoherenceThreshold', 0.25)
+        corThresholdFit = getattr(self, 'fitIonCoherenceThreshold', 0.75)
         
         # Check that at least one of fit or filt is enabled
         if (not fitIon) and (not filtIon):
@@ -1382,8 +1413,9 @@ def runDispersive(self):
         
         # Combine fit and filt results (ALOS-style)
         if fitIon and filtIon:
-            # Combine: filtered residual + polynomial fit
-            ionos_final = ionos_filt + ionos_fit * (ionos_filt!=0)
+            # Combine filtered residual and polynomial fit everywhere.
+            # This fills masked-out regions with the fitted surface by default.
+            ionos_final = ionos_filt + ionos_fit
         elif fitIon and not filtIon:
             # If only fit is enabled, use the polynomial fit surface
             ionos_final = ionos_fit
@@ -1482,7 +1514,9 @@ def runDispersive(self):
         
         # Combine fit and filt results for non-dispersive phase
         if fitIon and filtIon:
-            nonDisp_final = nonDisp_filt + nonDisp_fit * (nonDisp_filt!=0)
+            # Keep behavior consistent with dispersive branch:
+            # fill masked-out regions with fitted surface by default.
+            nonDisp_final = nonDisp_filt + nonDisp_fit
         elif fitIon and not filtIon:
             nonDisp_final = nonDisp_fit
         elif not fitIon and filtIon:
@@ -1514,13 +1548,13 @@ def runDispersive(self):
                     iteration = self.dispersive_filter_iterations, 
                     theta = self.kernel_rotation)
 
-    # low pass filtering the  non-dispersive phase
-    lowPassFilter(self,outNonDispersive, sigmaNonDispersive, maskFile, 
-                    self.kernel_x_size, self.kernel_y_size,
-                    self.kernel_sigma_x, self.kernel_sigma_y,
-                    iteration = self.dispersive_filter_iterations,
-                    theta = self.kernel_rotation)
-            
+        # low pass filtering the non-dispersive phase
+        lowPassFilter(self,outNonDispersive, sigmaNonDispersive, maskFile, 
+                        self.kernel_x_size, self.kernel_y_size,
+                        self.kernel_sigma_x, self.kernel_sigma_y,
+                        iteration = self.dispersive_filter_iterations,
+                        theta = self.kernel_rotation)
+
     # Iterative unwrapping error correction (optional, since we already corrected before computation)
     # This step estimates errors from filtered results and re-computes
     doIterativeUnwCorrection = getattr(self, 'doIterativeUnwCorrection', False)

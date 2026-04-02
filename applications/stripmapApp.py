@@ -231,7 +231,7 @@ NUMBER_AZIMUTH_LOOKS = Application.Parameter(
 NUMBER_RANGE_LOOKS_ION = Application.Parameter(
     'numberRangeLooksIon',
     public_name='number of range looks ion',
-    default=None,
+    default=16,
     type=int,
     mandatory=False,
     doc='Number of additional range looks for ionospheric estimation'
@@ -240,7 +240,7 @@ NUMBER_RANGE_LOOKS_ION = Application.Parameter(
 NUMBER_AZIMUTH_LOOKS_ION = Application.Parameter(
     'numberAzimuthLooksIon',
     public_name='number of azimuth looks ion',
-    default=None,
+    default=16,
     type=int,
     mandatory=False,
     doc='Number of additional azimuth looks for ionospheric estimation'

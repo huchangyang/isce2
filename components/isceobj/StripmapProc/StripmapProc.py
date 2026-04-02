@@ -384,14 +384,14 @@ NONDISPERSIVE_FILENAME = Component.Parameter('nondispersiveFilename',
 
 NUMBER_RANGE_LOOKS_ION = Component.Parameter('numberRangeLooksIon',
                                 public_name='number of range looks ion',
-                                default=None,
+                                default=16,
                                 type=int,
                                 mandatory=False,
                                 doc="number of additional range looks for ionospheric estimation (multilooked after regular multilooking)")
 
 NUMBER_AZIMUTH_LOOKS_ION = Component.Parameter('numberAzimuthLooksIon',
                                 public_name='number of azimuth looks ion',
-                                default=None,
+                                default=16,
                                 type=int,
                                 mandatory=False,
                                 doc="number of additional azimuth looks for ionospheric estimation (multilooked after regular multilooking)")

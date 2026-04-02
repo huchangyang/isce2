@@ -698,7 +698,7 @@ class run(object):
             # Determine input interferogram for FilterAndCoherence
             # For full-band interferograms: filter before additional multilooking
             # For sub-band interferograms (HighBand/LowBand): filter after additional multilooking
-            # (because dispersive_nonDispersive expects filt_*_*rlks_*alks files)
+            # (LowBand/HighBand: no filt_; see _fs_eff below)
             if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
                 ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
                 # Check if this is a sub-band (HighBand or LowBand) processing
@@ -714,25 +714,35 @@ class run(object):
             
             # Determine output filenames for filtered interferogram and coherence
             # For full-band: filter output should NOT have ml2 suffix (filtering is before additional multilooking)
-            # For sub-bands: filter output should have ml2 suffix (filtering is after additional multilooking)
-            if float(configObj.filtStrength) > 0.:
-                if low_or_high in ['/LowBand/', '/HighBand/']:
-                    # Sub-bands: use ml2 suffix (filtering is after additional multilooking)
-                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.int'
-                    configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
-                else:
-                    # Full-band: no ml2 suffix (filtering is before additional multilooking)
-                    configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
-                    configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
+            # For sub-bands: filter output should have ml2 suffix (multilook happens before this step)
+            # LowBand/HighBand: no Goldstein filter — always plain names (date_date[_ml].int/.cor) so iono
+            # configs match products even when full-band filtStrength > 0; ion configs are generated up front.
+            try:
+                _fs = float(configObj.filtStrength)
+            except (TypeError, ValueError):
+                _fs = float(filtStrength)
+            if low_or_high in ['/LowBand/', '/HighBand/']:
+                _fs_eff = 0.0
             else:
-                # do not add prefix filt_ to output file if no filtering is applied.
+                _fs_eff = _fs
+
+            if _fs_eff > 0.:
+                # Full-band only (_fs_eff is 0 for LowBand/HighBand)
+                configObj.filtIgram = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.int'
+                configObj.coherence = os.path.dirname(configObj.outDir) + '/filt_' + pair[0] + '_'  + pair[1] + '.cor'
+            else:
                 if low_or_high in ['/LowBand/', '/HighBand/']:
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + ml2 + '.cor'
                 else:
                     configObj.filtIgram = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.int'
                     configObj.coherence = os.path.dirname(configObj.outDir) + '/' + pair[0] + '_'  + pair[1] + '.cor'
+
+            _saved_filt_strength = configObj.filtStrength
+            if low_or_high in ['/LowBand/', '/HighBand/']:
+                configObj.filtStrength = '0'
             configObj.filterCoherence('[Function-2]')
+            configObj.filtStrength = _saved_filt_strength
 
             # skip phase unwrapping if input method == no
             if self.unwMethod.lower() != 'no':
@@ -772,36 +782,20 @@ class run(object):
                 except (ValueError, TypeError):
                     numberAzimuthLooksIon = 16  # fallback to default
             
-            # Determine file suffixes based on additional multilooking
+            # LowBand/HighBand: no filt_ in filenames (matches igrams_network sub-band branch). Written before products exist.
             if numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1:
                 ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-                # Use multilooked files: filt_*_*rlks_*alks_snaphu.unw
-                configObj.lowBandIgram  = os.path.join(self.workDir,
-                                                       'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                       'filt_' + pair[0] + '_'  + pair[1] + ml2)
-                configObj.highBandIgram = os.path.join(self.workDir,
-                                                       'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                       'filt_' + pair[0] + '_'  + pair[1] + ml2)
-                configObj.lowBandCor  = os.path.join(self.workDir,
-                                                     'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                     'filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor')
-                configObj.highBandCor = os.path.join(self.workDir,
-                                                     'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                     'filt_' + pair[0] + '_'  + pair[1] + ml2 + '.cor')
+                stem = pair[0] + '_' + pair[1] + ml2
+                configObj.lowBandIgram  = os.path.join(self.workDir, 'Igrams' + lowBand + pair[0] + '_' + pair[1], stem)
+                configObj.highBandIgram = os.path.join(self.workDir, 'Igrams' + highBand + pair[0] + '_' + pair[1], stem)
+                configObj.lowBandCor  = os.path.join(self.workDir, 'Igrams' + lowBand + pair[0] + '_' + pair[1], stem + '.cor')
+                configObj.highBandCor = os.path.join(self.workDir, 'Igrams' + highBand + pair[0] + '_' + pair[1], stem + '.cor')
             else:
-                # Use regular files (no additional multilooking)
-                configObj.lowBandIgram  = os.path.join(self.workDir,
-                                                       'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                       'filt_' + pair[0] + '_'  + pair[1])
-                configObj.highBandIgram = os.path.join(self.workDir,
-                                                       'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                       'filt_' + pair[0] + '_'  + pair[1])
-                configObj.lowBandCor  = os.path.join(self.workDir,
-                                                     'Igrams' + lowBand + pair[0] + '_'  + pair[1],
-                                                     'filt_' + pair[0] + '_'  + pair[1] + '.cor')
-                configObj.highBandCor = os.path.join(self.workDir,
-                                                     'Igrams' + highBand + pair[0] + '_'  + pair[1],
-                                                     'filt_' + pair[0] + '_'  + pair[1] + '.cor')
+                stem = pair[0] + '_' + pair[1]
+                configObj.lowBandIgram  = os.path.join(self.workDir, 'Igrams' + lowBand + pair[0] + '_' + pair[1], stem)
+                configObj.highBandIgram = os.path.join(self.workDir, 'Igrams' + highBand + pair[0] + '_' + pair[1], stem)
+                configObj.lowBandCor  = os.path.join(self.workDir, 'Igrams' + lowBand + pair[0] + '_' + pair[1], stem + '.cor')
+                configObj.highBandCor = os.path.join(self.workDir, 'Igrams' + highBand + pair[0] + '_' + pair[1], stem + '.cor')
 
             configObj.lowBandShelve = os.path.join(self.slcDir,pair[0] + lowBand  + 'data') 
             configObj.highBandShelve = os.path.join(self.slcDir,pair[0] + highBand  + 'data')   
@@ -885,6 +879,30 @@ def baselineStack(inps,stackReference,acqDates,doBaselines=True):
             timeDict[stackReference] = datetime.timedelta(0.0)
 
     return baselineDict, timeDict
+
+
+def filterIonoPairsByTemporalNeighbor(pairs, acquisitionDates, neighbor_conn):
+    """
+    Restrict ionosphere estimation to pairs whose two acquisitions are separated
+    by at most neighbor_conn positions in acquisitionDates (same sort order as
+    selectPairs). Pairs must already be (earlier_date, later_date) as produced
+    by selectPairs.
+
+    neighbor_conn <= 0: no filtering (use all pairs).
+    neighbor_conn >= 1: keep pair only if index_later - index_earlier <= neighbor_conn.
+    """
+    if neighbor_conn is None or neighbor_conn <= 0:
+        return list(pairs)
+    idx = {d: k for k, d in enumerate(acquisitionDates)}
+    out = []
+    for a, b in pairs:
+        ia, ib = idx[a], idx[b]
+        if ia > ib:
+            ia, ib = ib, ia
+        if ib - ia <= neighbor_conn:
+            out.append((a, b))
+    return out
+
 
 def selectPairs(inps,stackReference, secondaryDates, acuisitionDates,doBaselines=True):
 

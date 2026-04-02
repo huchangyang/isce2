@@ -77,19 +77,32 @@ def runRdrDemOffset(self):
 
 def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, skipTopoUpdate=False):
     '''Core function to estimate radar-DEM offsets
-    
+
+    stripmapStack/contrib/stack/stripmapStack/rdrDemOffset.py calls this function so that
+    stack and stripmapApp share the same ampcor settings and culling (offoutliers, MAD, sigma).
+
     Args:
-        skipTopoUpdate: If True, skip calling updateTopoWithOffset (for stripmapStack, 
+        skipTopoUpdate: If True, skip calling updateTopoWithOffset (for stripmapStack,
                        where topo will be re-run separately)
     '''
     # Get geometry directory (absolute path)
     geometryDir = os.path.abspath(self.insar.geometryDirname)
-    # DEM pixel size (assumed to be 30m for simplicity)
-    # For simplicity, we assume all DEMs have 30m resolution
-    # This is a common resolution for DEMs like SRTM, ASTER GDEM, etc.
-    demDeltaLon = 20.0  # DEM pixel size in range direction (meters)
-    demDeltaLat = 20.0  # DEM pixel size in azimuth direction (meters)
-    logger.info('DEM pixel size (assumed): {:.2f} m (range), {:.2f} m (azimuth)'.format(demDeltaLon, demDeltaLat))
+    # DEM ground spacing in meters — same formula as Alos2Proc/runRdrDemOffset.py when possible
+    demDeltaLon = 30.0
+    demDeltaLat = 30.0
+    try:
+        demFilename = self.verifyDEM()
+        if demFilename and os.path.exists(demFilename + '.xml'):
+            demImage = isceobj.createDemImage()
+            demImage.load(demFilename + '.xml')
+            demDeltaLon = abs(demImage.getDeltaLongitude()) / 0.0002777777777777778 * 30.0
+            demDeltaLat = abs(demImage.getDeltaLatitude()) / 0.0002777777777777778 * 30.0
+            logger.info('DEM pixel size from DEM XML: {:.2f} m (range), {:.2f} m (azimuth)'.format(
+                demDeltaLon, demDeltaLat))
+        else:
+            logger.warning('DEM XML not found for verifyDEM() path, using defaults {:.1f} m'.format(demDeltaLon))
+    except Exception as e:
+        logger.warning('Could not read DEM spacing ({}), using defaults {:.1f} m'.format(e, demDeltaLon))
     
     # Get SAR pixel sizes and first-level looks
     rangePixelSize = referenceInfo.getInstrument().getRangePixelSize()  # Range pixel size in meters
@@ -134,6 +147,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         azimuthLooks = max(1, int(demDeltaLat / azimuthPixelSize + 0.5))
         logger.info('Calculated azimuth looks: {} (SAR: {:.2f} m, DEM: {:.2f} m)'.format(
             azimuthLooks, azimuthPixelSize, demDeltaLat))
+    # Fixed multilook for ampcor (overrides resolution-based estimate above)
     rangeLooks = 3
     azimuthLooks = 3
     logger.info('Selected multilook parameters: {} range looks, {} azimuth looks'.format(

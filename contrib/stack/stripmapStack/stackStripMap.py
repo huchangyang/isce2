@@ -18,7 +18,7 @@ mpl_logger.setLevel(logging.WARNING)
 import isce
 import isceobj
 from mroipac.baseline.Baseline import Baseline
-from stripmapStack.Stack import config, run, selectPairs
+from stripmapStack.Stack import config, run, selectPairs, filterIonoPairsByTemporalNeighbor
 
 
 filtStrength = '0.8'
@@ -92,6 +92,12 @@ def createParser():
             help='Additional range looks for ionosphere estimation (default: 16)')
     iono.add_argument('--number_azimuth_looks_ion', dest='numberAzimuthLooksIon', type=str, default='16',
             help='Additional azimuth looks for ionosphere estimation (default: 16)')
+
+    iono.add_argument('--iono_neighbor_connections', dest='ionoNeighborConnections', type=int, default=4,
+            help='For ionosphere workflow only: max temporal index span between the two dates '
+                 'in the sorted acquisition list (same order as network pairs). '
+                 'Only these pairs get config_iono_* and estimateIono. Default: 4. '
+                 'Use 0 for no limit (all pairs from -t/-b).')
 
     parser.add_argument('-W', '--workflow', dest='workflow', type=str, default='slc',
             help='The InSAR processing workflow : (slc, interferogram, ionosphere)')
@@ -302,13 +308,20 @@ def interferogramIonoStack(inps, acquisitionDates, stackReferenceDate, secondary
     runObj.igrams_network(pairs, acquisitionDates, stackReferenceDate, low_or_high, config_prefix)
     runObj.finalize()
 
+    iono_pairs = filterIonoPairsByTemporalNeighbor(
+            pairs, acquisitionDates, inps.ionoNeighborConnections)
+    print('number of pairs for ionosphere estimation: ', len(iono_pairs),
+          '(iono_neighbor_connections={})'.format(inps.ionoNeighborConnections))
+    if len(iono_pairs) == 0:
+        print('WARNING: no pairs left for ionosphere estimation; widen --iono_neighbor_connections or use 0 for no limit.')
+
     i+=1
     runObj = run()
     runObj.configure(inps, 'run_{:02d}_iono'.format(i))
     config_prefix = 'config_iono_'
     lowBand = '/LowBand/'
     highBand = '/HighBand/'
-    runObj.dispersive_nonDispersive(pairs, acquisitionDates, stackReferenceDate, lowBand, highBand, config_prefix)
+    runObj.dispersive_nonDispersive(iono_pairs, acquisitionDates, stackReferenceDate, lowBand, highBand, config_prefix)
     runObj.finalize()
     return
 
