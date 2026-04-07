@@ -9,12 +9,35 @@ import argparse
 import shutil
 import tarfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from uncompressFile import uncompressfile
 import xml.etree.ElementTree as ET
 
 EXAMPLE = """example:
   prepSlcLT1.py -i download -o SLC --orbit orbits
 """
+
+
+def _process_archive_file(fname, rmfile):
+    """Uncompress one archive and move/remove original file."""
+    workdir = os.path.dirname(fname)
+    dir_unzip = os.path.join(workdir, get_LT1_name(fname))
+
+    successflag_unzip = uncompressfile(fname, dir_unzip)
+    if not successflag_unzip:
+        dir_failed = os.path.join(workdir, 'FAILED_FILES')
+        os.makedirs(dir_failed, exist_ok=True)
+        shutil.move(fname, os.path.join(dir_failed, os.path.basename(fname)))
+        return False, fname, dir_failed
+
+    if rmfile:
+        os.remove(fname)
+        return True, fname, None
+
+    dir_archive = os.path.join(workdir, 'ARCHIVED_FILES')
+    os.makedirs(dir_archive, exist_ok=True)
+    shutil.move(fname, os.path.join(dir_archive, os.path.basename(fname)))
+    return True, fname, dir_archive
 
 def createParser():
     '''
@@ -41,6 +64,9 @@ def createParser():
     
     parser.add_argument('--orbit', dest='orbitDir', type=str, default=None, required=False,
                         help='Optional: directory with the precise orbit files for LT1 SLC (default: %(default)s).')
+    parser.add_argument('--workers', dest='workers', type=int, default=0, required=False,
+                        help='number of parallel workers for archive uncompressing, '
+                             '0 means auto by CPU count (default: %(default)s).')
     
     return parser
 
@@ -152,62 +178,54 @@ def main(iargs=None):
     # filename of the runfile
     run_unPack = 'run_unPackLT1'
 
-    # loop over the different folder of LT1 zip/tar files and unzip them, make the names consistent
-    file_exts = (os.path.join(inps.inputDir, '*.zip'),
-                 os.path.join(inps.inputDir, '*.tar'),
-                 os.path.join(inps.inputDir, '*.gz'))
-    for file_ext in file_exts:
-        # loop over zip/tar files
-        for fname in sorted(glob.glob(file_ext)):
-            ## the path to the folder/zip
-            workdir = os.path.dirname(fname)
-
-            ## get the output name folder without any extensions
-            dir_unzip = get_LT1_name(fname)
-            dir_unzip = os.path.join(workdir, dir_unzip)
-
-            # loop over two cases (either file or folder): 
-            # if this is a file, try to unzip/untar it
-            if os.path.isfile(fname):
-                # unzip the file in the outfolder
-                successflag_unzip = uncompressfile(fname, dir_unzip)
-
-                # put failed files in a seperate directory
-                if not successflag_unzip:
-                    dir_failed = os.path.join(workdir,'FAILED_FILES')
-                    os.makedirs(dir_failed, exist_ok=True)
-                    cmd = 'mv {} {}'.format(fname, dir_failed)
-                    os.system(cmd)
-                else:
-                    # check if file needs to be removed or put in archive folder
-                    if inps.rmfile:
-                        os.remove(fname)
+    # Gather all archive files and process them in parallel.
+    archive_patterns = ('*.zip', '*.tar', '*.gz')
+    archive_files = sorted({
+        archive
+        for pattern in archive_patterns
+        for archive in glob.glob(os.path.join(inps.inputDir, pattern))
+        if os.path.isfile(archive)
+    })
+    if archive_files:
+        auto_workers = max(1, (os.cpu_count() or 1))
+        requested_workers = inps.workers if inps.workers and inps.workers > 0 else auto_workers
+        n_workers = min(len(archive_files), requested_workers)
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(_process_archive_file, fname, inps.rmfile): fname
+                for fname in archive_files
+            }
+            for future in as_completed(futures):
+                try:
+                    successflag_unzip, fname, dest_dir = future.result()
+                    if not successflag_unzip:
+                        print(f'Failed to uncompress: {fname}. Moved to {dest_dir}')
+                    elif inps.rmfile:
                         print('Deleting: ' + fname)
                     else:
-                        dir_archive = os.path.join(workdir,'ARCHIVED_FILES')
-                        os.makedirs(dir_archive, exist_ok=True)
-                        cmd = 'mv {} {}'.format(fname, dir_archive)
-                        os.system(cmd)
+                        print(f'Archived: {fname} -> {dest_dir}')
+                except Exception as err:
+                    fname = futures[future]
+                    print(f'Error processing archive {fname}: {err}')
 
-
-        # loop over the different LT1 folders and make sure the folder names are consistent.
-        # this step is not needed unless the user has manually unzipped data before.
-        LT1_folders = glob.glob(os.path.join(inps.inputDir, 'LT1*'))
-        for LT1_folder in LT1_folders:
-            # in case the user has already unzipped some files
-            # make sure they are unzipped similar like the uncompressfile code
-            temp = os.path.basename(LT1_folder)
-            parts = temp.split(".")
-            parts = parts[0].split('-')
-            LT1_outfolder_temp = parts[0]
-            LT1_outfolder_temp = os.path.join(os.path.dirname(LT1_folder),LT1_outfolder_temp)
-            # check if the folder (LT1_folder) has a different filename as generated from uncompressFile (LT1_outfolder_temp)
-            if not (LT1_outfolder_temp == LT1_folder):
-                # it is different, check if the LT1_outfolder_temp already exists, if yes, delete the current folder
-                if os.path.isdir(LT1_outfolder_temp):
-                    print('Remove ' + LT1_folder + ' as ' + LT1_outfolder_temp + ' exists...')
-                    # check if this folder already exist, if so overwrite it
-                    shutil.rmtree(LT1_folder)
+    # loop over the different LT1 folders and make sure the folder names are consistent.
+    # this step is not needed unless the user has manually unzipped data before.
+    LT1_folders = glob.glob(os.path.join(inps.inputDir, 'LT1*'))
+    for LT1_folder in LT1_folders:
+        # in case the user has already unzipped some files
+        # make sure they are unzipped similar like the uncompressfile code
+        temp = os.path.basename(LT1_folder)
+        parts = temp.split(".")
+        parts = parts[0].split('-')
+        LT1_outfolder_temp = parts[0]
+        LT1_outfolder_temp = os.path.join(os.path.dirname(LT1_folder),LT1_outfolder_temp)
+        # check if the folder (LT1_folder) has a different filename as generated from uncompressFile (LT1_outfolder_temp)
+        if not (LT1_outfolder_temp == LT1_folder):
+            # it is different, check if the LT1_outfolder_temp already exists, if yes, delete the current folder
+            if os.path.isdir(LT1_outfolder_temp):
+                print('Remove ' + LT1_folder + ' as ' + LT1_outfolder_temp + ' exists...')
+                # check if this folder already exist, if so overwrite it
+                shutil.rmtree(LT1_folder)
 
 
     # loop over the different LT1 folders and organize in date folders

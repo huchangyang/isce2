@@ -214,8 +214,8 @@ def createParser():
     parser.add_argument('-r', '--ref', dest='ref', type=str, default=None, help='refernce pixel : row, column')
 
     # Adaptive Gaussian filtering parameters (matching StripmapProc defaults)
-    parser.add_argument('--filtering_winsize_max_ion', dest='filteringWinsizeMaxIon', type=int, default=251,
-            help='maximum window size for adaptive Gaussian filtering (default=251)')
+    parser.add_argument('--filtering_winsize_max_ion', dest='filteringWinsizeMaxIon', type=int, default=501,
+            help='maximum window size for adaptive Gaussian filtering (default=501)')
     parser.add_argument('--filtering_winsize_min_ion', dest='filteringWinsizeMinIon', type=int, default=51,
             help='minimum window size for adaptive Gaussian filtering (default=51)')
     parser.add_argument('--filtering_winsize_secondary_ion', dest='filteringWinsizeSecondaryIon', type=int, default=5,
@@ -1533,7 +1533,7 @@ def main(iargs=None):
         apply_alos_style_dual_band_invalid(ionos, std, cor_low_ion, cor_high_ion)
         
         # Get filtering parameters (defaults match StripmapProc/alosStack.xml)
-        size_max = getattr(inps, 'filteringWinsizeMaxIon', 251)
+        size_max = getattr(inps, 'filteringWinsizeMaxIon', 501)
         size_min = getattr(inps, 'filteringWinsizeMinIon', 51)
         size_secondary = getattr(inps, 'filteringWinsizeSecondaryIon', 5)
         std_out0 = getattr(inps, 'filterStdIon', None)
