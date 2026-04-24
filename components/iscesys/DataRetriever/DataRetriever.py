@@ -133,10 +133,13 @@ class DataRetriever(Component):
         #move to _downloadDir
         os.chdir(self._downloadDir)
         for fileNow in listFile:
+            # fileNow may be a remote subpath like "subdir/file.zip"; curl -O saves
+            # only the basename locally, so use localFile for all local file ops.
+            localFile = os.path.basename(fileNow)
             reason = 'file'
             for i in range(self._numTrials):
                 try:
-                    if not os.path.exists(fileNow):
+                    if not os.path.exists(localFile):
                         if(self._un is None or self._pw is None):
                             if not self.serverUp(self._url):
                                 reason = 'server'
@@ -181,8 +184,9 @@ class DataRetriever(Component):
         import tempfile as tf
         for file in listFile:
             if report[file] == self._succeded:
+                localFile = os.path.basename(file)
                 td = tf.TemporaryDirectory()
-                self.decompress(file,td.name)
+                self.decompress(localFile,td.name)
                 self._namesMapping[file] = os.listdir(td.name)
                 for name in self._namesMapping[file]:
                     try:
@@ -201,7 +205,7 @@ class DataRetriever(Component):
     def clean(self,listFile,report):
         for file in listFile:
             if report[file] == self._succeded:
-                os.remove(file)
+                os.remove(os.path.basename(file))
     ##
     #After retrieving the files this function prints the status of the download for each file,
     #which could be 'succeeded' or 'failed'

@@ -19,7 +19,7 @@ EXAMPLE = """Usage examples:
   wbd.py -1 0 -92 -91 0
 
   # use a different url to download tile files
-  wbd.py -1 0 -92 -91 -u https://e4ftl01.cr.usgs.gov/DP133/SRTM/SRTMSWBD.003/2000.02.11
+  wbd.py -1 0 -92 -91 -u https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/SRTMSWBD.003
 """
 
 
@@ -37,7 +37,7 @@ def cmd_line_parse(iargs=None):
                              '    1: True (default)')
     parser.add_argument('-u', '--url', dest='url', type=str,
                         help='Change the (default) url in full path for where water body files are located.\n'
-                             'E.g.: https://e4ftl01.cr.usgs.gov/DP133/SRTM/SRTMSWBD.003/2000.02.11')
+                             'E.g.: https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/SRTMSWBD.003')
 
     inps = parser.parse_args(args=iargs)
     return inps

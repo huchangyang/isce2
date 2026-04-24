@@ -47,7 +47,7 @@ from contrib.demUtils.DemStitcher import DemStitcher
 from isceobj.Image import createImage
 #Parameters definitions
 URL = Component.Parameter('_url',
-    public_name = 'URL',default = 'https://e4ftl01.cr.usgs.gov/SRTM/SRTMSWBD.003/2000.02.11',
+    public_name = 'URL',default = 'https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/SRTMSWBD.003',
     type = str,
     mandatory = False,
     doc = "Url for the high resolution water body mask")
@@ -177,15 +177,20 @@ class SWBDStitcher(DemStitcher):
             opener = urllib.request.URLopener()
             try:
                 if not os.path.exists(os.path.join(downloadDir,fileNow)):
+                        # New URL structure: .../SRTMSWBD.003/{tilename}/{tilename}.zip
+                        # e.g. N25E121.SRTMSWBD.raw/N25E121.SRTMSWBD.raw.zip
+                        # curl -O saves only the basename locally, so local ops are unchanged.
+                        tilename = fileNow.replace(self._zip, '')
+                        remote_path = os.path.join(tilename, fileNow)
                         if(self._un is None or self._pw is None):
                             #opener.retrieve(url + fileNow,os.path.join(downloadDir,fileNow))
                             if os.path.exists(os.path.join(os.environ['HOME'],'.netrc')):
-                                command = 'curl -n  -L -c $HOME/.earthdatacookie -b $HOME/.earthdatacookie -k -f -O ' + os.path.join(url,fileNow)
+                                command = 'curl -n  -L -c $HOME/.earthdatacookie -b $HOME/.earthdatacookie -k -f -O ' + os.path.join(url,remote_path)
                             else:
                                 self.logger.error('Please create a .netrc file in your home directory containing\nmachine urs.earthdata.nasa.gov\n\tlogin yourusername\n\tpassword yourpassword')
                                 sys.exit(1)
                         else:
-                            command = 'curl -k -f -u ' + self._un + ':' + self._pw + ' -O ' + os.path.join(url,fileNow)
+                            command = 'curl -k -f -u ' + self._un + ':' + self._pw + ' -O ' + os.path.join(url,remote_path)
                         # curl with -O download in working dir, so save current, move to donwloadDir
                         # nd get back once download is finished
                         cwd = os.getcwd()
