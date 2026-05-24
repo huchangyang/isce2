@@ -256,7 +256,7 @@ def createParser():
             help='number of range looks for ionospheric estimation (default=16)')
     parser.add_argument('--number_azimuth_looks_ion', dest='numberAzimuthLooksIon', type=int, default=16,
             help='number of azimuth looks for ionospheric estimation (default=16)')
-    
+
     return parser
 
 
@@ -1988,6 +1988,78 @@ def main(iargs=None):
             expected_pattern = os.path.join(ifgDirname, baseName + '.int')
             logger.warning('Original interferogram file not found, cannot resample. Expected file pattern: {}'.format(expected_pattern))
             logger.warning('Ionospheric phase will remain at extra multilooked resolution: {}x{}'.format(length_ion, width_ion))
+
+    # ------------------------------------------------------------------ #
+    # Final step: mask the output ionospheric files using the sub-band    #
+    # unwrapped interferograms.  Pixels where either the low-band or the  #
+    # high-band phase == 0 (i.e. not unwrapped) are zeroed out in both   #
+    # the dispersive and non-dispersive filtered output files.            #
+    # ------------------------------------------------------------------ #
+    def _read_unw_phase_for_mask(path):
+        """Return phase array from an unwrapped interferogram binary file."""
+        img_tmp = isceobj.createImage()
+        img_tmp.load(path + '.xml')
+        _l, _w = img_tmp.length, img_tmp.width
+        data = np.fromfile(path, dtype=np.float32)
+        n_single = _l * _w
+        n_bil    = _l * 2 * _w
+        if data.size == n_single:
+            return data.reshape(_l, _w), _l, _w
+        if data.size == n_bil:
+            arr = data.reshape(_l * 2, _w)
+            return arr[1:_l * 2:2, :], _l, _w
+        raise ValueError(
+            'Unexpected binary size for {}: {} floats (expected {} or {})'.format(
+                path, data.size, n_single, n_bil))
+
+    unw_mask = None
+    unw_mask_length = None
+    unw_mask_width  = None
+    for unw_path in [inps.lowBandIgram, inps.highBandIgram]:
+        if not os.path.exists(unw_path + '.xml'):
+            logger.warning('Sub-band unw file not found for masking: {}'.format(unw_path))
+            continue
+        try:
+            phase, _l, _w = _read_unw_phase_for_mask(unw_path)
+        except Exception as e:
+            logger.warning('Failed to read {} for masking: {}'.format(unw_path, e))
+            continue
+        valid = (phase != 0)
+        if unw_mask is None:
+            unw_mask = valid
+            unw_mask_length, unw_mask_width = _l, _w
+        else:
+            unw_mask = unw_mask & valid
+
+    if unw_mask is not None:
+        n_zeroed = int(np.sum(~unw_mask))
+        logger.info('Sub-band unw mask: {} pixels will be zeroed in final output.'.format(n_zeroed))
+
+        for out_filt in [outDispersive + '.filt', outNonDispersive + '.filt']:
+            if not os.path.exists(out_filt):
+                logger.warning('Output file not found, skipping mask: {}'.format(out_filt))
+                continue
+            img_filt = isceobj.createImage()
+            img_filt.load(out_filt + '.xml')
+            filt_length = img_filt.length
+            filt_width  = img_filt.width
+
+            filt_data = np.fromfile(out_filt, dtype=np.float32).reshape(filt_length, filt_width)
+
+            if (filt_length, filt_width) == (unw_mask_length, unw_mask_width):
+                filt_data[~unw_mask] = 0.0
+            else:
+                from scipy.ndimage import zoom as _zoom
+                zoom_r = filt_length / unw_mask_length
+                zoom_c = filt_width  / unw_mask_width
+                mask_resampled = _zoom(unw_mask.astype(np.float32), (zoom_r, zoom_c), order=1) > 0.5
+                logger.info(
+                    'Resampled unw mask from {}x{} to {}x{} to match filtered output.'.format(
+                        unw_mask_length, unw_mask_width, filt_length, filt_width))
+                filt_data[~mask_resampled] = 0.0
+
+            filt_data.astype(np.float32).tofile(out_filt)
+            logger.info('Sub-band unw mask applied to: {}'.format(out_filt))
 
 
 if __name__ == '__main__':

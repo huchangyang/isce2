@@ -26,6 +26,7 @@
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 import os
+import shutil
 import logging
 import numpy as np
 import datetime
@@ -37,15 +38,40 @@ from mroipac.looks.Looks import Looks
 logger = logging.getLogger('isce.insar.runRdrDemOffset')
 
 
+def _resolve_geometry_dir(insar_obj, base_dir=None):
+    """Resolve geometry directory once, independent of later chdir calls."""
+    geometry_dir = insar_obj.geometryDirname
+    if os.path.isabs(geometry_dir):
+        return geometry_dir
+    if base_dir is None:
+        base_dir = os.getcwd()
+    return os.path.abspath(os.path.join(base_dir, geometry_dir))
+
+
 def runRdrDemOffset(self):
     '''Estimate offsets between radar image and DEM
     '''
     logger.info("Running rdr dem offset")
-    
-    # Get reference product
+
+    processingDir = os.getcwd()
+    # Pin reference crop XML to an absolute path before chdir to rdr_dem_offset.
+    # Otherwise saveProduct() runs under geometry/.../rdr_dem_offset and relative
+    # referenceSlcCropProduct would write a duplicate XML there, leaving the
+    # original reference_slc.xml in the processing directory unchanged.
+    ref_crop_xml = self._insar.referenceSlcCropProduct
+    if ref_crop_xml:
+        if not os.path.isabs(ref_crop_xml):
+            ref_crop_xml = os.path.abspath(os.path.join(processingDir, ref_crop_xml))
+        else:
+            ref_crop_xml = os.path.abspath(ref_crop_xml)
+        self._insar.referenceSlcCropProduct = ref_crop_xml
+
+    # Get reference product (path is now stable for later saveProduct under chdir)
     referenceInfo = self._insar.loadProduct(self._insar.referenceSlcCropProduct)
-    
-    geometryDir = os.path.abspath(self.insar.geometryDirname)
+
+    geometryDir = _resolve_geometry_dir(self.insar, base_dir=processingDir)
+    # Pin to absolute path so subsequent chdir does not redirect geometry outputs.
+    self.insar.geometryDirname = geometryDir
     
     heightFilename = os.path.join(geometryDir, self.insar.heightFilename + '.full')
     heightFilename = os.path.abspath(heightFilename)
@@ -86,7 +112,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
                        where topo will be re-run separately)
     '''
     # Get geometry directory (absolute path)
-    geometryDir = os.path.abspath(self.insar.geometryDirname)
+    geometryDir = _resolve_geometry_dir(self.insar)
     # DEM ground spacing in meters — same formula as Alos2Proc/runRdrDemOffset.py when possible
     demDeltaLon = 30.0
     demDeltaLat = 30.0
@@ -785,6 +811,26 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
             logger.info('Updated referenceInfo.sensingStart: {} -> {} (offset: {:.6f} pixels = {:.6f} s)'.format(
                 originalSensingStart, correctedSensingStart, az_offset, azimuthOffsetSeconds))
             
+            # Backup pre-correction reference crop XML once (do not overwrite if already present)
+            ref_path = self._insar.referenceSlcCropProduct
+            if ref_path:
+                if not os.path.isabs(ref_path):
+                    ref_path = os.path.abspath(ref_path)
+                if os.path.isfile(ref_path):
+                    root, ext = os.path.splitext(ref_path)
+                    if not ext:
+                        ext = '.xml'
+                    backup_path = root + '.pre_rdr_dem_offset' + ext
+                    if not os.path.exists(backup_path):
+                        try:
+                            shutil.copy2(ref_path, backup_path)
+                            logger.info('Backed up reference crop product before rdrDemOffset save: {}'.format(
+                                backup_path))
+                        except OSError as err:
+                            logger.warning('Could not back up {}: {}'.format(ref_path, err))
+                    else:
+                        logger.info('Reference crop backup already exists, skipping: {}'.format(backup_path))
+
             # Save the updated product so subsequent steps can use the corrected values
             self._insar.saveProduct(referenceInfo, self._insar.referenceSlcCropProduct)
             logger.info('Saved updated referenceInfo product with corrected geometry')
@@ -805,7 +851,7 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
         
         # Save zero offsets to text file as well
-        geometryDir = os.path.abspath(self.insar.geometryDirname)
+        geometryDir = _resolve_geometry_dir(self.insar)
         offsetFile = os.path.join(geometryDir, 'rdr_dem_offsets.txt')
         try:
             with open(offsetFile, 'w') as f:
@@ -1038,7 +1084,7 @@ def updateTopoWithOffset(self, referenceInfo, rangeOffset, azimuthOffset, refere
     logger.info("Updating topo geometry files with radar-DEM offsets")
     
     # Get geometry directory (absolute path)
-    geometryDir = os.path.abspath(self.insar.geometryDirname)
+    geometryDir = _resolve_geometry_dir(self.insar)
     
     # IMPORTANT: Update self.insar.geometryDirname to point to the correct location
     # This ensures subsequent steps (like geo2rdr) can find the geometry files

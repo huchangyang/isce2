@@ -225,8 +225,8 @@ def runGeo2rdrCPU(info, latImage, lonImage, demImage, outdir,
 
     grdr.setSensingStart(info.sensingStart - datetime.timedelta(seconds = (azoff-(alks-1)/2)/grdr.prf))
     grdr.rangeFirstSample = info.getStartingRange() - (rgoff - (rlks-1)/2)*grdr.slantRangePixelSpacing
-    grdr.numberRangeLooks = alks
-    grdr.numberAzimuthLooks = rlks
+    grdr.numberRangeLooks = rlks
+    grdr.numberAzimuthLooks = alks
 
     if nativedop and (dop is not None):
         try:
