@@ -8,9 +8,9 @@ import isceobj
 import shelve
 import datetime
 from isceobj.Location.Offset import OffsetField
-from iscesys.StdOEL.StdOELPy import create_writer
 from mroipac.ampcor.Ampcor import Ampcor
 import pickle
+from math import comb as _math_comb
 
 
 def createParser():
@@ -45,6 +45,12 @@ def createParser():
             help='Range gross offset')
     parser.add_argument('-t', '--thresh', dest='snrthresh', type=float, default=5.0,
             help='SNR threshold')
+    parser.add_argument('--cr', dest='consistency_radius', type=float, default=None,
+            help='Spatial consistency radius in pixels (default: auto = 3x median grid spacing)')
+    parser.add_argument('--ct', dest='consistency_thresh', type=float, default=0.5,
+            help='Spatial consistency offset deviation threshold in pixels')
+    parser.add_argument('--mn', dest='min_neighbors', type=int, default=3,
+            help='Minimum number of neighbours required for spatial consistency check')
 
     return parser
 
@@ -131,84 +137,64 @@ def estimateOffsetField(reference, secondary, azoffset=0, rgoffset=0):
 
 
 def fitOffsets(field,azrgOrder=0,azazOrder=0,
-        rgrgOrder=0,rgazOrder=0,snr=5.0):
+        rgrgOrder=0,rgazOrder=0,snr=5.0,
+        consistencyRadius=None, consistencyThresh=0.5, minNeighbors=3):
     '''
     Estimate constant range and azimuth shifts.
     '''
 
+    print('%d input offset points before spatial consistency culling' %
+          (len(field._offsets)))
 
-    # Keep a copy of the original field so that we can access the original
-    # per-point covariance / standard deviation information (sigmax, sigmay)
-    # after Offoutliers has created a refined subset without covariance.
-    originalField = field
+    inArr = np.array(field.unpackOffsets(), dtype=np.float64)
+    coords = inArr[:, [0, 2]]
+    offsets = inArr[:, [1, 3]]
 
-    stdWriter = create_writer("log","",True,filename='off.log')
+    if consistencyRadius is None:
+        spacings = []
+        for col in range(2):
+            vals = np.unique(coords[:, col])
+            diffs = np.diff(np.sort(vals))
+            diffs = diffs[diffs > 0.0]
+            if len(diffs) > 0:
+                spacings.append(np.median(diffs))
 
-    for distance in [10,5,3,1]:
-        inpts = len(field._offsets)
+        if len(spacings) == 0:
+            consistencyRadius = np.inf
+        else:
+            consistencyRadius = 3.0 * max(spacings)
 
-        objOff = isceobj.createOffoutliers()
-        objOff.wireInputPort(name='offsets', object=field)
-        objOff.setSNRThreshold(snr)
-        objOff.setDistance(distance)
-        objOff.setStdWriter(stdWriter)
+    print('Applying spatial consistency culling: radius %.4f, threshold %.4f, min neighbours %d' %
+          (consistencyRadius, consistencyThresh, minNeighbors))
 
-        objOff.offoutliers()
+    keep = []
+    removedSpatial = 0
+    insufficientNeighbors = 0
+    for ind in range(len(field._offsets)):
+        distances = np.hypot(coords[:, 0] - coords[ind, 0],
+                             coords[:, 1] - coords[ind, 1])
+        neighbors = np.where((distances > 0.0) & (distances <= consistencyRadius))[0]
 
-        field = objOff.getRefinedOffsetField()
-        outputs = len(field._offsets)
-
-        print('%d points left'%(len(field._offsets)))
-
-    # ------------------------------------------------------------------
-    # Additional culling based on per-point standard deviation (sigma)
-    # stored in the original ampcor offsets as sigmax / sigmay.
-    # Threshold is fixed at 0.001 (in pixel units).
-    # ------------------------------------------------------------------
-    sigmaThreshold = 0.001
-    print('Applying sigma threshold: {:.4f}'.format(sigmaThreshold))
-
-    # Build a lookup from original offsets using (x, y) as key, where
-    # x = range location, y = azimuth location. We use the string
-    # representation to avoid floating point rounding issues.
-    originalOffsetMap = {}
-    for offsetx in originalField:
-        fields = "{}".format(offsetx).split()
-        if len(fields) >= 8:
-            key = (fields[0], fields[2])  # x, y
-            originalOffsetMap[key] = fields
-
-    filtered_offsets = []
-    removedSigma = 0
-    for offsetx in field:
-        fields = "{}".format(offsetx).split()
-        if len(fields) < 4:
-            # Malformed entry, drop it
-            removedSigma += 1
+        if len(neighbors) < minNeighbors:
+            insufficientNeighbors += 1
+            keep.append(ind)
             continue
 
-        key = (fields[0], fields[2])
-        orig_fields = originalOffsetMap.get(key, None)
-        if (orig_fields is None) or (len(orig_fields) < 8):
-            # Cannot recover covariance info, drop this point
-            removedSigma += 1
-            continue
+        localOffset = np.median(offsets[neighbors], axis=0)
+        residual = np.hypot(offsets[ind, 0] - localOffset[0],
+                            offsets[ind, 1] - localOffset[1])
 
-        sigma_rg = float(orig_fields[5])  # sigmax
-        sigma_az = float(orig_fields[6])  # sigmay
+        if residual <= consistencyThresh:
+            keep.append(ind)
+        else:
+            removedSpatial += 1
 
-        if (abs(sigma_rg) > sigmaThreshold) or (abs(sigma_az) > sigmaThreshold):
-            removedSigma += 1
-            continue
+    field._offsets = [field._offsets[ind] for ind in keep]
+    print('%d points left after spatial consistency culling (removed %d points, %d points had too few neighbours)' %
+          (len(field._offsets), removedSpatial, insufficientNeighbors))
 
-        filtered_offsets.append(offsetx)
-
-    print('%d points left after sigma culling (removed %d points with sigma > %.4f)' %
-          (len(filtered_offsets), removedSigma, sigmaThreshold))
-
-    # Replace the internal list with the sigma-filtered subset so that the
-    # subsequent polynomial fit only uses high-quality points.
-    field._offsets = filtered_offsets
+    if len(field._offsets) == 0:
+        raise ValueError('No offsets left after spatial consistency culling')
 
     aa, dummy = field.getFitPolynomials(azimuthOrder=azazOrder, rangeOrder=azrgOrder, usenumpy=True)
     dummy, rr = field.getFitPolynomials(azimuthOrder=rgazOrder, rangeOrder=rgrgOrder, usenumpy=True)
@@ -219,6 +205,71 @@ def fitOffsets(field,azrgOrder=0,azazOrder=0,
     print('Estimated rg shift: ', rgshift)
 
     return (aa, rr), field
+
+
+def denormalizePoly(poly, field):
+    '''
+    Poly2D.polyfit() fits coefficients in normalized coordinate space but the
+    normalization parameters (normAzimuth, normRange, meanAzimuth, meanRange)
+    are not preserved by Python shelve/pickle due to ISCE2 Component framework
+    initialization resetting them to defaults (1.0 / 0.0).
+
+    This function bakes the normalization into the coefficients so the returned
+    polynomial evaluates correctly with the default norm=1, mean=0.
+
+    The normalization used by polyfit is re-derived from the same offset field
+    that was passed to getFitPolynomials().
+    '''
+    from isceobj.Util.Poly2D import Poly2D
+
+    inArr = np.array(field.unpackOffsets(), dtype=np.float64)
+    if len(inArr) == 0:
+        return poly
+
+    # getFitPolynomials subtracts azmin from azimuth positions before calling
+    # polyfit, so polyfit sees azimuth positions shifted to start at 0.
+    # polyfit then computes: ymin=0, ynorm=max-min, meanAzimuth=0+azmin=azmin
+    azmin  = float(np.min(inArr[:, 2]))
+    aznorm = float(np.max(inArr[:, 2]) - azmin)
+
+    # Range positions are NOT shifted before polyfit
+    rgmin  = float(np.min(inArr[:, 0]))
+    rgnorm = float(np.max(inArr[:, 0]) - rgmin)
+
+    if aznorm == 0.0:
+        aznorm = 1.0
+    if rgnorm == 0.0:
+        rgnorm = 1.0
+
+    azOrd = poly._azimuthOrder
+    rgOrd = poly._rangeOrder
+    c = poly._coeffs
+
+    # Transform coefficients from normalized space to raw pixel space.
+    # Original: p(az, rng) = sum_ij c[i][j] * ((az-azmin)/aznorm)^i * ((rng-rgmin)/rgnorm)^j
+    # Target:   p(az, rng) = sum_pq d[p][q] * az^p * rng^q
+    #
+    # By binomial expansion:
+    # d[p][q] = sum_{i>=p, j>=q} c[i][j]
+    #           * C(i,p) * (-azmin)^(i-p) / aznorm^i
+    #           * C(j,q) * (-rgmin)^(j-q) / rgnorm^j
+    new_c = [[0.0] * (rgOrd + 1) for _ in range(azOrd + 1)]
+
+    for i in range(azOrd + 1):
+        for j in range(rgOrd + 1):
+            coef = c[i][j]
+            if coef == 0.0:
+                continue
+            for p in range(i + 1):
+                az_factor = _math_comb(i, p) * ((-azmin) ** (i - p)) / (aznorm ** i)
+                for q in range(j + 1):
+                    rg_factor = _math_comb(j, q) * ((-rgmin) ** (j - q)) / (rgnorm ** j)
+                    new_c[p][q] += coef * az_factor * rg_factor
+
+    new_poly = Poly2D()
+    new_poly.initPoly(rangeOrder=rgOrd, azimuthOrder=azOrd, coeffs=new_c)
+    # normAzimuth=1, normRange=1, meanAzimuth=0, meanRange=0 are correct defaults now
+    return new_poly
 
 
 def main(iargs=None):
@@ -277,7 +328,10 @@ def main(iargs=None):
             azrgOrder=inps.azrgorder,
             rgazOrder=inps.rgazorder,
             rgrgOrder=inps.rgrgorder,
-            snr=inps.snrthresh)
+            snr=inps.snrthresh,
+            consistencyRadius=inps.consistency_radius,
+            consistencyThresh=inps.consistency_thresh,
+            minNeighbors=inps.min_neighbors)
     odb['cull_field'] = cull
 
     ####Scale by ratio
@@ -290,8 +344,8 @@ def main(iargs=None):
             row[ind] = val * rgratio
     
 
-    odb['azpoly'] = shifts[0]
-    odb['rgpoly'] = shifts[1]
+    odb['azpoly'] = denormalizePoly(shifts[0], cull)
+    odb['rgpoly'] = denormalizePoly(shifts[1], cull)
     odb.close()
 
 if __name__ == '__main__':
