@@ -114,6 +114,16 @@ def createParser():
     parser.add_argument('--rdr_dem_offset', dest='doRdrDemOffset', action='store_true', default=False,
             help='Enable radar-DEM offset estimation and geometry refinement (default: False)')
 
+    refine = parser.add_argument_group('Refine secondary timing', 'Polynomial orders for refineSecondaryTiming')
+    refine.add_argument('--aa', dest='refineAzAzOrder', type=int, default=0,
+            help='Azimuth order of azimuth offsets in refineSecondaryTiming (default: 0)')
+    refine.add_argument('--ar', dest='refineAzRgOrder', type=int, default=0,
+            help='Range order of azimuth offsets in refineSecondaryTiming (default: 0)')
+    refine.add_argument('--ra', dest='refineRgAzOrder', type=int, default=0,
+            help='Azimuth order of range offsets in refineSecondaryTiming (default: 0)')
+    refine.add_argument('--rr', dest='refineRgRgOrder', type=int, default=0,
+            help='Range order of range offsets in refineSecondaryTiming (default: 0)')
+
     parser.add_argument('--summary', dest='summary', action='store_true', default=False, help='Show summary only')
     return parser
 

@@ -284,7 +284,8 @@ class Poly1D(Polynomial):
 
         val, res, rank, eigs = np.linalg.lstsq(A,y,rcond=cond)
         if len(res) > 0:
-            print('Chi squared: %f'%(np.sqrt(res/(1.0*Npts))))
+            chiSquared = np.sqrt(np.asarray(res).ravel()[0]/(1.0*Npts))
+            print('Chi squared: %f'%(chiSquared))
 
         self.setCoeffs(val)
         self.setMean(xmin)

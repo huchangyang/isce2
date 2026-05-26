@@ -377,7 +377,8 @@ print(xx[23], yy[23], z[23], gg(yy[23], xx[23]))
 
         val, res, rank, eigs = np.linalg.lstsq(A,z, rcond=cond)
         if len(res)> 0:
-            print('Chi squared: %f'%(np.sqrt(res/(1.0*len(z)))))
+            chiSquared = np.sqrt(np.asarray(res).ravel()[0]/(1.0*len(z)))
+            print('Chi squared: %f'%(chiSquared))
         else:
             print('No chi squared value....')
             print('Try reducing rank of polynomial.')

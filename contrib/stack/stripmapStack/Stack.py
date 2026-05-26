@@ -145,6 +145,10 @@ class config(object):
         self.f.write('mm : ' + self.referenceMetaData + '\n')
         self.f.write('ss : ' + self.secondaryMetaData + '\n')
         self.f.write('outfile : '+ self.outfile + '\n')
+        self.f.write('aa : ' + str(getattr(self, 'refineAzAzOrder', 0)) + '\n')
+        self.f.write('ar : ' + str(getattr(self, 'refineAzRgOrder', 0)) + '\n')
+        self.f.write('ra : ' + str(getattr(self, 'refineRgAzOrder', 0)) + '\n')
+        self.f.write('rr : ' + str(getattr(self, 'refineRgRgOrder', 0)) + '\n')
 
     def denseOffsets(self, function):
         self.f.write('##########################'+'\n')
