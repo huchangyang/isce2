@@ -8,6 +8,7 @@ from osgeo import gdal
 import isceobj
 from isceobj.Constants import SPEED_OF_LIGHT
 import numpy as np
+import importlib.util
 
 
 
@@ -16,20 +17,56 @@ logger = logging.getLogger('isce.insar.runDispersive')
 
 DEFAULT_IONO_COHERENCE_THRESHOLD = 0.75
 
-def resolve_coherence_path(cor_path):
+def _load_stack_estimate_iono():
+    try:
+        from contrib.stack.stripmapStack import estimateIono
+        return estimateIono
+    except ImportError:
+        here = os.path.abspath(os.path.dirname(__file__))
+        cur = here
+        candidates = []
+        for _ in range(10):
+            candidates.append(os.path.join(cur, 'contrib', 'stack', 'stripmapStack', 'estimateIono.py'))
+            candidates.append(os.path.join(cur, 'src', 'isce2', 'contrib', 'stack', 'stripmapStack', 'estimateIono.py'))
+            cur = os.path.dirname(cur)
+
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                spec = importlib.util.spec_from_file_location('stripmapStack_estimateIono', candidate)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module
+        raise
+
+def _multilook_suffix_from_name(filename):
+    if not filename:
+        return None
+    basename = os.path.basename(filename)
+    for ext in ('.flat', '.int', '.unw'):
+        if basename.endswith(ext):
+            stem = basename[:-len(ext)]
+            parts = stem.split('_')
+            if len(parts) >= 3 and parts[-2].endswith('rlks') and parts[-1].endswith('alks'):
+                return '_{}_{}'.format(parts[-2], parts[-1])
+            return None
+    return None
+
+def resolve_coherence_path(cor_path, match_path=None):
     """
     Return path to an existing coherence product (.cor + .xml), handling
-    filt_ vs non-filt_ naming differences.
+    filt_ vs non-filt_ naming differences and multilook suffixes.
     """
     if not cor_path:
-        return cor_path
-    if os.path.exists(cor_path + '.xml'):
         return cor_path
     directory, fname = os.path.split(cor_path)
     if not fname.endswith('.cor'):
         return cor_path
     stem = fname[:-4]
     candidates = []
+    suffix = _multilook_suffix_from_name(match_path)
+    if suffix is not None:
+        candidates.append(os.path.join(directory, stem + suffix + '.cor'))
+    candidates.append(cor_path)
     if stem.startswith('filt_'):
         candidates.append(os.path.join(directory, stem[5:] + '.cor'))
     else:
@@ -273,16 +310,25 @@ def std_iono_mean_coh(f0,fL,fH,coh_mean,rgLooks,azLooks):
     
     return std_iono
     
-def theoretical_variance_fromSubBands(self, f0, fL, fH, B, Sig_phi_iono, Sig_phi_nonDisp,N):
+def theoretical_variance_fromSubBands(self, f0, fL, fH, B, Sig_phi_iono, Sig_phi_nonDisp, N,
+                                      lowBandIgram=None, highBandIgram=None):
     
     # Calculating the theoretical variance of the ionospheric phase based on the coherence of the sub-band interferograns 
     ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.lowBandSlcDirname)
     lowBandCoherence = os.path.join(ifgDirname , self.insar.coherenceFilename)
-    Sig_phi_L = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename + ".sig")
+    lowBandCoherence = resolve_coherence_path(lowBandCoherence, lowBandIgram)
+    if lowBandIgram is not None:
+        Sig_phi_L = lowBandIgram + ".sig"
+    else:
+        Sig_phi_L = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename + ".sig")
 
     ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
     highBandCoherence = os.path.join(ifgDirname , self.insar.coherenceFilename)
-    Sig_phi_H = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename + ".sig")
+    highBandCoherence = resolve_coherence_path(highBandCoherence, highBandIgram)
+    if highBandIgram is not None:
+        Sig_phi_H = highBandIgram + ".sig"
+    else:
+        Sig_phi_H = os.path.join(ifgDirname , 'filt_' + self.insar.ifgFilename + ".sig")
     
     cmd = 'imageMath.py -e="sqrt(1-a**2)/a/sqrt(2.0*{0})" --a={1} -o {2} -t float -s BIL'.format(N, lowBandCoherence, Sig_phi_L)
    
@@ -720,8 +766,8 @@ def getMask(self, maskFile,std_iono, lowBandIgram=None, highBandIgram=None):
     ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
     highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
 
-    lowBandCor = resolve_coherence_path(lowBandCor)
-    highBandCor = resolve_coherence_path(highBandCor)
+    lowBandCor = resolve_coherence_path(lowBandCor, lowBandIgram)
+    highBandCor = resolve_coherence_path(highBandCor, highBandIgram)
     threshold = getattr(self, 'dispersive_filter_coherence_threshold', DEFAULT_IONO_COHERENCE_THRESHOLD)
 
     if self.dispersive_filter_mask_type == "coherence":
@@ -1038,8 +1084,8 @@ def runDispersive(self):
             lowBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
             ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
             highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
-            lowBandCor = resolve_coherence_path(lowBandCor)
-            highBandCor = resolve_coherence_path(highBandCor)
+            lowBandCor = resolve_coherence_path(lowBandCor, lowBandIgram)
+            highBandCor = resolve_coherence_path(highBandCor, highBandIgram)
             
             if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
                 try:
@@ -1268,7 +1314,8 @@ def runDispersive(self):
         if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon:
             totalLooks = totalLooks * numberRangeLooksIon * numberAzimuthLooksIon
     
-    theoretical_variance_fromSubBands(self, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks) 
+    theoretical_variance_fromSubBands(self, f0, fL, fH, B, sigmaDispersive, sigmaNonDispersive, totalLooks,
+                                      lowBandIgram=lowBandIgram, highBandIgram=highBandIgram) 
     
     # Use adaptive Gaussian filtering if explicitly requested, otherwise use original iterative filtering
     useAdaptiveFilter = getattr(self, 'useAdaptiveGaussianFilter', True)
@@ -1335,6 +1382,8 @@ def runDispersive(self):
             lowBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
             ifgDirname = os.path.join(self.insar.ifgDirname, self.insar.highBandSlcDirname)
             highBandCor = os.path.join(ifgDirname, self.insar.coherenceFilename)
+            lowBandCor = resolve_coherence_path(lowBandCor, lowBandIgram)
+            highBandCor = resolve_coherence_path(highBandCor, highBandIgram)
             
             if os.path.exists(lowBandCor + '.xml') and os.path.exists(highBandCor + '.xml'):
                 try:

@@ -47,6 +47,37 @@ def _build_unwrap_name(wrapName):
     else:
         return wrapName + '.unw'
 
+def _multilook_suffix_from_name(filename):
+    basename = os.path.basename(filename)
+    for ext in ('.flat', '.int', '.unw'):
+        if basename.endswith(ext):
+            stem = basename[:-len(ext)]
+            parts = stem.split('_')
+            if len(parts) >= 3 and parts[-2].endswith('rlks') and parts[-1].endswith('alks'):
+                return '_{}_{}'.format(parts[-2], parts[-1])
+            return None
+    return None
+
+def _resolve_correlation_name(self, ifgDirname, wrapName, width):
+    candidates = []
+    suffix = _multilook_suffix_from_name(wrapName)
+    corStem, corExt = os.path.splitext(self.insar.coherenceFilename)
+
+    if suffix is not None:
+        candidates.append(os.path.join(ifgDirname, corStem + suffix + corExt))
+
+    candidates.append(os.path.join(ifgDirname, self.insar.coherenceFilename))
+
+    for candidate in candidates:
+        if not os.path.exists(candidate + '.xml'):
+            continue
+        img = isceobj.createImage()
+        img.load(candidate + '.xml')
+        if img.getWidth() == width:
+            return candidate
+
+    return candidates[0]
+
 def _resolve_wrap_and_unwrap_names(self, ifgDirname, igramSpectrum):
     """
     Resolve the wrapped interferogram path for unwrapping.
@@ -146,11 +177,11 @@ def runSnaphu(self, igramSpectrum = "full", costMode = None,initMethod = None, d
     if useMultilook:
         print('Found multilooked interferogram for unwrapping: {}'.format(wrapName))
 
-    corName = os.path.join(ifgDirname , self.insar.coherenceFilename)
     wavelength = referenceFrame.getInstrument().getRadarWavelength()
     img1 = isceobj.createImage()
     img1.load(wrapName + '.xml')
     width = img1.getWidth()
+    corName = _resolve_correlation_name(self, ifgDirname, wrapName, width)
     #width      = self.insar.resampIntImage.width
 
     orbit = referenceFrame.orbit
@@ -360,13 +391,12 @@ def runSnaphuWithTiling(self, igramSpectrum, costMode=None, initMethod=None, def
         print('Found multilooked interferogram for tiled unwrapping: {}'.format(wrapName))
     else:
         print('Using interferogram for tiled unwrapping: {}'.format(wrapName))
-    corName = os.path.join(ifgDirname, self.insar.coherenceFilename)
-
     # Get image dimensions from XML file
     img1 = isceobj.createImage()
     img1.load(wrapName + '.xml')
     width = img1.getWidth()
     length = img1.getLength()
+    corName = _resolve_correlation_name(self, ifgDirname, wrapName, width)
 
     # Get reference frame parameters (same as in runSnaphu)
     referenceFrame = self._insar.loadProduct(self._insar.referenceSlcCropProduct)

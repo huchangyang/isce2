@@ -41,6 +41,30 @@ import os
 
 logger = logging.getLogger('isce.insar.runFilter')
 
+def _coherence_name_for_interferogram(ifgDirname, coherenceFilename, interferogramFilename):
+    basename = os.path.basename(interferogramFilename)
+    suffix = None
+    for ext in ('.flat', '.int'):
+        if basename.endswith(ext):
+            stem = basename[:-len(ext)]
+            parts = stem.split('_')
+            if len(parts) >= 3 and parts[-2].endswith('rlks') and parts[-1].endswith('alks'):
+                suffix = '_{}_{}'.format(parts[-2], parts[-1])
+            break
+
+    if suffix is None:
+        return os.path.join(ifgDirname, coherenceFilename)
+
+    corStem, corExt = os.path.splitext(coherenceFilename)
+    return os.path.join(ifgDirname, corStem + suffix + corExt)
+
+def _same_size_image_exists(filename, width):
+    if not os.path.exists(filename + '.xml'):
+        return False
+    img = isceobj.createImage()
+    img.load(filename + '.xml')
+    return img.getWidth() == width
+
 def runFilter(self, filterStrength, igramSpectrum = "full"):
     logger.info("Applying power-spectral filter")
 
@@ -164,7 +188,8 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
     phsigImage.dataType='FLOAT'
     phsigImage.bands = 1
     phsigImage.setWidth(widthInt)
-    phsigImage.setFilename(os.path.join(ifgDirname , self.insar.coherenceFilename))
+    phsigFilename = _coherence_name_for_interferogram(ifgDirname, self.insar.coherenceFilename, topoflatIntFilename)
+    phsigImage.setFilename(phsigFilename)
     phsigImage.setAccessMode('write')
     phsigImage.setImageType('cor')#the type in this case is not for mdx.py displaying but for geocoding method
     phsigImage.createImage()
@@ -179,16 +204,22 @@ def runFilter(self, filterStrength, igramSpectrum = "full"):
         else:
             resampAmpImage = topoflatIntFilename + '.amp'
         
-        # If multilooked amplitude doesn't exist, fall back to regular amplitude
-        if not os.path.exists(resampAmpImage + '.xml'):
-            logger.warning('Multilooked amplitude file not found: {}. Using regular amplitude file.'.format(resampAmpImage))
-            resampAmpImage = os.path.join(ifgDirname , self.insar.ifgFilename)
-            if '.flat' in resampAmpImage:
-                resampAmpImage = resampAmpImage.replace('.flat', '.amp')
-            elif '.int' in resampAmpImage:
-                resampAmpImage = resampAmpImage.replace('.int', '.amp')
+        # If the matching multilooked amplitude does not exist, create it from
+        # the regular amplitude so ICU sees images with identical dimensions.
+        if not _same_size_image_exists(resampAmpImage, widthInt):
+            from .runInterferogram import multilook
+
+            baseAmpImage = os.path.join(ifgDirname , self.insar.ifgFilename)
+            if '.flat' in baseAmpImage:
+                baseAmpImage = baseAmpImage.replace('.flat', '.amp')
+            elif '.int' in baseAmpImage:
+                baseAmpImage = baseAmpImage.replace('.int', '.amp')
             else:
-                resampAmpImage += '.amp'
+                baseAmpImage += '.amp'
+
+            logger.info('Creating multilooked amplitude for filtering: {}'.format(resampAmpImage))
+            multilook(baseAmpImage, outname=resampAmpImage,
+                      alks=numberAzimuthLooksIon, rlks=numberRangeLooksIon)
     else:
         resampAmpImage = os.path.join(ifgDirname , self.insar.ifgFilename)
         if '.flat' in resampAmpImage:

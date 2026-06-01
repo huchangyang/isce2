@@ -384,17 +384,38 @@ NONDISPERSIVE_FILENAME = Component.Parameter('nondispersiveFilename',
 
 NUMBER_RANGE_LOOKS_ION = Component.Parameter('numberRangeLooksIon',
                                 public_name='number of range looks ion',
-                                default=16,
+                                default=3,
                                 type=int,
                                 mandatory=False,
                                 doc="number of additional range looks for ionospheric estimation (multilooked after regular multilooking)")
 
 NUMBER_AZIMUTH_LOOKS_ION = Component.Parameter('numberAzimuthLooksIon',
                                 public_name='number of azimuth looks ion',
-                                default=16,
+                                default=3,
                                 type=int,
                                 mandatory=False,
                                 doc="number of additional azimuth looks for ionospheric estimation (multilooked after regular multilooking)")
+
+FILTER_STD_ION = Component.Parameter('filterStdIon',
+                                public_name='filterStdIon',
+                                default=None,
+                                type=float,
+                                mandatory=False,
+                                doc='target standard deviation for adaptive Gaussian filtering of the ionospheric phase. If unset, defaults to 0.005')
+
+FILTERING_WINSIZE_MIN_ION = Component.Parameter('filteringWinsizeMinIon',
+                                public_name='filteringWinsizeMinIon',
+                                default=51,
+                                type=int,
+                                mandatory=False,
+                                doc='minimum window size for adaptive Gaussian filtering of the ionospheric phase')
+
+FILTERING_WINSIZE_MAX_ION = Component.Parameter('filteringWinsizeMaxIon',
+                                public_name='filteringWinsizeMaxIon',
+                                default=501,
+                                type=int,
+                                mandatory=False,
+                                doc='maximum window size for adaptive Gaussian filtering of the ionospheric phase')
 
 
 OFFSET_TOP = Component.Parameter(
@@ -566,6 +587,9 @@ class StripmapProc(Component, FrameMixin):
                       RADAR_DEM_AFFINE_TRANSFORM,
                       NUMBER_RANGE_LOOKS_ION,
                       NUMBER_AZIMUTH_LOOKS_ION,
+                      FILTER_STD_ION,
+                      FILTERING_WINSIZE_MIN_ION,
+                      FILTERING_WINSIZE_MAX_ION,
                       )
 
     facility_list = ()

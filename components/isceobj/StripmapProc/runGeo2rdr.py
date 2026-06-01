@@ -43,6 +43,109 @@ import os
 
 logger = logging.getLogger('isce.insar.runGeo2rdr') 
 
+
+def _is_identity_affine(affineTransform, tol=1.0e-10):
+    identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    if affineTransform is None or len(affineTransform) != 6:
+        return True
+    return all(abs(float(val) - ref) <= tol for val, ref in zip(affineTransform, identity))
+
+
+def _render_offset_xml(filename, width, length):
+    image = isceobj.createImage()
+    image.setFilename(filename)
+    image.setWidth(width)
+    image.setLength(length)
+    image.setAccessMode('READ')
+    image.bands = 1
+    image.dataType = 'DOUBLE'
+    image.scheme = 'BIP'
+    image.renderHdr()
+
+
+def rectifyRangeOffsetWithAffine(rangeOffsetFile, affineTransform, chunkLength=256):
+    '''
+    Resample the geo2rdr range-offset field into the reference radar grid.
+
+    The radar-DEM affine transform maps reference radar coordinates to the
+    DEM/simulated radar coordinates where geo2rdr produced the original range
+    offsets.  Rectification therefore samples the original range-offset image at
+    affine(reference_pixel) and writes the result back to rangeOffsetFile.
+    '''
+    if _is_identity_affine(affineTransform):
+        logger.info('Radar-DEM affine transform is identity; range offset rectification skipped')
+        return
+
+    if not os.path.exists(rangeOffsetFile):
+        logger.warning('Range offset file not found, cannot rectify with radar-DEM affine: {}'.format(
+            rangeOffsetFile))
+        return
+
+    image = isceobj.createImage()
+    image.load(rangeOffsetFile + '.xml')
+    width = image.getWidth()
+    length = image.getLength()
+
+    rawRangeOffsetFile = rangeOffsetFile + '.before_rdr_dem_affine'
+    tmpRangeOffsetFile = rangeOffsetFile + '.rdr_dem_affine.tmp'
+
+    for filename in [rawRangeOffsetFile, tmpRangeOffsetFile]:
+        for ext in ['', '.xml', '.vrt']:
+            if os.path.exists(filename + ext):
+                os.remove(filename + ext)
+
+    os.replace(rangeOffsetFile, rawRangeOffsetFile)
+    for ext in ['.xml', '.vrt']:
+        if os.path.exists(rangeOffsetFile + ext):
+            os.remove(rangeOffsetFile + ext)
+
+    _render_offset_xml(rawRangeOffsetFile, width, length)
+
+    src = np.memmap(rawRangeOffsetFile, dtype=np.float64, mode='r', shape=(length, width))
+    dst = np.memmap(tmpRangeOffsetFile, dtype=np.float64, mode='w+', shape=(length, width))
+
+    m11, m12, m21, m22, t1, t2 = [float(val) for val in affineTransform]
+    xCoord = np.arange(width, dtype=np.float64) + 1.0
+
+    logger.info('Rectifying range offset with radar-DEM affine transform: {}'.format(
+        affineTransform))
+
+    for rowStart in range(0, length, chunkLength):
+        rowStop = min(rowStart + chunkLength, length)
+        yCoord = np.arange(rowStart, rowStop, dtype=np.float64)[:, None] + 1.0
+
+        srcX = m11 * xCoord[None, :] + m12 * yCoord + t1 - 1.0
+        srcY = m21 * xCoord[None, :] + m22 * yCoord + t2 - 1.0
+
+        valid = ((srcX >= 0.0) & (srcX <= (width - 1)) &
+                 (srcY >= 0.0) & (srcY <= (length - 1)))
+
+        x0 = np.floor(srcX).astype(np.int64)
+        y0 = np.floor(srcY).astype(np.int64)
+        x0 = np.clip(x0, 0, width - 1)
+        y0 = np.clip(y0, 0, length - 1)
+        x1 = np.clip(x0 + 1, 0, width - 1)
+        y1 = np.clip(y0 + 1, 0, length - 1)
+
+        wx = srcX - x0
+        wy = srcY - y0
+
+        values = ((1.0 - wx) * (1.0 - wy) * src[y0, x0] +
+                  wx * (1.0 - wy) * src[y0, x1] +
+                  (1.0 - wx) * wy * src[y1, x0] +
+                  wx * wy * src[y1, x1])
+        values[~valid] = 0.0
+        dst[rowStart:rowStop, :] = values
+
+    dst.flush()
+    del dst
+    del src
+
+    os.replace(tmpRangeOffsetFile, rangeOffsetFile)
+    _render_offset_xml(rangeOffsetFile, width, length)
+    logger.info('Rectified range offset written to {}; original saved as {}'.format(
+        rangeOffsetFile, rawRangeOffsetFile))
+
 def runGeo2rdr(self):
     from zerodop.geo2rdr import createGeo2rdr
     from isceobj.Planet.Planet import Planet
@@ -110,5 +213,9 @@ def runGeo2rdr(self):
     grdr.outputPrecision = 'DOUBLE'
         
     grdr.geo2rdr()
+
+    rectifyRangeOffsetWithAffine(
+        grdr.rangeOffsetImageName,
+        getattr(self.insar, 'radarDemAffineTransform', [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]))
 
     return

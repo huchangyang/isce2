@@ -231,7 +231,7 @@ NUMBER_AZIMUTH_LOOKS = Application.Parameter(
 NUMBER_RANGE_LOOKS_ION = Application.Parameter(
     'numberRangeLooksIon',
     public_name='number of range looks ion',
-    default=16,
+    default=3,
     type=int,
     mandatory=False,
     doc='Number of additional range looks for ionospheric estimation'
@@ -240,7 +240,7 @@ NUMBER_RANGE_LOOKS_ION = Application.Parameter(
 NUMBER_AZIMUTH_LOOKS_ION = Application.Parameter(
     'numberAzimuthLooksIon',
     public_name='number of azimuth looks ion',
-    default=16,
+    default=3,
     type=int,
     mandatory=False,
     doc='Number of additional azimuth looks for ionospheric estimation'
@@ -471,6 +471,27 @@ DISPERSIVE_FILTER_COHERENCE_THRESHOLD = Application.Parameter('dispersive_filter
                                       type=float,
                                       mandatory=False,
                                       doc='Coherence threshold to generate a mask file which gets used in the iterative filtering of the dispersive and non-disperive phase')
+
+FILTER_STD_ION = Application.Parameter('filterStdIon',
+                                      public_name='filterStdIon',
+                                      default=None,
+                                      type=float,
+                                      mandatory=False,
+                                      doc='target standard deviation for adaptive Gaussian filtering of the ionospheric phase. If unset, defaults to 0.005')
+
+FILTERING_WINSIZE_MIN_ION = Application.Parameter('filteringWinsizeMinIon',
+                                      public_name='filteringWinsizeMinIon',
+                                      default=51,
+                                      type=int,
+                                      mandatory=False,
+                                      doc='minimum window size for adaptive Gaussian filtering of the ionospheric phase')
+
+FILTERING_WINSIZE_MAX_ION = Application.Parameter('filteringWinsizeMaxIon',
+                                      public_name='filteringWinsizeMaxIon',
+                                      default=501,
+                                      type=int,
+                                      mandatory=False,
+                                      doc='maximum window size for adaptive Gaussian filtering of the ionospheric phase')
 #Facility declarations
 
 REFERENCE = Application.Facility(
@@ -589,6 +610,9 @@ class _RoiBase(Application, FrameMixin):
                       DISPERSIVE_FILTER_ITERATION_NUMBER,
                       DISPERSIVE_FILTER_MASK_TYPE,
                       DISPERSIVE_FILTER_COHERENCE_THRESHOLD,
+                      FILTER_STD_ION,
+                      FILTERING_WINSIZE_MIN_ION,
+                      FILTERING_WINSIZE_MAX_ION,
                       NUMBER_RANGE_LOOKS_ION,
                       NUMBER_AZIMUTH_LOOKS_ION)
 

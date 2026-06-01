@@ -26,10 +26,8 @@
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 import os
-import shutil
 import logging
 import numpy as np
-import datetime
 
 import isceobj
 from mroipac.ampcor.Ampcor import Ampcor
@@ -651,41 +649,34 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         elif len(field._offsets) < 100:  # Warn if below 100 points (similar to Alos2Proc's approach)
             logger.warning('Low number of points ({}), but attempting to fit offsets'.format(len(field._offsets)))
 
-        # Fit constant offsets (zero-order polynomials)
-        aa, dummy = field.getFitPolynomials(azimuthOrder=0, rangeOrder=0, usenumpy=True)
-        dummy, rr = field.getFitPolynomials(azimuthOrder=0, rangeOrder=0, usenumpy=True)
-        
-        # Get offsets in multilooked pixel units
-        az_offset_multilooked = aa._coeffs[0][0]
-        rg_offset_multilooked = rr._coeffs[0][0]
-        
-        # Convert from multilooked pixel units to single-look pixel units
-        # If we used N looks, the offset needs to be multiplied by N to get single-look units
-        rg_offset = rg_offset_multilooked * rangeLooks
-        az_offset = az_offset_multilooked * azimuthLooks
-        
-        logger.info('Estimated range offset (multilooked): {:.6f} pixels ({} looks)'.format(rg_offset_multilooked, rangeLooks))
-        logger.info('Estimated azimuth offset (multilooked): {:.6f} pixels ({} looks)'.format(az_offset_multilooked, azimuthLooks))
-        logger.info('Converted range offset (single-look): {:.6f} pixels'.format(rg_offset))
-        logger.info('Converted azimuth offset (single-look): {:.6f} pixels'.format(az_offset))
-        
-        # Store single-look pixel offsets (these will be used in runGeo2rdr)
+        affineTransform, rg_offset, az_offset, rms = fitAffineFromOffsets(
+            field, rangeLooks=rangeLooks, azimuthLooks=azimuthLooks)
+
+        logger.info('Estimated radar-DEM affine transform in single-look pixels: {}'.format(
+            affineTransform))
+        logger.info('Median radar-DEM range displacement: {:.6f} pixels'.format(rg_offset))
+        logger.info('Median radar-DEM azimuth displacement: {:.6f} pixels'.format(az_offset))
+        logger.info('Affine fit RMS residual: range={:.6f} pixels, azimuth={:.6f} pixels'.format(
+            rms[0], rms[1]))
+
         self._insar.radarDemRangeOffset = rg_offset
         self._insar.radarDemAzimuthOffset = az_offset
-        
-        # Store as affine transform format: [1, 0, 0, 1, rg_offset, az_offset]
-        self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, rg_offset, az_offset]
+        self._insar.radarDemAffineTransform = affineTransform
         
         # Save offsets to text file in geometry directory
         offsetFile = os.path.join(geometryDir, 'rdr_dem_offsets.txt')
         try:
             with open(offsetFile, 'w') as f:
                 f.write('# Radar-DEM offsets estimated by rdrDemOffset\n')
-                f.write('# Format: range_offset and azimuth_offset are in pixels (single-look)\n')
-                f.write('# affine_transform: [a, b, c, d, e, f] where [e, f] are range and azimuth offsets\n')
+                f.write('# Format: offsets and affine_transform are in single-look pixel coordinates\n')
+                f.write('# affine_transform maps reference radar coordinates to DEM/sim coordinates:\n')
+                f.write('#   sim_range = a * ref_range + b * ref_azimuth + e\n')
+                f.write('#   sim_azimuth = c * ref_range + d * ref_azimuth + f\n')
                 f.write('range_offset: {:.6f}\n'.format(rg_offset))
                 f.write('azimuth_offset: {:.6f}\n'.format(az_offset))
                 f.write('affine_transform: {}\n'.format(self._insar.radarDemAffineTransform))
+                f.write('affine_fit_rms_range: {:.6f}\n'.format(rms[0]))
+                f.write('affine_fit_rms_azimuth: {:.6f}\n'.format(rms[1]))
             logger.info('Saved offsets to file: {}'.format(offsetFile))
         except Exception as e:
             logger.warning('Failed to save offsets to file: {}'.format(e))
@@ -693,77 +684,13 @@ def rdrDemOffset(self, referenceInfo, heightFile, referenceSlc, catalog=None, sk
         if catalog is not None:
             catalog.addItem('radar dem range offset', '{:.6f}'.format(rg_offset), 'runRdrDemOffset')
             catalog.addItem('radar dem azimuth offset', '{:.6f}'.format(az_offset), 'runRdrDemOffset')
-        
-        # Update referenceInfo with corrected geometry so subsequent steps use the corrected values
-        if abs(rg_offset) > 0.01 or abs(az_offset) > 0.01:
-            logger.info('Updating referenceInfo with corrected geometry')
-            
-            # Determine orbit direction (ascending/descending) to decide correction sign
-            # Get pass direction from frame (same approach as used in TopsProc/runIon.py)
-            passDirection = None
-            try:
-                if hasattr(referenceInfo, 'frame') and hasattr(referenceInfo.frame, 'passDirection'):
-                    passDirection = referenceInfo.frame.passDirection
-            except Exception as e:
-                logger.warning('Could not get pass direction from frame: {}'.format(e))
-            
-            # Apply range offset correction
-            # Note: ampcor returns offset as "secondary relative to reference"
-            # The /2 factor accounts for round-trip propagation: ground error = round-trip error / 2
-            rangePixelSize = referenceInfo.getInstrument().getRangePixelSize()
-            rangeOffsetMeters = rg_offset * rangePixelSize
-            originalStartingRange = referenceInfo.startingRange
-            correctedStartingRange = originalStartingRange + rangeOffsetMeters
-            referenceInfo.startingRange = correctedStartingRange
-            
-            # Apply azimuth offset correction
-            # Similar logic: correction sign depends on orbit direction
-            prf = referenceInfo.PRF
-            azimuthOffsetSeconds = az_offset / prf
-            originalSensingStart = referenceInfo.getSensingStart()
-            correctedSensingStart = originalSensingStart + datetime.timedelta(seconds=azimuthOffsetSeconds)
-            referenceInfo.sensingStart = correctedSensingStart
-            
-            logger.info('Updated referenceInfo.startingRange: {:.6f} m -> {:.6f} m (offset: {:.6f} pixels = {:.2f} m)'.format(
-                originalStartingRange, correctedStartingRange, rg_offset, rangeOffsetMeters))
-            logger.info('Updated referenceInfo.sensingStart: {} -> {} (offset: {:.6f} pixels = {:.6f} s)'.format(
-                originalSensingStart, correctedSensingStart, az_offset, azimuthOffsetSeconds))
-            
-            # Backup pre-correction reference crop XML once (do not overwrite if already present)
-            ref_path = self._insar.referenceSlcCropProduct
-            if ref_path:
-                if not os.path.isabs(ref_path):
-                    ref_path = os.path.abspath(ref_path)
-                if os.path.isfile(ref_path):
-                    root, ext = os.path.splitext(ref_path)
-                    if not ext:
-                        ext = '.xml'
-                    backup_path = root + '.pre_rdr_dem_offset' + ext
-                    if not os.path.exists(backup_path):
-                        try:
-                            shutil.copy2(ref_path, backup_path)
-                            logger.info('Backed up reference crop product before rdrDemOffset save: {}'.format(
-                                backup_path))
-                        except OSError as err:
-                            logger.warning('Could not back up {}: {}'.format(ref_path, err))
-                    else:
-                        logger.info('Reference crop backup already exists, skipping: {}'.format(backup_path))
+            catalog.addItem('radar dem affine transform', '{}'.format(affineTransform), 'runRdrDemOffset')
+            catalog.addItem('radar dem affine fit rms', '{:.6f}, {:.6f}'.format(rms[0], rms[1]), 'runRdrDemOffset')
 
-            # Save the updated product so subsequent steps can use the corrected values
-            self._insar.saveProduct(referenceInfo, self._insar.referenceSlcCropProduct)
-            logger.info('Saved updated referenceInfo product with corrected geometry')
-        
-        # Re-run topo with corrected geometry to update lat.rdr.full, lon.rdr.full, z.rdr.full
-        # Skip this if called from stripmapStack (skipTopoUpdate=True), where topo will be re-run separately
-        if not skipTopoUpdate and (abs(rg_offset) > 0.01 or abs(az_offset) > 0.01):
-            logger.info('Re-running topo with corrected geometry based on estimated offsets')
-            logger.info('This will update lat.rdr.full, lon.rdr.full, and z.rdr.full files')
-            updateTopoWithOffset(self, referenceInfo, rg_offset, az_offset, referenceSlc=referenceSlc)
-        elif skipTopoUpdate:
-            logger.info('Skipping topo update (will be handled by stripmapStack caller)')
+        logger.info('Stored radar-DEM affine transform for range-offset rectification')
         
     except Exception as e:
-        logger.warning('Could not fit constant offsets, using zero offsets: {}'.format(e))
+        logger.warning('Could not fit radar-DEM affine transform, using identity transform: {}'.format(e))
         self._insar.radarDemRangeOffset = 0.0
         self._insar.radarDemAzimuthOffset = 0.0
         self._insar.radarDemAffineTransform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
@@ -855,6 +782,67 @@ def create_xml(fileName, width, length, fileType):
     image.setWidth(width)
     image.setLength(length)
     image.renderHdr()
+
+
+def fitAffineFromOffsets(offsetField, rangeLooks=1, azimuthLooks=1):
+    '''
+    Fit a single-look affine map from reference radar coordinates to DEM/sim coordinates.
+
+    Ampcor offsets are estimated on the multilooked amplitude/simulated images.  For
+    later rectification of geo2rdr range offsets, fit the transform after expanding
+    both coordinates and displacements back to single-look pixel units.
+    '''
+    rows = []
+    simRange = []
+    simAzimuth = []
+    rangeDisplacements = []
+    azimuthDisplacements = []
+
+    for offsetx in offsetField:
+        fields = "{}".format(offsetx).split()
+        if len(fields) < 4:
+            continue
+        try:
+            refRange = float(fields[0]) * rangeLooks
+            rgOffset = float(fields[1]) * rangeLooks
+            refAzimuth = float(fields[2]) * azimuthLooks
+            azOffset = float(fields[3]) * azimuthLooks
+        except ValueError:
+            continue
+
+        rows.append([refRange, refAzimuth, 1.0])
+        simRange.append(refRange + rgOffset)
+        simAzimuth.append(refAzimuth + azOffset)
+        rangeDisplacements.append(rgOffset)
+        azimuthDisplacements.append(azOffset)
+
+    if len(rows) < 3:
+        raise ValueError('Need at least 3 offsets to fit affine transform, got {}'.format(len(rows)))
+
+    design = np.array(rows, dtype=np.float64)
+    simRange = np.array(simRange, dtype=np.float64)
+    simAzimuth = np.array(simAzimuth, dtype=np.float64)
+
+    rangeCoeffs, _, _, _ = np.linalg.lstsq(design, simRange, rcond=None)
+    azimuthCoeffs, _, _, _ = np.linalg.lstsq(design, simAzimuth, rcond=None)
+
+    rangeResidual = design.dot(rangeCoeffs) - simRange
+    azimuthResidual = design.dot(azimuthCoeffs) - simAzimuth
+    rms = [
+        float(np.sqrt(np.mean(rangeResidual * rangeResidual))),
+        float(np.sqrt(np.mean(azimuthResidual * azimuthResidual))),
+    ]
+
+    affineTransform = [
+        float(rangeCoeffs[0]),
+        float(rangeCoeffs[1]),
+        float(azimuthCoeffs[0]),
+        float(azimuthCoeffs[1]),
+        float(rangeCoeffs[2]),
+        float(azimuthCoeffs[2]),
+    ]
+
+    return affineTransform, float(np.median(rangeDisplacements)), float(np.median(azimuthDisplacements)), rms
 
 
 def writeOffset(offset, fileName):
