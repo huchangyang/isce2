@@ -232,6 +232,9 @@ class Resamp_slc(Component):
             self.logger.warning('No flattening requested')
             self.flatten = False
 
+        if self.flattenGeoOnly is None:
+            self.flattenGeoOnly = False
+
         return
 
 
@@ -253,6 +256,7 @@ class Resamp_slc(Component):
         resamp_slc.setMethod_Py(int(intpKey))
         resamp_slc.setIsComplex_Py(int(self.isComplex))
         resamp_slc.setFlatten_Py(int(self.flatten))
+        resamp_slc.setFlattenGeoOnly_Py(int(self.flattenGeoOnly))
 
         return
 
@@ -359,6 +363,7 @@ class Resamp_slc(Component):
         self.isComplex = None
         self.method = None
         self.flatten = None
+        self.flattenGeoOnly = None
         self.startingRange = None
         self.referenceWavelength = None
         self.referenceStartingRange = None

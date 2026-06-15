@@ -38,6 +38,7 @@
             integer iscomplex
             integer method
             integer flatten
+            integer flattenGeoOnly
             real*8 WVL
             real*8 SLR
             real*8 R0

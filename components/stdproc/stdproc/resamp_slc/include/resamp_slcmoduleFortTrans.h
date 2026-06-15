@@ -52,6 +52,7 @@
                         #define setIsComplex_f setiscomplex_
                         #define setMethod_f setmethod_
                         #define setFlatten_f setflatten_
+                        #define setFlattenGeoOnly_f setflattengeoonly_
                         #define setStartingRange_f setstartingrange_
                         #define setReferenceStartingRange_f setreferencestartingrange_
                 #else

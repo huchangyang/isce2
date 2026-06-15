@@ -37,6 +37,12 @@ def createParser():
     parser.add_argument('--noflat', dest='noflat', action='store_true', default=False,
             help='To turn off flattening')
 
+    parser.add_argument('--flat-geo-only', dest='flat_geo_only', action='store_true', default=True,
+            help='When flattening, use geo2rdr range.off only (default). Misreg polynomial still drives resampling.')
+
+    parser.add_argument('--flat-full-misreg', dest='flat_full_misreg', action='store_true', default=False,
+            help='Legacy flatten: include misreg polynomial in flatten phase (r_ro*SLR).')
+
     parser.add_argument('-d', '--dims', dest='dims', nargs=2, type=int, default=None,
             help='Dimensions if using directly with poly')
 
@@ -65,12 +71,15 @@ def cmdLineParse(iargs = None):
     
     if inps.coreg is None:
         inps.coreg = os.path.join('coreg', os.path.basename(inps.secondary))
+
+    if inps.flat_full_misreg:
+        inps.flat_geo_only = False
     
     return inps
 
 @use_api
 def resampSecondary(burst, offdir, outname, doppler, azpoly, rgpoly, 
-        reference=None, flatten=False, zero=False, dims=None):
+        reference=None, flatten=False, flat_geo_only=True, zero=False, dims=None):
     '''
     Resample burst by burst.
     '''
@@ -147,6 +156,17 @@ def resampSecondary(burst, offdir, outname, doppler, azpoly, rgpoly,
     imgOut.setAccessMode('write')
     
     rObj.flatten = flatten
+    rObj.flattenGeoOnly = bool(flatten and flat_geo_only)
+    if rObj.flattenGeoOnly:
+        from stdproc.stdproc import resamp_slc as _resamp_slc_mod
+        if not hasattr(_resamp_slc_mod, 'setFlattenGeoOnly_Py'):
+            raise RuntimeError(
+                'flattenGeoOnly requires a rebuilt resamp_slc module. '
+                'Rebuild ISCE2 (cmake --build <builddir> --target resamp_slc) '
+                'or pass --flat-full-misreg for legacy behavior.')
+        print('Flattening with geo2rdr range.off only (misreg polynomial excluded from flatten phase).')
+    elif flatten:
+        print('Flattening with full r_ro = misreg polynomial + range.off (legacy).')
     rObj.outputWidth = width
     rObj.outputLines = length
     rObj.residualRangeImage = rngImg
@@ -219,7 +239,9 @@ def main(iargs=None):
 
     resampSecondary(secondary, inps.offsets, outfile,
             doppler, azpoly,rgpoly, 
-            flatten=(not inps.noflat), zero=inps.zero,
+            flatten=(not inps.noflat),
+            flat_geo_only=inps.flat_geo_only,
+            zero=inps.zero,
             dims = inps.dims,
             reference = reference)
 

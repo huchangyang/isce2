@@ -153,3 +153,10 @@
             integer :: varInt
             flatten = varInt
         end subroutine setFlatten
+
+        subroutine setFlattenGeoOnly(varInt)
+            use resamp_slcState
+            implicit none
+            integer :: varInt
+            flattenGeoOnly = varInt
+        end subroutine setFlattenGeoOnly

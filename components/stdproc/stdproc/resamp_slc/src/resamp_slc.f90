@@ -25,7 +25,7 @@
 
       integer ii, jj
       integer chipi, chipj
-      real*8 r_ro, r_ao, r_rt, r_at, r_ph, r_dop
+      real*8 r_ro, r_ao, r_rt, r_at, r_ph, r_dop, r_ro_flat
 
       real*4 t0, t1
 
@@ -182,11 +182,11 @@
             cout=cmplx(0.,0.)
 
             !!!Start of the parallel loop
-            !$OMP PARALLEL DO private(i,r_rt,r_at,r_ro,r_ao,k,kk)&
+            !$OMP PARALLEL DO private(i,r_rt,r_at,r_ro,r_ao,r_ro_flat,k,kk)&
             !$OMP private(fracr,fraca,ii,jj,r_ph,cval,thnum,r_dop) &
             !$OMP private(chipi,chipj) &
             !$OMP shared(rgOffsetsPoly,azOffsetsPoly,residrg,residaz) &
-            !$OMP shared(j,cin,chip,cout,flatten,WVL,SLR,inlength) &
+            !$OMP shared(j,cin,chip,cout,flatten,flattenGeoOnly,WVL,SLR,inlength) &
             !$OMP shared(rgCarrier,azCarrier,outwidth,inwidth,dopplerPoly)&
             !$OMP shared(REFR0, REFSLR, R0, REFWVL)
             do i=1,outwidth
@@ -240,7 +240,12 @@
                r_ph = r_ph + evalPoly2d_f(rgCarrier, r_at, r_rt) + evalPoly2d_f(azCarrier,r_at,r_rt)
 
                if (flatten.ne.0) then
-                   r_ph = r_ph + (4.0d0 * PI/WVL) * ((R0-REFR0) + (i-1.0d0)*(SLR-REFSLR) +  r_ro*SLR) + (4.0d0*PI*(REFR0+(i-1.0d0)*REFSLR)) * (1.0d0/REFWVL - 1.0d0/WVL)
+                   if (flattenGeoOnly.ne.0) then
+                       r_ro_flat = residrg(i)
+                   else
+                       r_ro_flat = r_ro
+                   endif
+                   r_ph = r_ph + (4.0d0 * PI/WVL) * ((R0-REFR0) + (i-1.0d0)*(SLR-REFSLR) +  r_ro_flat*SLR) + (4.0d0*PI*(REFR0+(i-1.0d0)*REFSLR)) * (1.0d0/REFWVL - 1.0d0/WVL)
                endif
 
                r_ph = modulo(r_ph,2.0d0*PI)

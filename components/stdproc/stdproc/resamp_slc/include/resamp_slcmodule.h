@@ -74,6 +74,8 @@ extern "C"
     PyObject *setMethod_C(PyObject*, PyObject*);
     void setFlatten_f(int*);
     PyObject *setFlatten_C(PyObject*, PyObject*);
+    void setFlattenGeoOnly_f(int*);
+    PyObject *setFlattenGeoOnly_C(PyObject*, PyObject*);
     void setDopplerPoly_f(cPoly2d*);
     PyObject *setDopplerPoly_C(PyObject*, PyObject*);
 }
@@ -97,6 +99,7 @@ static PyMethodDef resamp_slc_methods[] =
     {"setIsComplex_Py", setIsComplex_C, METH_VARARGS, " "},
     {"setMethod_Py", setMethod_C, METH_VARARGS, " "},
     {"setFlatten_Py", setFlatten_C, METH_VARARGS, " "},
+    {"setFlattenGeoOnly_Py", setFlattenGeoOnly_C, METH_VARARGS, " "},
     {"setStartingRange_Py", setStartingRange_C, METH_VARARGS, " "},
     {"setReferenceStartingRange_Py", setReferenceStartingRange_C, METH_VARARGS, " "},
     {NULL, NULL, 0, NULL}

@@ -156,6 +156,17 @@ PyObject* setFlatten_C(PyObject* self, PyObject* args)
     return Py_BuildValue("i",0);
 }
 
+PyObject* setFlattenGeoOnly_C(PyObject* self, PyObject* args)
+{
+    int var;
+    if(!PyArg_ParseTuple(args, "i", &var))
+    {
+        return NULL;
+    }
+    setFlattenGeoOnly_f(&var);
+    return Py_BuildValue("i",0);
+}
+
 PyObject * setRadarWavelength_C(PyObject* self, PyObject* args)
 {
     double var;
