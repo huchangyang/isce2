@@ -158,7 +158,7 @@ def resampSecondary(burst, offdir, outname, doppler, azpoly, rgpoly,
     rObj.flatten = flatten
     rObj.flattenGeoOnly = bool(flatten and flat_geo_only)
     if rObj.flattenGeoOnly:
-        from stdproc.stdproc import resamp_slc as _resamp_slc_mod
+        from stdproc.stdproc.resamp_slc import resamp_slc as _resamp_slc_mod
         if not hasattr(_resamp_slc_mod, 'setFlattenGeoOnly_Py'):
             raise RuntimeError(
                 'flattenGeoOnly requires a rebuilt resamp_slc module. '
