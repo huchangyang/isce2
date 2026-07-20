@@ -248,8 +248,9 @@ def runGeo2rdrCPU(info, latImage, lonImage, demImage, outdir,
     grdr.lonImage = lonImage
     grdr.outputPrecision = 'DOUBLE'
 
-    if legendre:
-        grdr.orbitInterpolationMethod = 'LEGENDRE'
+    grdr.orbitInterpolationMethod = 'HERMITE'
+    # if legendre:
+    #     grdr.orbitInterpolationMethod = 'LEGENDRE'
 
     grdr.geo2rdr()
 

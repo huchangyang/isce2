@@ -23,7 +23,7 @@ except ImportError:
 logger = logging.getLogger('isce.insar.runDispersive')
 
 # Default γ threshold for sub-band coherence mask and polynomial phase weights (softer than ALOS ion_filt 0.97)
-DEFAULT_IONO_COHERENCE_THRESHOLD = 0.5
+DEFAULT_IONO_COHERENCE_THRESHOLD = 0.4
 DEFAULT_ADJUST_PHASE_COHERENCE_THRESHOLD = 0.7
 DEFAULT_JUMP_GLOBAL_INTEGER = True
 
@@ -80,11 +80,10 @@ def read_coherence_2d(cor_path, length, width):
     return None
 
 
-def apply_alos_style_dual_band_invalid(ion, std, cor_low, cor_high):
+def apply_alos_style_dual_band_invalid(ion, std, cor_low, cor_high, zero_data=True):
     """
-    Alos2Proc ion_filt (before std / adaptive Gaussian): if either sub-band
-    coherence is zero, that pixel is invalid — std must be 0 so it gets no
-    weight in adaptive_gaussian (wgt = 1/std^2 with wgt[index]=0).
+    Alos2Proc ion_filt: if either sub-band coherence is ~0, mark pixel invalid for
+    weighting (std=0). Optionally also zero ion (legacy behaviour).
     """
     if cor_low is None or cor_high is None:
         return
@@ -94,8 +93,9 @@ def apply_alos_style_dual_band_invalid(ion, std, cor_low, cor_high):
     invalid = (cor_low <= 1e-6) | (cor_high <= 1e-6)
     idx = np.nonzero(invalid)
     if idx[0].size:
-        ion[idx] = 0
         std[idx] = 0
+        if zero_data:
+            ion[idx] = 0
 
 
 def polyfit_variance_weights_from_std_coherence(std, cor_low, cor_high, cor_threshold_fit):
@@ -160,6 +160,12 @@ def createParser():
             help='shelve file used to extract metadata')
     parser.add_argument('-c', '--full_band_coherence', dest='fullBandCoherence', type=str, default=None,
             help='full band coherence')
+    parser.add_argument('--full_band_igram', dest='fullBandIgram', type=str, default=None,
+            help='full-band wrapped interferogram (.int). Used to define output-mask valid '
+                 'pixels (amplitude > 0) and optional legacy full_band_igram output masking.')
+    parser.add_argument('--water_mask', dest='waterMask', type=str, default=None,
+            help='water body mask in radar coordinates (e.g. geom_reference/waterMask.rdr). '
+                 'Applied to compute and output masks. Auto-discovered under geom_reference/ if omitted.')
     parser.add_argument('--low_band_coherence', dest='lowBandCoherence', type=str, default=None,
             help='low band coherence')
     parser.add_argument('--high_band_coherence', dest='highBandCoherence', type=str, default=None,
@@ -179,6 +185,24 @@ def createParser():
     parser.add_argument('--dispersive_filter_coherence_threshold', dest='dispersive_filter_coherence_threshold', type=float, default=DEFAULT_IONO_COHERENCE_THRESHOLD,
             help='sub-band coherence threshold for the ionosphere mask (default {:.2f}): '
             'both sub-bands must exceed it when mask_type=coherence'.format(DEFAULT_IONO_COHERENCE_THRESHOLD))
+    parser.add_argument('--ion_output_mask_type', dest='ionOutputMaskType', type=str, default='int_valid',
+            choices=['int_valid', 'water_and_int', 'water_and_unw', 'full_band_igram', 'compute_mask', 'none'],
+            help='mask applied ONLY to final ion output files. '
+                 'int_valid (default): sub-band .int amp>0 intersect full-band .int (strict downsample); '
+                 'no water mask (avoids boundary artifacts when upsampling to full-band grid). '
+                 'water_and_int: alias for int_valid; '
+                 'water_and_unw: legacy alias for int_valid; '
+                 'full_band_igram: full-band .int amplitude>0 only; '
+                 'compute_mask: same as mask.bil; none: no final output masking. '
+                 'mask.bil (dispersive_filter_mask_type + unw + water) always controls filtering weights.')
+    parser.add_argument('--output_int_amplitude_threshold', dest='outputIntAmplitudeThreshold', type=float,
+            default=0.0,
+            help='minimum .int amplitude for output_mask valid pixels (default 0). '
+                 'Increase slightly (e.g. 1e-4) if edge noise keeps amp>0 in no-data areas.')
+    parser.add_argument('--output_int_relative_amplitude_fraction', dest='outputIntRelativeAmpFraction',
+            type=float, default=0.0,
+            help='if >0, also require amp > fraction * median(positive amps) in each .int (default 0=off). '
+                 'Example: 0.02 masks weak edge leakage.')
     parser.add_argument('--adjust_phase_coherence_threshold', dest='adjustPhaseCoherenceThreshold', type=float,
             default=DEFAULT_ADJUST_PHASE_COHERENCE_THRESHOLD,
             help='coherence threshold used only by polynomial phase adjustment weights (default {:.2f}, '
@@ -221,7 +245,7 @@ def createParser():
     parser.add_argument('--filtering_winsize_secondary_ion', dest='filteringWinsizeSecondaryIon', type=int, default=5,
             help='window size for secondary Gaussian filtering (default=5)')
     parser.add_argument('--filter_std_ion', dest='filterStdIon', type=float, default=None,
-            help='target standard deviation for adaptive filtering (default=None, auto-determined)')
+            help='target standard deviation for adaptive filtering (default=None, use 0.005 rad)')
     parser.add_argument('--fit_adaptive_ion', dest='fitAdaptiveIon', type=bool, default=True,
             help='apply polynomial fit in adaptive filtering window (default=True)')
     parser.add_argument('--filt_secondary_ion', dest='filtSecondaryIon', type=bool, default=True,
@@ -335,13 +359,16 @@ def adaptive_gaussian(data, std, size_min, size_max, std_out0, fit=True):
     
     (length, width) = data.shape
     
-    # Assume zero-value samples are invalid
-    index = np.nonzero(np.logical_or(data==0, std==0))
+    # True no-data (e.g. unw==0). Pixels with std==0 but data!=0 may still receive
+    # filtered values from neighbours but do not contribute (wgt=0).
+    nodata = (data == 0)
+    index = np.nonzero(nodata)
     data[index] = 0
     std[index] = 0
     # Compute weight using standard deviation
     wgt = 1.0 / (std**2 + (std==0))
-    wgt[index] = 0
+    wgt[nodata] = 0
+    wgt[std == 0] = 0
     
     # Compute number of gaussian filters
     if size_min > size_max:
@@ -385,10 +412,19 @@ def adaptive_gaussian(data, std, size_min, size_max, std_out0, fit=True):
     print('find Gaussian window size to use')
     gaussian_index = np.zeros((length, width), dtype=np.int32)
     std_filt2 = np.zeros((length, width))
+    n_skip_nodata = int(np.sum(nodata))
+    if n_skip_nodata > 0:
+        print('skip window search at {} no-data pixels (data==0)'.format(n_skip_nodata))
     for i in range(length):
         if (((i+1)%50) == 0):
             print('processing line %6d of %6d' % (i+1, length), end='\r', flush=True)
         for j in range(width):
+            # Do not search for a window at no-data pixels.  FFT convolution can
+            # assign non-zero std_filt near valid areas, which would otherwise
+            # force the maximum window (very slow, no useful filter result).
+            if nodata[i, j]:
+                gaussian_index[i, j] = -1
+                continue
             if np.sum(std_filt[i, j, :]) == 0:
                 gaussian_index[i, j] = -1
             else:
@@ -951,9 +987,335 @@ def fill(data, invalid=None):
     return data[tuple(ind)]
 
 
+def _load_mask_raster_2d(path):
+    """Load a single-band raster as (data, length, width) using ISCE metadata."""
+    img = isceobj.createImage()
+    img.load(path + '.xml')
+    length, width = int(img.length), int(img.width)
+    dtype_name = str(getattr(img, 'dataType', 'BYTE')).upper()
+    if dtype_name in ('BYTE', 'UINT8'):
+        dtype = np.uint8
+    elif dtype_name in ('INT8',):
+        dtype = np.int8
+    elif dtype_name in ('FLOAT', 'FLOAT32'):
+        dtype = np.float32
+    else:
+        dtype = np.int8
+    data = np.fromfile(path, dtype=dtype).reshape(length, width)
+    return data, length, width
+
+
+def _water_pixels_from_raster(wbd):
+    """
+    Return boolean array where True marks water body pixels.
+
+    stripmapStack waterMask.rdr: 0=water, 1=land (StripmapProc convention).
+    Legacy ALOS wbd / SWBD geo fill: -1=water.
+    """
+    vals = set(np.unique(wbd).tolist())
+    if -1 in vals:
+        return wbd == -1
+    if 0 in vals and 1 in vals:
+        return wbd == 0
+    if 0 in vals:
+        return wbd == 0
+    logger.warning('Unrecognized water mask values {}; treating 0 as water.'.format(sorted(vals)))
+    return wbd == 0
+
+
+def _resolve_water_mask_path(inps, lowBandIgram=None):
+    """
+    Locate a water body mask raster (.rdr or legacy .wbd + .xml).
+
+    Prefers explicit --water_mask, then stripmapStack geom_reference/waterMask.rdr,
+    then legacy ALOS-style wbd*.wbd next to the sub-band interferograms.
+    """
+    explicit = getattr(inps, 'waterMask', None)
+    if explicit and os.path.exists(explicit + '.xml'):
+        return explicit
+
+    search_roots = []
+    if lowBandIgram:
+        search_roots.append(os.path.dirname(os.path.abspath(lowBandIgram)))
+    out_dir = getattr(inps, 'outDir', None)
+    if out_dir:
+        search_roots.append(os.path.dirname(os.path.abspath(out_dir)))
+
+    number_range_looks_ion = getattr(inps, 'numberRangeLooksIon', None)
+    number_azimuth_looks_ion = getattr(inps, 'numberAzimuthLooksIon', None)
+    ml2 = None
+    if number_range_looks_ion and number_azimuth_looks_ion:
+        az_looks = float(getattr(inps, 'azLooks', 1))
+        rng_looks = float(getattr(inps, 'rngLooks', 1))
+        total_az = int(az_looks * number_azimuth_looks_ion)
+        total_rg = int(rng_looks * number_range_looks_ion)
+        ml2 = '_{}rlks_{}alks'.format(total_rg, total_az)
+
+    seen = set()
+    for start in search_roots:
+        cur = start
+        for _ in range(6):
+            if cur in seen:
+                break
+            seen.add(cur)
+            geom_dir = os.path.join(cur, 'geom_reference')
+            if ml2:
+                cand_ml = os.path.join(geom_dir, 'waterMask' + ml2 + '.rdr')
+                if os.path.exists(cand_ml + '.xml'):
+                    return cand_ml
+            cand = os.path.join(geom_dir, 'waterMask.rdr')
+            if os.path.exists(cand + '.xml'):
+                return cand
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+
+    if lowBandIgram:
+        ifg_dirname = os.path.dirname(lowBandIgram)
+        if ml2:
+            wbd_file = os.path.join(ifg_dirname, 'wbd' + ml2 + '.wbd')
+            if os.path.exists(wbd_file + '.xml'):
+                return wbd_file
+        wbd_file = os.path.join(ifg_dirname, 'wbd.wbd')
+        if os.path.exists(wbd_file + '.xml'):
+            return wbd_file
+        parent_dir = os.path.dirname(ifg_dirname)
+        wbd_file = os.path.join(parent_dir, 'wbd.wbd')
+        if os.path.exists(wbd_file + '.xml'):
+            return wbd_file
+
+    return None
+
+
+def _read_conncomp_2d(unw_path, length, width):
+    """Load snaphu/icu connected-component labels for an unwrapped product."""
+    cc_path = unw_path + '.conncomp'
+    if not os.path.exists(cc_path):
+        return None
+    cc = np.fromfile(cc_path, dtype=np.uint8)
+    if cc.size != length * width:
+        logger.warning(
+            'Unexpected conncomp size for {}: got {}, expected {}'.format(
+                cc_path, cc.size, length * width))
+        return None
+    return cc.reshape(length, width)
+
+
+def _compute_unw_valid_mask(lowBandIgram, highBandIgram):
+    """
+    Valid unwrapped samples for compute/filtering weights (mask.bil).
+
+    Requires phase!=0 and conncomp>0 on both sub-bands when conncomp exists.
+    Snaphu often fills conncomp=0 pixels with a constant non-zero phase.
+    """
+    phase_low, length, width = _read_unw_phase_for_mask(lowBandIgram)
+    phase_high, _, _ = _read_unw_phase_for_mask(highBandIgram)
+    valid = (phase_low != 0) & (phase_high != 0)
+
+    cc_low = _read_conncomp_2d(lowBandIgram, length, width)
+    cc_high = _read_conncomp_2d(highBandIgram, length, width)
+    if cc_low is not None and cc_high is not None:
+        valid &= (cc_low > 0) & (cc_high > 0)
+        logger.info(
+            'Compute-mask unw validity: phase!=0 and conncomp>0 on both sub-bands.')
+    else:
+        logger.info(
+            'Compute-mask unw validity: phase!=0 only (conncomp not found).')
+
+    return valid
+
+
+def _output_unw_valid_mask(lowBandIgram, highBandIgram):
+    """Legacy output unw check: phase!=0 on both sub-bands (no conncomp gate)."""
+    phase_low, _, _ = _read_unw_phase_for_mask(lowBandIgram)
+    phase_high, _, _ = _read_unw_phase_for_mask(highBandIgram)
+    return (phase_low != 0) & (phase_high != 0)
+
+
+def _load_water_mask_bool(inps, lowBandIgram, length, width):
+    """Return boolean water-body array resampled to (length, width), or None if unavailable."""
+    wbd_file = _resolve_water_mask_path(inps, lowBandIgram=lowBandIgram)
+    if not wbd_file:
+        return None
+    wbd, wbd_length, wbd_width = _load_mask_raster_2d(wbd_file)
+    water = _water_pixels_from_raster(wbd)
+    if (wbd_length, wbd_width) != (length, width):
+        logger.info(
+            'Resampling water mask from {}x{} to {}x{}'.format(
+                wbd_length, wbd_width, length, width))
+        water = _resample_valid_mask(water, length, width)
+    logger.info('Water body mask from {}: {} pixels ({:.1f}%)'.format(
+        wbd_file, int(np.sum(water)), 100.0 * np.sum(water) / water.size if water.size else 0.0))
+    return water
+
+
+def _build_unw_output_mask(lowBandIgram, highBandIgram):
+    """Fallback output mask: sub-band unw phase!=0 on both bands (no water)."""
+    img_tmp = isceobj.createImage()
+    img_tmp.load(lowBandIgram + '.xml')
+    length, width = int(img_tmp.length), int(img_tmp.width)
+    valid = _output_unw_valid_mask(lowBandIgram, highBandIgram)
+    return valid, length, width
+
+
+def _output_int_amplitude_threshold(inps):
+    return float(getattr(inps, 'outputIntAmplitudeThreshold', 0.0))
+
+
+def _output_int_relative_amplitude_fraction(inps):
+    frac = float(getattr(inps, 'outputIntRelativeAmpFraction', 0.0))
+    return frac if frac > 0 else None
+
+
+def _int_path_from_unw(unw_path):
+    """Return collocated sub-band .int path for an unwrapped product, or None."""
+    for suffix in ('_snaphu.unw', '_icu.unw', '.unw'):
+        if unw_path.endswith(suffix):
+            return unw_path[:-len(suffix)] + '.int'
+    return None
+
+
+def _read_int_amp_valid(int_path, amp_threshold=0.0, relative_fraction=None):
+    """Return (valid_mask, length, width) from a wrapped .int (amplitude threshold)."""
+    img_tmp = isceobj.createImage()
+    img_tmp.load(int_path + '.xml')
+    length, width = int(img_tmp.length), int(img_tmp.width)
+    data = np.memmap(int_path, dtype=np.complex64, mode='r', shape=(length, width))
+    amp = np.abs(data).astype(np.float64)
+    thr = float(amp_threshold)
+    if relative_fraction is not None and relative_fraction > 0:
+        positive = amp[amp > 0]
+        if positive.size > 0:
+            rel_thr = float(np.median(positive)) * relative_fraction
+            thr = max(thr, rel_thr)
+            logger.info(
+                'Output int amp threshold for {}: absolute={:.3g}, relative({:.3g}*median)={:.3g}, '
+                'using {:.3g}'.format(
+                    os.path.basename(int_path), amp_threshold, relative_fraction, rel_thr, thr))
+    valid = (amp > thr) & np.isfinite(amp)
+    return valid, length, width
+
+
+def _resolve_subband_int_valid_mask(lowBandIgram, highBandIgram, amp_threshold=0.0,
+                                    relative_fraction=None):
+    """Valid where both sub-band .int files have amplitude above threshold."""
+    low_int = _int_path_from_unw(lowBandIgram)
+    high_int = _int_path_from_unw(highBandIgram)
+    if not (low_int and high_int and os.path.exists(low_int + '.xml')
+            and os.path.exists(high_int + '.xml')):
+        return None, None, None
+
+    valid_low, length, width = _read_int_amp_valid(
+        low_int, amp_threshold, relative_fraction=relative_fraction)
+    valid_high, length_h, width_h = _read_int_amp_valid(
+        high_int, amp_threshold, relative_fraction=relative_fraction)
+    if (length, width) != (length_h, width_h):
+        logger.warning('Sub-band .int shapes differ; skipping sub-band int for output mask.')
+        return None, None, None
+
+    logger.info(
+        'Using sub-band .int for output mask: {} and {}'.format(
+            os.path.basename(low_int), os.path.basename(high_int)))
+    return valid_low & valid_high, length, width
+
+
+def _build_int_output_mask(inps, lowBandIgram, highBandIgram):
+    """
+    Output mask: .int amplitude valid area only (no water body mask).
+
+    Prefers collocated sub-band .int (same grid as ion).  Falls back to full-band
+    .int with strict downsample (invalid if any full-band pixel in footprint is
+    nodata — avoids OR-bleed that kept right-edge no-data visible).
+    """
+    img_tmp = isceobj.createImage()
+    img_tmp.load(lowBandIgram + '.xml')
+    length, width = int(img_tmp.length), int(img_tmp.width)
+
+    amp_thr = _output_int_amplitude_threshold(inps)
+    rel_frac = _output_int_relative_amplitude_fraction(inps)
+
+    valid, _, _ = _resolve_subband_int_valid_mask(
+        lowBandIgram, highBandIgram, amp_threshold=amp_thr, relative_fraction=rel_frac)
+    full_valid = None
+    full_length = full_width = None
+
+    if valid is None:
+        full_valid, full_length, full_width = _resolve_fullband_int_valid_mask(
+            inps, amp_threshold=amp_thr, relative_fraction=rel_frac)
+        if full_valid is None:
+            logger.warning(
+                'No sub-band or full-band .int for output mask; falling back to unw phase!=0.')
+            return _build_unw_output_mask(lowBandIgram, highBandIgram)
+        valid = _resample_mask_to_target(
+            full_valid, length, width, strict_downsample=True)
+        logger.info(
+            'Resampled full-band .int valid mask {}x{} -> {}x{} (strict downsample)'.format(
+                full_length, full_width, length, width))
+    else:
+        if (valid.shape[0], valid.shape[1]) != (length, width):
+            logger.warning('Sub-band .int shape != ion grid; ignoring sub-band .int.')
+            valid = None
+            full_valid, full_length, full_width = _resolve_fullband_int_valid_mask(
+                inps, amp_threshold=amp_thr, relative_fraction=rel_frac)
+            if full_valid is None:
+                return _build_unw_output_mask(lowBandIgram, highBandIgram)
+            valid = _resample_mask_to_target(
+                full_valid, length, width, strict_downsample=True)
+        else:
+            # Intersect with full-band when available (tightens overlap-edge mask).
+            full_valid, full_length, full_width = _resolve_fullband_int_valid_mask(
+                inps, amp_threshold=amp_thr, relative_fraction=rel_frac)
+            if full_valid is not None:
+                full_on_sub = _resample_mask_to_target(
+                    full_valid, length, width, strict_downsample=True)
+                n_before = int(np.sum(valid))
+                valid &= full_on_sub
+                logger.info(
+                    'Intersected sub-band .int mask with full-band .int: {} -> {} valid pixels'.format(
+                        n_before, int(np.sum(valid))))
+
+    n_valid = int(np.sum(valid))
+    logger.info(
+        'Output mask (.int valid only): {} valid / {} pixels ({:.1f}%)'.format(
+            n_valid, valid.size, 100.0 * n_valid / valid.size if valid.size else 0.0))
+    return valid, length, width
+
+
+def _finalize_compute_mask_with_unw_and_water(inps, mask_file, lowBandIgram, highBandIgram):
+    """
+    Intersect dispersive_filter mask with sub-band unw!=0 and water body exclusion.
+    """
+    img_mask = isceobj.createImage()
+    img_mask.load(mask_file + '.xml')
+    length, width = int(img_mask.length), int(img_mask.width)
+    mask = np.fromfile(mask_file, dtype=np.byte).reshape(length, width).astype(bool)
+    n_type = int(np.sum(mask))
+
+    unw_valid = _compute_unw_valid_mask(lowBandIgram, highBandIgram)
+    n_after_unw = int(np.sum(mask & unw_valid))
+    mask &= unw_valid
+
+    water = _load_water_mask_bool(inps, lowBandIgram, length, width)
+    n_final = n_after_unw
+    if water is not None:
+        n_final = int(np.sum(mask & ~water))
+        mask &= ~water
+
+    logger.info(
+        'Compute mask (type+unw+water): type-valid={}, after unw={}, final={} ({:.1f}%)'.format(
+            n_type, n_after_unw, n_final, 100.0 * n_final / mask.size if mask.size else 0.0))
+
+    mask.astype(np.byte).tofile(mask_file)
+
+
 def getMask(inps, maskFile, lowBandIgram=None, highBandIgram=None):
     '''
-    Generate mask file for filtering, with support for water body masking
+    Generate compute mask for ion filtering.
+
+    Final mask = dispersive_filter_mask_type AND compute_unw_valid AND NOT water.
+
+    compute_unw_valid uses conncomp>0 when available (see _compute_unw_valid_mask).
     '''
     if lowBandIgram is None:
         lowBandIgram = inps.lowBandIgram 
@@ -1065,55 +1427,155 @@ def getMask(inps, maskFile, lowBandIgram=None, highBandIgram=None):
         ret = os.system(cmd)
         if ret != 0:
             raise RuntimeError('Failed to generate mask file using unwrapped files. Command: {}'.format(cmd))
-    
-    # Apply water body mask if available (matching StripmapProc behavior)
-    # Check for water body file in the interferogram directory
-    ifgDirname = os.path.dirname(lowBandIgram)
-    
-    # Try to find water body file with multilook suffix
-    numberRangeLooksIon = getattr(inps, 'numberRangeLooksIon', None)
-    numberAzimuthLooksIon = getattr(inps, 'numberAzimuthLooksIon', None)
-    
-    if numberRangeLooksIon and numberAzimuthLooksIon:
-        azLooks = getattr(inps, 'azLooks', 1)
-        rngLooks = getattr(inps, 'rngLooks', 1)
-        totalAzLooks = int(azLooks * numberAzimuthLooksIon)
-        totalRgLooks = int(rngLooks * numberRangeLooksIon)
-        ml2 = '_{}rlks_{}alks'.format(totalRgLooks, totalAzLooks)
-        wbdFile = os.path.join(ifgDirname, 'wbd' + ml2 + '.wbd')
-    else:
-        # Try without multilook suffix
-        wbdFile = os.path.join(ifgDirname, 'wbd.wbd')
-    
-    # Also check in parent directory
-    if not os.path.exists(wbdFile + '.xml'):
-        parentDir = os.path.dirname(ifgDirname)
-        wbdFile = os.path.join(parentDir, 'wbd.wbd')
-    
-    # Apply water body mask if found
-    if os.path.exists(wbdFile + '.xml'):
-        logger.info('Applying water body mask from: {}'.format(wbdFile))
-        # Load mask and water body files
-        img_mask = isceobj.createImage()
-        img_mask.load(maskFile + '.xml')
-        width = img_mask.width
-        length = img_mask.length
-        
-        mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
-        wbd = np.fromfile(wbdFile, dtype=np.int8).reshape(length, width)
-        
-        # Mask out water body regions (wbd==-1 means water)
-        mask[np.nonzero(wbd==-1)] = 0
-        
-        # Save updated mask
-        mask.astype(np.byte).tofile(maskFile)
-        logger.info('Water body mask applied: {} pixels masked out'.format(np.sum(wbd==-1)))
 
-    # Verify that mask file was created
+    _finalize_compute_mask_with_unw_and_water(inps, maskFile, lowBandIgram, highBandIgram)
+
+    # Verify that compute mask file was created
     if not os.path.exists(maskFile):
         raise RuntimeError('Mask file was not created: {}'.format(maskFile))
     if not os.path.exists(maskFile + '.xml'):
         raise RuntimeError('Mask file XML was not created: {}'.format(maskFile + '.xml'))
+
+
+def _normalize_output_mask_type(mask_type):
+    """Map legacy ion_output_mask_type values to int_valid behavior."""
+    if mask_type in ('water_and_int', 'water_and_unw'):
+        if mask_type == 'water_and_int':
+            logger.info(
+                'ion_output_mask_type=water_and_int is an alias for int_valid '
+                '(output_mask uses .int amp>0 only; water stays in mask.bil).')
+        elif mask_type == 'water_and_unw':
+            logger.warning(
+                'ion_output_mask_type=water_and_unw is deprecated; using int_valid (.int amp>0 only).')
+        return 'int_valid'
+    return mask_type
+
+
+def getOutputMask(inps, outputMaskFile, lowBandIgram=None, highBandIgram=None):
+    '''
+    Write output_mask.bil according to ion_output_mask_type.
+
+    int_valid (default): sub-band .int amp>0 intersect full-band .int (strict downsample).
+    No water mask — water exclusion stays in mask.bil for filtering only.
+    '''
+    if lowBandIgram is None:
+        lowBandIgram = inps.lowBandIgram
+    if highBandIgram is None:
+        highBandIgram = inps.highBandIgram
+
+    mask_type = _normalize_output_mask_type(
+        getattr(inps, 'ionOutputMaskType', 'int_valid'))
+    if mask_type != 'int_valid':
+        raise RuntimeError(
+            'getOutputMask called with ion_output_mask_type={!r}; expected int_valid'.format(
+                getattr(inps, 'ionOutputMaskType', 'int_valid')))
+
+    valid, length, width = _build_int_output_mask(inps, lowBandIgram, highBandIgram)
+    label = 'int amp>0'
+
+    n_valid = int(np.sum(valid))
+    logger.info(
+        'Output mask ({}): {} valid / {} pixels ({:.1f}%)'.format(
+            label, n_valid, valid.size, 100.0 * n_valid / valid.size if valid.size else 0.0))
+
+    valid.astype(np.byte).tofile(outputMaskFile)
+    write_xml(outputMaskFile, width, length, 1, 'BYTE', 'BIL')
+
+
+def _apply_filtering_masks(ion, std, compute_mask, output_mask):
+    """
+    Apply separate compute vs output masks before ion filtering.
+
+    - output_mask==0: zero ion and std (true no-data for output)
+    - compute_mask==0: zero std only so pixel may receive filtered values but not contribute
+    """
+    ion[output_mask == 0] = 0
+    std[output_mask == 0] = 0
+    std[compute_mask == 0] = 0
+
+
+def _load_compute_and_output_masks(mask_file, output_mask_file, length, width, use_split):
+    compute_mask = np.fromfile(mask_file, dtype=np.byte).reshape(length, width)
+    if use_split:
+        output_mask = np.fromfile(output_mask_file, dtype=np.byte).reshape(length, width)
+    else:
+        output_mask = compute_mask
+    return compute_mask, output_mask
+
+
+def _prepare_phase_arrays_for_filtering(phase, std, compute_mask, output_mask, use_split,
+                                        cor_low, cor_high):
+    if use_split:
+        _apply_filtering_masks(phase, std, compute_mask, output_mask)
+        apply_alos_style_dual_band_invalid(phase, std, cor_low, cor_high, zero_data=False)
+    else:
+        phase[compute_mask == 0] = 0
+        std[compute_mask == 0] = 0
+        apply_alos_style_dual_band_invalid(phase, std, cor_low, cor_high, zero_data=True)
+
+
+def _clip_filtered_output(phase_final, compute_mask, output_mask, use_split):
+    if use_split:
+        phase_final[output_mask == 0] = 0.0
+    else:
+        phase_final[compute_mask == 0] = 0.0
+
+
+def _resolve_output_mask_file(inps, out_dir):
+    """Return path to the byte mask file used for final ion output masking."""
+    mask_type = _normalize_output_mask_type(
+        getattr(inps, 'ionOutputMaskType', 'int_valid'))
+    if mask_type in ('none', 'full_band_igram'):
+        return None
+    if mask_type == 'compute_mask':
+        return os.path.join(out_dir, 'mask.bil')
+    return os.path.join(out_dir, 'output_mask.bil')
+
+
+def apply_ion_output_mask_to_outputs(inps, output_files, out_dir):
+    """Apply the configured final output mask to ion products."""
+    mask_type = _normalize_output_mask_type(
+        getattr(inps, 'ionOutputMaskType', 'int_valid'))
+    if mask_type == 'none':
+        logger.info('ion_output_mask_type=none: skipping final output mask.')
+        return
+    if mask_type == 'full_band_igram':
+        apply_fullband_nodata_mask_to_outputs(inps, output_files)
+        return
+
+    mask_file = _resolve_output_mask_file(inps, out_dir)
+    if not mask_file or not os.path.exists(mask_file + '.xml'):
+        logger.warning('Output mask file not found ({}); skipping final output mask.'.format(mask_file))
+        return
+
+    img_mask = isceobj.createImage()
+    img_mask.load(mask_file + '.xml')
+    mask_length, mask_width = int(img_mask.length), int(img_mask.width)
+    valid = np.fromfile(mask_file, dtype=np.byte).reshape(mask_length, mask_width) != 0
+    n_invalid = int(np.sum(~valid))
+    logger.info(
+        'Applying ion output mask from {} (type={}): {} invalid / {} pixels ({:.1f}%)'.format(
+            mask_file, mask_type, n_invalid, valid.size,
+            100.0 * n_invalid / valid.size if valid.size else 0.0))
+
+    for out_path in output_files:
+        if not os.path.exists(out_path):
+            logger.warning('Output file not found, skipping output mask: {}'.format(out_path))
+            continue
+        img_out = isceobj.createImage()
+        img_out.load(out_path + '.xml')
+        out_length, out_width = int(img_out.length), int(img_out.width)
+        out_data = np.fromfile(out_path, dtype=np.float32).reshape(out_length, out_width)
+
+        mask_on_out = _resample_valid_mask(valid, out_length, out_width)
+        if (out_length, out_width) != (mask_length, mask_width):
+            logger.info('Resampled output mask from {}x{} to {}x{} for {}'.format(
+                mask_length, mask_width, out_length, out_width, os.path.basename(out_path)))
+
+        out_data[~mask_on_out] = 0.0
+        out_data.astype(np.float32).tofile(out_path)
+        logger.info('Applied ion output mask to: {}'.format(out_path))
+
 
 def unwrapp_error_correction(f0, B, dispFile, nonDispFile,lowBandIgram, highBandIgram, jumpsFile, y_ref=None, x_ref=None):
 
@@ -1255,6 +1717,222 @@ def computeNumberOfLooks(inps, wvl0, wvlL, wvlH, B, f0, fL, fH):
     return numberOfLooks
 
 
+def _read_unw_phase_for_mask(path):
+    """Return (phase_array, length, width) from an unwrapped interferogram."""
+    img_tmp = isceobj.createImage()
+    img_tmp.load(path + '.xml')
+    length, width = img_tmp.length, img_tmp.width
+    data = np.fromfile(path, dtype=np.float32)
+    n_single = length * width
+    n_bil = length * 2 * width
+    if data.size == n_single:
+        return data.reshape(length, width), length, width
+    if data.size == n_bil:
+        arr = data.reshape(length * 2, width)
+        return arr[1:length * 2:2, :], length, width
+    raise ValueError(
+        'Unexpected binary size for {}: {} floats (expected {} or {})'.format(
+            path, data.size, n_single, n_bil))
+
+
+def _read_int_nodata_mask(int_path, amp_threshold=0.0, relative_fraction=None):
+    """Return (valid_mask, length, width) from a wrapped interferogram (.int)."""
+    return _read_int_amp_valid(
+        int_path, amp_threshold=amp_threshold, relative_fraction=relative_fraction)
+
+
+def _resolve_fullband_int_valid_mask(inps, amp_threshold=0.0, relative_fraction=None):
+    """Build valid-pixel mask from full-band .int, or (None, None, None)."""
+    if getattr(inps, 'fullBandIgram', None) and os.path.exists(inps.fullBandIgram + '.xml'):
+        logger.info('Using configured full-band interferogram for int mask: {}'.format(
+            inps.fullBandIgram))
+        return _read_int_amp_valid(
+            inps.fullBandIgram, amp_threshold, relative_fraction=relative_fraction)
+
+    pair_dir, pair_name = _find_fullband_pair_dir(inps.lowBandIgram, inps.outDir)
+    int_path = _find_fullband_int(pair_dir, pair_name)
+    if int_path is not None:
+        logger.info('Using full-band interferogram for int mask: {}'.format(int_path))
+        return _read_int_amp_valid(int_path, amp_threshold, relative_fraction=relative_fraction)
+    return None, None, None
+
+
+def _resolve_fullband_nodata_mask_with_threshold(inps, amp_threshold=0.0, relative_fraction=None):
+    """Build a boolean valid-pixel mask from the original full-band interferogram."""
+    valid, length, width = _resolve_fullband_int_valid_mask(
+        inps, amp_threshold=amp_threshold, relative_fraction=relative_fraction)
+    if valid is None:
+        pair_dir, pair_name = _find_fullband_pair_dir(inps.lowBandIgram, inps.outDir)
+        unw_method = getattr(inps, 'lowBandIgramUnwMethod', 'snaphu')
+        unw_path = _find_fullband_unw(pair_dir, pair_name, unw_method=unw_method)
+        if unw_path is not None:
+            logger.warning(
+                'Full-band .int not found in {}; falling back to full-band unw nodata mask: {}'.format(
+                    pair_dir, unw_path))
+            phase, length, width = _read_unw_phase_for_mask(unw_path)
+            return (phase != 0), length, width
+        logger.warning(
+            'Full-band interferogram not found in {}; skipping full-band nodata mask.'.format(pair_dir))
+        return None, None, None
+    return valid, length, width
+
+
+def _find_fullband_pair_dir(low_igram_path, out_dir):
+    """Return (igrams_pair_dir, pair_name) for the full-band interferogram directory."""
+    low_dir = os.path.dirname(os.path.abspath(low_igram_path))
+    pair_name = os.path.basename(low_dir)
+    parent = os.path.dirname(low_dir)
+    parent_name = os.path.basename(parent)
+
+    if parent_name in ('LowBand', 'HighBand', 'lowBand', 'highBand'):
+        igrams_root = os.path.dirname(parent)
+    elif parent_name == 'Igrams':
+        igrams_root = parent
+    else:
+        pair_name = os.path.basename(os.path.abspath(out_dir))
+        igrams_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(out_dir))), 'Igrams')
+
+    return os.path.join(igrams_root, pair_name), pair_name
+
+
+def _find_fullband_int(pair_dir, pair_name):
+    """Locate the full-band wrapped interferogram (.int) in Igrams/{pair}/."""
+    import glob
+
+    preferred = [
+        os.path.join(pair_dir, 'filt_{}.int'.format(pair_name)),
+        os.path.join(pair_dir, '{}.int'.format(pair_name)),
+    ]
+    for path in preferred:
+        if os.path.exists(path + '.xml'):
+            return path
+
+    for pattern in ('filt_*.int', '*.int'):
+        for path in sorted(glob.glob(os.path.join(pair_dir, pattern))):
+            if os.path.exists(path + '.xml'):
+                return path
+    return None
+
+
+def _find_fullband_unw(pair_dir, pair_name, unw_method='snaphu'):
+    """Locate the full-band unwrapped interferogram (.unw) in Igrams/{pair}/."""
+    import glob
+
+    preferred = [
+        os.path.join(pair_dir, 'filt_{}_{}.unw'.format(pair_name, unw_method)),
+        os.path.join(pair_dir, 'filt_{}_snaphu.unw'.format(pair_name)),
+        os.path.join(pair_dir, '{}_{}.unw'.format(pair_name, unw_method)),
+    ]
+    for path in preferred:
+        if os.path.exists(path + '.xml'):
+            return path
+
+    for path in sorted(glob.glob(os.path.join(pair_dir, '*.unw'))):
+        if os.path.exists(path + '.xml'):
+            return path
+    return None
+
+
+def _resolve_fullband_nodata_mask(inps):
+    """Build a boolean valid-pixel mask from the original full-band interferogram.
+
+    Returns (valid_mask, length, width) or (None, None, None) if unavailable.
+    """
+    return _resolve_fullband_nodata_mask_with_threshold(
+        inps,
+        amp_threshold=_output_int_amplitude_threshold(inps),
+        relative_fraction=_output_int_relative_amplitude_fraction(inps))
+
+
+def _resample_valid_mask_lenient(valid_mask, target_length, target_width):
+    """Downsample: target pixel valid if ANY source pixel in its footprint is valid."""
+    src_length, src_width = valid_mask.shape
+    if (src_length, src_width) == (target_length, target_width):
+        return valid_mask.astype(bool)
+
+    if target_length >= src_length and target_width >= src_width:
+        zoom_r = target_length / src_length
+        zoom_c = target_width / src_width
+        return ndimage.zoom(valid_mask.astype(np.float32), (zoom_r, zoom_c), order=0) > 0.5
+
+    out = np.zeros((target_length, target_width), dtype=bool)
+    for i in range(target_length):
+        r0 = int(round(i * src_length / target_length))
+        r1 = int(round((i + 1) * src_length / target_length))
+        r1 = max(r1, r0 + 1)
+        for j in range(target_width):
+            c0 = int(round(j * src_width / target_width))
+            c1 = int(round((j + 1) * src_width / target_width))
+            c1 = max(c1, c0 + 1)
+            out[i, j] = np.any(valid_mask[r0:r1, c0:c1])
+    return out
+
+
+def _resample_valid_mask_strict(valid_mask, target_length, target_width):
+    """Downsample: target pixel valid only if ALL source pixels in footprint are valid."""
+    src_length, src_width = valid_mask.shape
+    if (src_length, src_width) == (target_length, target_width):
+        return valid_mask.astype(bool)
+
+    if target_length >= src_length and target_width >= src_width:
+        zoom_r = target_length / src_length
+        zoom_c = target_width / src_width
+        return ndimage.zoom(valid_mask.astype(np.float32), (zoom_r, zoom_c), order=0) > 0.5
+
+    out = np.zeros((target_length, target_width), dtype=bool)
+    for i in range(target_length):
+        r0 = int(round(i * src_length / target_length))
+        r1 = int(round((i + 1) * src_length / target_length))
+        r1 = max(r1, r0 + 1)
+        for j in range(target_width):
+            c0 = int(round(j * src_width / target_width))
+            c1 = int(round((j + 1) * src_width / target_width))
+            c1 = max(c1, c0 + 1)
+            out[i, j] = np.all(valid_mask[r0:r1, c0:c1])
+    return out
+
+
+def _resample_valid_mask(valid_mask, target_length, target_width):
+    """Lenient downsample (legacy helper for water mask upsample paths)."""
+    return _resample_valid_mask_lenient(valid_mask, target_length, target_width)
+
+
+def _resample_mask_to_target(valid_mask, target_length, target_width, strict_downsample=True):
+    if strict_downsample:
+        return _resample_valid_mask_strict(valid_mask, target_length, target_width)
+    return _resample_valid_mask_lenient(valid_mask, target_length, target_width)
+
+
+def apply_fullband_nodata_mask_to_outputs(inps, output_files):
+    """Zero ion output pixels where the original full-band interferogram has no data."""
+    valid_mask, mask_length, mask_width = _resolve_fullband_nodata_mask(inps)
+    if valid_mask is None:
+        return
+
+    n_invalid = int(np.sum(~valid_mask))
+    logger.info('Output nodata mask from full-band interferogram: {} invalid / {} pixels ({:.1f}%)'.format(
+        n_invalid, valid_mask.size, 100.0 * n_invalid / valid_mask.size))
+
+    for out_path in output_files:
+        if not os.path.exists(out_path):
+            logger.warning('Output file not found, skipping nodata mask: {}'.format(out_path))
+            continue
+        img_out = isceobj.createImage()
+        img_out.load(out_path + '.xml')
+        out_length, out_width = img_out.length, img_out.width
+        out_data = np.fromfile(out_path, dtype=np.float32).reshape(out_length, out_width)
+
+        mask_on_out = _resample_mask_to_target(
+            valid_mask, out_length, out_width, strict_downsample=True)
+        if (out_length, out_width) != (mask_length, mask_width):
+            logger.info('Resampled full-band nodata mask from {}x{} to {}x{} for {}'.format(
+                mask_length, mask_width, out_length, out_width, os.path.basename(out_path)))
+
+        out_data[~mask_on_out] = 0.0
+        out_data.astype(np.float32).tofile(out_path)
+        logger.info('Applied full-band nodata mask to: {}'.format(out_path))
+
+
 def main(iargs=None):
 
 
@@ -1355,6 +2033,9 @@ def main(iargs=None):
     inps.Sig_phi_H = os.path.join(inps.outDir, 'highBand.Sigma')
 
     maskFile = os.path.join(inps.outDir, "mask.bil")
+    outputMaskFile = os.path.join(inps.outDir, "output_mask.bil")
+    use_split_filter_masks = _normalize_output_mask_type(
+        getattr(inps, 'ionOutputMaskType', 'int_valid')) == 'int_valid'
 
     #referenceFrame = self._insar.loadProduct( self._insar.referenceSlcCropProduct)
     wvl, wvlL, wvlH, B = getBandFrequencies(inps)
@@ -1463,6 +2144,12 @@ def main(iargs=None):
     # generating a mask which will help filtering the estimated dispersive and non-dispersive phase
     # Use multilooked interferograms for mask generation if they were used for ionosphere estimation
     getMask(inps, maskFile, lowBandIgram=lowBandIgramForIono, highBandIgram=highBandIgramForIono)
+    if use_split_filter_masks:
+        getOutputMask(inps, outputMaskFile, lowBandIgram=lowBandIgramForIono, highBandIgram=highBandIgramForIono)
+        logger.info(
+            'Split masks: mask.bil = filter_type + compute_unw(conncomp) + water; '
+            'output_mask.bil = .int amp>0 only, no water (ion_output_mask_type={}).'.format(
+                getattr(inps, 'ionOutputMaskType', 'int_valid')))
 
     # Calculating the theoretical standard deviation of the estimation based on the coherence of the interferograms
     # Use more accurate number of looks calculation (ALOS-style) if possible
@@ -1511,6 +2198,27 @@ def main(iargs=None):
         # Use adaptive Gaussian filtering (similar to StripmapProc)
         logger.info('Using adaptive Gaussian filtering for ionospheric phase')
         import scipy.signal as ss
+
+        size_max = getattr(inps, 'filteringWinsizeMaxIon', 501)
+        size_min = getattr(inps, 'filteringWinsizeMinIon', 51)
+        size_secondary = getattr(inps, 'filteringWinsizeSecondaryIon', 5)
+        fitAdaptive = getattr(inps, 'fitAdaptiveIon', True)
+        filtSecondary = getattr(inps, 'filtSecondaryIon', True)
+        fitIon = getattr(inps, 'fitIon', True)
+        filtIon = getattr(inps, 'filtIon', True)
+        corThresholdFit = getattr(inps, 'fitIonCoherenceThreshold', 0.25)
+        std_out0 = getattr(inps, 'filterStdIon', None)
+        if std_out0 is None:
+            std_out0 = 0.005
+
+        if (not fitIon) and (not filtIon):
+            raise Exception('either fit_ion or filt_ion should be True when doing ionospheric correction')
+
+        if size_min > size_max:
+            size_max = size_min
+        if size_secondary % 2 != 1:
+            size_secondary += 1
+            logger.info('Window size of secondary filtering should be odd, changed to {}'.format(size_secondary))
         
         # Read data and std - need to get dimensions first
         img = isceobj.createImage()
@@ -1520,42 +2228,15 @@ def main(iargs=None):
         
         ionos = np.fromfile(outDispersive, dtype=np.float32).reshape(length, width)
         std = np.fromfile(sigmaDispersive, dtype=np.float32).reshape(length, width)
-        mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
-        
-        # Apply mask: mask==0 marks invalid samples
-        ionos[mask==0] = 0
-        std[mask==0] = 0
+        compute_mask, output_mask = _load_compute_and_output_masks(
+            maskFile, outputMaskFile, length, width, use_split_filter_masks)
 
-        # Alos2Proc ion_filt: std/ion invalid where either sub-band coherence ~0 (single-band .cor OK)
-        g2d = None
         cor_low_ion = read_coherence_2d(inps.lowBandCoherence, length, width)
         cor_high_ion = read_coherence_2d(inps.highBandCoherence, length, width)
-        apply_alos_style_dual_band_invalid(ionos, std, cor_low_ion, cor_high_ion)
-        
-        # Get filtering parameters (defaults match StripmapProc/alosStack.xml)
-        size_max = getattr(inps, 'filteringWinsizeMaxIon', 501)
-        size_min = getattr(inps, 'filteringWinsizeMinIon', 51)
-        size_secondary = getattr(inps, 'filteringWinsizeSecondaryIon', 5)
-        std_out0 = getattr(inps, 'filterStdIon', None)
-        fitAdaptive = getattr(inps, 'fitAdaptiveIon', True)
-        filtSecondary = getattr(inps, 'filtSecondaryIon', True)
-        fitIon = getattr(inps, 'fitIon', True)
-        filtIon = getattr(inps, 'filtIon', True)
-        corThresholdFit = getattr(inps, 'fitIonCoherenceThreshold', 0.25)
-        
-        # Check that at least one of fit or filt is enabled
-        if (not fitIon) and (not filtIon):
-            raise Exception('either fit_ion or filt_ion should be True when doing ionospheric correction')
-        
-        # If std_out0 is None, use a reasonable default
-        if std_out0 is None:
-            std_out0 = 0.005  # Default fallback
-        
-        if size_min > size_max:
-            size_max = size_min
-        if size_secondary % 2 != 1:
-            size_secondary += 1
-            logger.info('Window size of secondary filtering should be odd, changed to {}'.format(size_secondary))
+        g2d = None
+        _prepare_phase_arrays_for_filtering(
+            ionos, std, compute_mask, output_mask, use_split_filter_masks,
+            cor_low_ion, cor_high_ion)
         
         # Global polynomial fitting (ALOS-style) before filtering
         ionos_fit = None
@@ -1609,6 +2290,9 @@ def main(iargs=None):
         else:
             ionos_final = ionos
 
+        # Re-apply output/compute mask to prevent filter/polynomial spillover
+        _clip_filtered_output(ionos_final, compute_mask, output_mask, use_split_filter_masks)
+
         # Save filtered results
         ionos_final.astype(np.float32).tofile(outDispersive + ".filt")
         write_xml(outDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
@@ -1622,9 +2306,9 @@ def main(iargs=None):
         # Filter non-dispersive phase
         nonDisp = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
         std_nonDisp = np.fromfile(sigmaNonDispersive, dtype=np.float32).reshape(length, width)
-        nonDisp[mask==0] = 0
-        std_nonDisp[mask==0] = 0
-        apply_alos_style_dual_band_invalid(nonDisp, std_nonDisp, cor_low_ion, cor_high_ion)
+        _prepare_phase_arrays_for_filtering(
+            nonDisp, std_nonDisp, compute_mask, output_mask, use_split_filter_masks,
+            cor_low_ion, cor_high_ion)
         
         # Global polynomial fitting for non-dispersive phase
         nonDisp_fit = None
@@ -1666,13 +2350,15 @@ def main(iargs=None):
         else:
             nonDisp_final = nonDisp
 
+        _clip_filtered_output(nonDisp_final, compute_mask, output_mask, use_split_filter_masks)
+
         nonDisp_final.astype(np.float32).tofile(outNonDispersive + ".filt")
         write_xml(outNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         if filtNonDisp and std_nonDisp_filt is not None:
             std_nonDisp_filt.astype(np.float32).tofile(sigmaNonDispersive + ".filt")
             write_xml(sigmaNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         
-        del ionos, std, mask, nonDisp, std_nonDisp
+        del ionos, std, compute_mask, output_mask, nonDisp, std_nonDisp
         if ionos_filt is not None:
             del ionos_filt, std_filt
         if nonDisp_filt is not None:
@@ -1713,13 +2399,13 @@ def main(iargs=None):
         # Use adaptive Gaussian filtering again
         ionos = np.fromfile(outDispersive, dtype=np.float32).reshape(length, width)
         std = np.fromfile(sigmaDispersive, dtype=np.float32).reshape(length, width)
-        mask = np.fromfile(maskFile, dtype=np.byte).reshape(length, width)
-        ionos[mask==0] = 0
-        std[mask==0] = 0
-
+        compute_mask, output_mask = _load_compute_and_output_masks(
+            maskFile, outputMaskFile, length, width, use_split_filter_masks)
         cor_low_ion = read_coherence_2d(inps.lowBandCoherence, length, width)
         cor_high_ion = read_coherence_2d(inps.highBandCoherence, length, width)
-        apply_alos_style_dual_band_invalid(ionos, std, cor_low_ion, cor_high_ion)
+        _prepare_phase_arrays_for_filtering(
+            ionos, std, compute_mask, output_mask, use_split_filter_masks,
+            cor_low_ion, cor_high_ion)
         
         # Global polynomial fitting for corrected dispersive phase
         ionos_fit = None
@@ -1761,6 +2447,9 @@ def main(iargs=None):
         else:
             ionos_final = ionos
 
+        # Re-apply output/compute mask to prevent filter/polynomial spillover
+        _clip_filtered_output(ionos_final, compute_mask, output_mask, use_split_filter_masks)
+
         ionos_final.astype(np.float32).tofile(outDispersive + ".filt")
         write_xml(outDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         if filtIon and std_filt is not None:
@@ -1772,9 +2461,9 @@ def main(iargs=None):
         
         nonDisp = np.fromfile(outNonDispersive, dtype=np.float32).reshape(length, width)
         std_nonDisp = np.fromfile(sigmaNonDispersive, dtype=np.float32).reshape(length, width)
-        nonDisp[mask==0] = 0
-        std_nonDisp[mask==0] = 0
-        apply_alos_style_dual_band_invalid(nonDisp, std_nonDisp, cor_low_ion, cor_high_ion)
+        _prepare_phase_arrays_for_filtering(
+            nonDisp, std_nonDisp, compute_mask, output_mask, use_split_filter_masks,
+            cor_low_ion, cor_high_ion)
         
         # Global polynomial fitting for corrected non-dispersive phase
         nonDisp_fit = None
@@ -1815,13 +2504,15 @@ def main(iargs=None):
         else:
             nonDisp_final = nonDisp
 
+        _clip_filtered_output(nonDisp_final, compute_mask, output_mask, use_split_filter_masks)
+
         nonDisp_final.astype(np.float32).tofile(outNonDispersive + ".filt")
         write_xml(outNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         if filtNonDisp and std_nonDisp_filt is not None:
             std_nonDisp_filt.astype(np.float32).tofile(sigmaNonDispersive + ".filt")
             write_xml(sigmaNonDispersive + ".filt", width, length, 1, "FLOAT", "BIL")
         
-        del ionos, std, mask, nonDisp, std_nonDisp
+        del ionos, std, compute_mask, output_mask, nonDisp, std_nonDisp
         if ionos_filt is not None:
             del ionos_filt, std_filt
         if nonDisp_filt is not None:
@@ -1844,222 +2535,14 @@ def main(iargs=None):
                         iteration = inps.dispersive_filter_iterations,
                         theta = inps.kernel_rotation)
     
-    # Resample ionospheric phase back to original interferogram resolution (first multilook, before extra ionospheric looks)
-    # The final ionospheric phase should have the same dimensions as the original interferogram
-    if useMultilookedUnw and numberRangeLooksIon and numberAzimuthLooksIon and (numberRangeLooksIon > 1 or numberAzimuthLooksIon > 1):
-        # Get dimensions of multilooked ionosphere (at extra multilooked resolution)
-        img_ion = isceobj.createImage()
-        img_ion.load(outDispersive + '.filt.xml')
-        width_ion = img_ion.width
-        length_ion = img_ion.length
-        
-        # Get dimensions of original interferogram (first multilook, before extra ionospheric looks)
-        # The original interferogram is the one before extra multilooking (e.g., filt_xxx.int, not filt_xxx_6rlks_6alks.int)
-        # Find the original interferogram file (first multilook)
-        originalIntFile = None
-        ifgDirname = os.path.dirname(inps.lowBandIgram)
-        
-        # Try to find the original interferogram file (first multilook, before extra multilooking)
-        # The lowBandIgramPrefix may contain the multilook suffix (e.g., filt_20250813_20250910_6rlks_6alks)
-        # We need to remove the multilook suffix to find the original file
-        # Original file could be: filt_20250813_20250910.int (filtered) or 20250813_20250910.int (unfiltered)
-        import glob
-        import re
-        baseName = inps.lowBandIgramPrefix
-        
-        # Remove the multilook suffix from baseName if present
-        # Pattern: _Xrlks_Yalks where X and Y are numbers
-        ml2_pattern = r'_\d+rlks_\d+alks$'
-        if re.search(ml2_pattern, baseName):
-            # Remove the multilook suffix
-            baseName = re.sub(ml2_pattern, '', baseName)
-            logger.info('Removed multilook suffix from baseName, using: {}'.format(baseName))
-        
-        # First, try to find filtered original interferogram (filt_xxx.int)
-        # This is the first multilook + filtered version (before extra multilooking)
-        pattern_filt = os.path.join(ifgDirname, baseName + '.int')
-        if os.path.exists(pattern_filt + '.xml'):
-            originalIntFile = pattern_filt
-            logger.info('Found original filtered interferogram: {}'.format(originalIntFile))
-        else:
-            # If filtered version doesn't exist, try to find unfiltered original (xxx.int)
-            # Remove 'filt_' prefix if present
-            baseNameUnfilt = baseName
-            if baseNameUnfilt.startswith('filt_'):
-                baseNameUnfilt = baseNameUnfilt[5:]  # Remove 'filt_' prefix
-            pattern_unfilt = os.path.join(ifgDirname, baseNameUnfilt + '.int')
-            if os.path.exists(pattern_unfilt + '.xml'):
-                originalIntFile = pattern_unfilt
-                logger.info('Found original unfiltered interferogram: {}'.format(originalIntFile))
-            else:
-                # Last resort: search all .int files in directory
-                # Look for files that don't have the extra multilook pattern
-                allIntFiles = glob.glob(os.path.join(ifgDirname, '*.int'))
-                ml2 = '_{}rlks_{}alks'.format(numberRangeLooksIon, numberAzimuthLooksIon)
-                for intFile in allIntFiles:
-                    # Remove .int extension and .xml if present for comparison
-                    intFileBase = os.path.basename(intFile).replace('.int', '').replace('.xml', '')
-                    # Check if this file doesn't have the multilook suffix
-                    # and matches either the filtered or unfiltered base name
-                    if ml2 not in intFileBase:
-                        if baseName in intFileBase or baseNameUnfilt in intFileBase:
-                            originalIntFile = intFile.replace('.xml', '')
-                            logger.info('Found original interferogram (alternative search): {}'.format(originalIntFile))
-                            break
-        
-        # If we found the original interferogram, use its dimensions for resampling
-        if originalIntFile and os.path.exists(originalIntFile + '.xml'):
-            img_orig = isceobj.createImage()
-            img_orig.load(originalIntFile + '.xml')
-            width_orig = img_orig.width
-            length_orig = img_orig.length
-            
-            logger.info('Original interferogram found: {} ({}x{})'.format(originalIntFile, length_orig, width_orig))
-            logger.info('Ionospheric phase current resolution: {}x{}'.format(length_ion, width_ion))
-            
-            # Always resample to match original interferogram dimensions
-            from scipy.interpolate import interp1d
-            
-            logger.info('Resampling ionospheric phase from {}x{} to {}x{} (original interferogram resolution)'.format(
-                width_ion, length_ion, width_orig, length_orig))
-            
-            # Resample dispersive phase
-            ionos_ml = np.fromfile(outDispersive + '.filt', dtype=np.float32).reshape(length_ion, width_ion)
-            
-            # Resample in range direction first
-            index_rg_ml = np.linspace(0, width_ion-1, num=width_ion, endpoint=True)
-            if width_orig != width_ion:
-                index_rg_orig = np.linspace(0, width_orig-1, num=width_orig, endpoint=True) * (width_ion-1)/(width_orig-1) if width_orig > 1 else np.array([0])
-            else:
-                index_rg_orig = index_rg_ml
-            
-            ionos_resampled_rg = np.zeros((length_ion, width_orig), dtype=np.float32)
-            for i in range(length_ion):
-                if width_orig == width_ion:
-                    ionos_resampled_rg[i, :] = ionos_ml[i, :]
-                else:
-                    f = interp1d(index_rg_ml, ionos_ml[i, :], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    ionos_resampled_rg[i, :] = f(index_rg_orig)
-            
-            # Resample in azimuth direction
-            if length_orig != length_ion:
-                index_az_ml = np.linspace(0, length_ion-1, num=length_ion, endpoint=True)
-                index_az_orig = np.linspace(0, length_orig-1, num=length_orig, endpoint=True) * (length_ion-1)/(length_orig-1) if length_orig > 1 else np.array([0])
-                ionos_final = np.zeros((length_orig, width_orig), dtype=np.float32)
-                for j in range(width_orig):
-                    f = interp1d(index_az_ml, ionos_resampled_rg[:, j], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    ionos_final[:, j] = f(index_az_orig)
-            else:
-                ionos_final = ionos_resampled_rg
-            
-            # Save resampled dispersive phase
-            ionos_final.astype(np.float32).tofile(outDispersive + ".filt")
-            write_xml(outDispersive + ".filt", width_orig, length_orig, 1, "FLOAT", "BIL")
-            
-            # Resample non-dispersive phase
-            nonDisp_ml = np.fromfile(outNonDispersive + '.filt', dtype=np.float32).reshape(length_ion, width_ion)
-            
-            nonDisp_resampled_rg = np.zeros((length_ion, width_orig), dtype=np.float32)
-            for i in range(length_ion):
-                if width_orig == width_ion:
-                    nonDisp_resampled_rg[i, :] = nonDisp_ml[i, :]
-                else:
-                    f = interp1d(index_rg_ml, nonDisp_ml[i, :], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    nonDisp_resampled_rg[i, :] = f(index_rg_orig)
-            
-            if length_orig != length_ion:
-                nonDisp_final = np.zeros((length_orig, width_orig), dtype=np.float32)
-                for j in range(width_orig):
-                    f = interp1d(index_az_ml, nonDisp_resampled_rg[:, j], kind='cubic', fill_value="extrapolate", bounds_error=False)
-                    nonDisp_final[:, j] = f(index_az_orig)
-            else:
-                nonDisp_final = nonDisp_resampled_rg
-            
-            # Save resampled non-dispersive phase
-            nonDisp_final.astype(np.float32).tofile(outNonDispersive + ".filt")
-            write_xml(outNonDispersive + ".filt", width_orig, length_orig, 1, "FLOAT", "BIL")
-            
-            logger.info('Ionospheric phase resampled from {}x{} to {}x{} (original interferogram resolution)'.format(
-                width_ion, length_ion, width_orig, length_orig))
-            
-            del ionos_ml, ionos_resampled_rg, ionos_final, nonDisp_ml, nonDisp_resampled_rg, nonDisp_final
-        else:
-            # Construct expected pattern for warning message
-            expected_pattern = os.path.join(ifgDirname, baseName + '.int')
-            logger.warning('Original interferogram file not found, cannot resample. Expected file pattern: {}'.format(expected_pattern))
-            logger.warning('Ionospheric phase will remain at extra multilooked resolution: {}x{}'.format(length_ion, width_ion))
 
-    # ------------------------------------------------------------------ #
-    # Final step: mask the output ionospheric files using the sub-band    #
-    # unwrapped interferograms.  Pixels where either the low-band or the  #
-    # high-band phase == 0 (i.e. not unwrapped) are zeroed out in both   #
-    # the dispersive and non-dispersive filtered output files.            #
-    # ------------------------------------------------------------------ #
-    def _read_unw_phase_for_mask(path):
-        """Return phase array from an unwrapped interferogram binary file."""
-        img_tmp = isceobj.createImage()
-        img_tmp.load(path + '.xml')
-        _l, _w = img_tmp.length, img_tmp.width
-        data = np.fromfile(path, dtype=np.float32)
-        n_single = _l * _w
-        n_bil    = _l * 2 * _w
-        if data.size == n_single:
-            return data.reshape(_l, _w), _l, _w
-        if data.size == n_bil:
-            arr = data.reshape(_l * 2, _w)
-            return arr[1:_l * 2:2, :], _l, _w
-        raise ValueError(
-            'Unexpected binary size for {}: {} floats (expected {} or {})'.format(
-                path, data.size, n_single, n_bil))
-
-    unw_mask = None
-    unw_mask_length = None
-    unw_mask_width  = None
-    for unw_path in [inps.lowBandIgram, inps.highBandIgram]:
-        if not os.path.exists(unw_path + '.xml'):
-            logger.warning('Sub-band unw file not found for masking: {}'.format(unw_path))
-            continue
-        try:
-            phase, _l, _w = _read_unw_phase_for_mask(unw_path)
-        except Exception as e:
-            logger.warning('Failed to read {} for masking: {}'.format(unw_path, e))
-            continue
-        valid = (phase != 0)
-        if unw_mask is None:
-            unw_mask = valid
-            unw_mask_length, unw_mask_width = _l, _w
-        else:
-            unw_mask = unw_mask & valid
-
-    if unw_mask is not None:
-        n_zeroed = int(np.sum(~unw_mask))
-        logger.info('Sub-band unw mask: {} pixels will be zeroed in final output.'.format(n_zeroed))
-
-        for out_filt in [outDispersive + '.filt', outNonDispersive + '.filt']:
-            if not os.path.exists(out_filt):
-                logger.warning('Output file not found, skipping mask: {}'.format(out_filt))
-                continue
-            img_filt = isceobj.createImage()
-            img_filt.load(out_filt + '.xml')
-            filt_length = img_filt.length
-            filt_width  = img_filt.width
-
-            filt_data = np.fromfile(out_filt, dtype=np.float32).reshape(filt_length, filt_width)
-
-            if (filt_length, filt_width) == (unw_mask_length, unw_mask_width):
-                filt_data[~unw_mask] = 0.0
-            else:
-                from scipy.ndimage import zoom as _zoom
-                zoom_r = filt_length / unw_mask_length
-                zoom_c = filt_width  / unw_mask_width
-                mask_resampled = _zoom(unw_mask.astype(np.float32), (zoom_r, zoom_c), order=1) > 0.5
-                logger.info(
-                    'Resampled unw mask from {}x{} to {}x{} to match filtered output.'.format(
-                        unw_mask_length, unw_mask_width, filt_length, filt_width))
-                filt_data[~mask_resampled] = 0.0
-
-            filt_data.astype(np.float32).tofile(out_filt)
-            logger.info('Sub-band unw mask applied to: {}'.format(out_filt))
+    # Final step: mask ion OUTPUT files only, using no-data regions from the
+    # original full-band wrapped interferogram (.int amplitude == 0).
+    # This does not change masks used during ion estimation / filtering.
+    apply_ion_output_mask_to_outputs(
+        inps,
+        [outDispersive + '.filt', outNonDispersive + '.filt'],
+        inps.outDir)
 
 
 if __name__ == '__main__':

@@ -43,7 +43,74 @@ def cmdLineParse(iargs = None):
     parser = createParser()
     return parser.parse_args(args=iargs)
 
-def maskInvalidPhase(intFilename, ampFilename, secondarySlcFilename=None, ampThreshold=1e-6, azLooks=1, rgLooks=1, referenceSlcLength=None):
+def _buildSlcInvalidMask(slcFilename, width, length, azLooks, rgLooks, effectiveSlcLength, logger):
+    """
+    Build a boolean mask (True=invalid) at interferogram resolution from one SLC.
+    Returns None if the mask cannot be computed from this SLC.
+    """
+    if slcFilename is None or not os.path.exists(slcFilename + '.xml'):
+        if slcFilename is not None:
+            logger.warning('SLC file not found: {}. Skipping SLC-based masking for this image.'.format(
+                slcFilename))
+        return None
+
+    slcImg = isceobj.createSlcImage()
+    slcImg.load(slcFilename + '.xml')
+    slcWidth = slcImg.getWidth()
+    slcLength = slcImg.getLength()
+
+    if slcWidth == width and slcLength == length:
+        slc = np.memmap(slcFilename, dtype=np.complex64, mode='r', shape=(length, width))
+        invalidMask = (np.abs(slc) == 0.0) | ~np.isfinite(slc)
+        del slc
+        return invalidMask
+
+    if azLooks > 1 or rgLooks > 1:
+        logger.info('SLC dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}). '
+                   'Applying multilooking to SLC {4} (azLooks={5}, rgLooks={6}).'.format(
+                   slcWidth, slcLength, width, length, slcFilename, azLooks, rgLooks))
+
+        slc = np.memmap(slcFilename, dtype=np.complex64, mode='r', shape=(slcLength, slcWidth))
+
+        if effectiveSlcLength is not None:
+            slcLines = min(effectiveSlcLength, slcLength)
+        else:
+            slcLines = slcLength
+
+        expectedWidth = int(slcWidth / rgLooks)
+        expectedLength = int(slcLines / azLooks)
+
+        if expectedWidth == width and expectedLength == length:
+            slcMl = np.zeros((length, width), dtype=np.complex64)
+            for i in range(length):
+                for j in range(width):
+                    i_start = i * azLooks
+                    i_end = min((i + 1) * azLooks, slcLines)
+                    j_start = j * rgLooks
+                    j_end = min((j + 1) * rgLooks, slcWidth)
+
+                    window = slc[i_start:i_end, j_start:j_end]
+                    if window.size > 0:
+                        slcMl[i, j] = np.mean(window)
+                    else:
+                        slcMl[i, j] = 0.0
+
+            invalidMask = (np.abs(slcMl) == 0.0) | ~np.isfinite(slcMl)
+            del slc, slcMl
+            return invalidMask
+
+        logger.warning('Expected multilooked SLC dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}) '
+                      'for {4}.'.format(expectedWidth, expectedLength, width, length, slcFilename))
+        del slc
+        return None
+
+    logger.warning('SLC dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}) for {4} '
+                  'and no looks were provided.'.format(slcWidth, slcLength, width, length, slcFilename))
+    return None
+
+
+def maskInvalidPhase(intFilename, ampFilename, secondarySlcFilename=None, referenceSlcFilename=None,
+                     ampThreshold=1e-6, azLooks=1, rgLooks=1, referenceSlcLength=None):
     """
     Mask invalid phase regions by setting them to zero.
     
@@ -51,14 +118,16 @@ def maskInvalidPhase(intFilename, ampFilename, secondarySlcFilename=None, ampThr
     intFilename: Path to interferogram file
     ampFilename: Path to amplitude file (not used, kept for backward compatibility)
     secondarySlcFilename: Path to secondary SLC file (optional, for phase-based masking)
+    referenceSlcFilename: Path to reference SLC file (optional, for phase-based masking)
     ampThreshold: Not used (kept for backward compatibility)
     azLooks: Azimuth looks applied to interferogram (default: 1)
     rgLooks: Range looks applied to interferogram (default: 1)
+    referenceSlcLength: Effective SLC line count used in crossmul (min of both lengths)
     
     Logic:
-    Check secondary SLC phase to determine invalid pixels.
-    If secondary SLC is zero (phase is undefined/invalid), set interferogram phase to zero.
-    This masks out non-overlapping regions where secondary image has no data.
+    Check reference and secondary SLC amplitudes to determine invalid pixels.
+    If either SLC is zero (phase is undefined/invalid), set interferogram phase to zero.
+    This masks out non-overlapping regions and any pixel without valid data in both images.
     """
     logger = logging.getLogger('isce.stack.crossmul')
     
@@ -70,91 +139,27 @@ def maskInvalidPhase(intFilename, ampFilename, secondarySlcFilename=None, ampThr
     
     # Read interferogram
     intf = np.memmap(intFilename, dtype=np.complex64, mode='r+', shape=(length, width))
-    
-    # Check secondary SLC phase if secondary SLC file is provided
-    if secondarySlcFilename is not None and os.path.exists(secondarySlcFilename + '.xml'):
-        # Read secondary SLC
-        secondarySlcImg = isceobj.createSlcImage()
-        secondarySlcImg.load(secondarySlcFilename + '.xml')
-        slcWidth = secondarySlcImg.getWidth()
-        slcLength = secondarySlcImg.getLength()
-        
-        # If dimensions match, check secondary SLC phase directly
-        if slcWidth == width and slcLength == length:
-            secondarySlc = np.memmap(secondarySlcFilename, dtype=np.complex64, mode='r', shape=(length, width))
-            
-            # Check if secondary SLC is zero (phase is undefined/invalid)
-            # If secondary SLC is zero, the phase is invalid, so mask the interferogram phase
-            invalidMask = (np.abs(secondarySlc) == 0.0) | ~np.isfinite(secondarySlc)
-            
-            del secondarySlc
-        elif azLooks > 1 or rgLooks > 1:
-            # Dimensions don't match but looks were applied - need to multilook the secondary SLC
-            logger.info('Secondary SLC dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}). '
-                       'Applying multilooking to secondary SLC (azLooks={4}, rgLooks={5}).'.format(
-                       slcWidth, slcLength, width, length, azLooks, rgLooks))
-            
-            # Read full resolution secondary SLC
-            secondarySlc = np.memmap(secondarySlcFilename, dtype=np.complex64, mode='r', shape=(slcLength, slcWidth))
-            
-            # Calculate expected multilooked dimensions
-            # Use the minimum of reference and secondary SLC lengths (matching crossmul behavior)
-            if referenceSlcLength is not None:
-                effectiveSlcLength = min(referenceSlcLength, slcLength)
-            else:
-                effectiveSlcLength = slcLength
-            
-            expectedWidth = int(slcWidth / rgLooks)
-            expectedLength = int(effectiveSlcLength / azLooks)
-            
-            if expectedWidth == width and expectedLength == length:
-                # Multilook the secondary SLC to match interferogram dimensions
-                secondarySlc_ml = np.zeros((length, width), dtype=np.complex64)
-                for i in range(length):
-                    for j in range(width):
-                        # Calculate pixel indices in original SLC
-                        i_start = i * azLooks
-                        i_end = min((i + 1) * azLooks, effectiveSlcLength)
-                        j_start = j * rgLooks
-                        j_end = min((j + 1) * rgLooks, slcWidth)
-                        
-                        # Average the pixels in the look window
-                        window = secondarySlc[i_start:i_end, j_start:j_end]
-                        if window.size > 0:
-                            secondarySlc_ml[i, j] = np.mean(window)
-                        else:
-                            secondarySlc_ml[i, j] = 0.0
-                
-                # Check if multilooked secondary SLC is zero
-                invalidMask = (np.abs(secondarySlc_ml) == 0.0) | ~np.isfinite(secondarySlc_ml)
-                del secondarySlc, secondarySlc_ml
-            else:
-                # Still doesn't match after multilooking calculation, fall back
-                logger.warning('Expected multilooked dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}). '
-                              'Falling back to interferogram-based masking.'.format(
-                              expectedWidth, expectedLength, width, length))
-                intfAmp = np.abs(intf)
-                invalidMask = (intfAmp == 0.0) | ~np.isfinite(intfAmp)
-                del secondarySlc
-        else:
-            # Dimensions don't match and no looks applied, fall back to checking interferogram
-            logger.warning('Secondary SLC dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}). '
-                          'Falling back to interferogram-based masking.'.format(
-                          slcWidth, slcLength, width, length))
-            intfAmp = np.abs(intf)
-            invalidMask = (intfAmp == 0.0) | ~np.isfinite(intfAmp)
+
+    slcMasks = []
+    for slcFilename in (referenceSlcFilename, secondarySlcFilename):
+        slcMask = _buildSlcInvalidMask(
+            slcFilename, width, length, azLooks, rgLooks, referenceSlcLength, logger)
+        if slcMask is not None:
+            slcMasks.append(slcMask)
+
+    if slcMasks:
+        invalidMask = slcMasks[0]
+        for slcMask in slcMasks[1:]:
+            invalidMask = invalidMask | slcMask
     else:
-        # No secondary SLC provided, fall back to checking interferogram
-        if secondarySlcFilename is not None:
-            logger.warning('Secondary SLC file not found: {}. Falling back to interferogram-based masking.'.format(
-                secondarySlcFilename))
+        logger.warning('Could not build SLC-based invalid mask; falling back to interferogram-based masking.')
         intfAmp = np.abs(intf)
         invalidMask = (intfAmp == 0.0) | ~np.isfinite(intfAmp)
     
     # Count invalid pixels
     nInvalid = np.sum(invalidMask)
     if nInvalid > 0:
-        logger.info('Masking {0} invalid pixels ({1:.2f}%) with zero phase (based on secondary SLC phase)'.format(
+        logger.info('Masking {0} invalid pixels ({1:.2f}%) with zero phase (reference or secondary SLC invalid)'.format(
             nInvalid, 100.0 * nInvalid / invalidMask.size))
         
         # Set invalid regions to zero
@@ -257,13 +262,14 @@ def run(imageSlc1, imageSlc2, resampName, azLooks, rgLooks, maskInvalid=False,
         objInt.finalizeImage()
         objAmp.finalizeImage()
         
-        # Use secondary SLC phase to determine invalid regions
-        # Pass the looks parameters so maskInvalidPhase can handle dimension mismatch
+        # Mask pixels where either reference or secondary SLC is invalid
+        referenceSlcFilename = objSlc1.getFilename()
         secondarySlcFilename = objSlc2.getFilename()
-        # Use the same length calculation as crossmul (min of both SLC lengths)
         effectiveSlcLength = min(imageSlc1.getLength(), imageSlc2.getLength())
-        maskInvalidPhase(resampInt, resampAmp, secondarySlcFilename=secondarySlcFilename, 
-                        ampThreshold=1e-6, azLooks=azLooks, rgLooks=rgLooks, 
+        maskInvalidPhase(resampInt, resampAmp,
+                        referenceSlcFilename=referenceSlcFilename,
+                        secondarySlcFilename=secondarySlcFilename,
+                        ampThreshold=1e-6, azLooks=azLooks, rgLooks=rgLooks,
                         referenceSlcLength=effectiveSlcLength)
     else:
         # Finalize images normally

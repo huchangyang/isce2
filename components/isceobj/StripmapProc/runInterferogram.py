@@ -47,79 +47,32 @@ def write_xml(fileName,width,length,bands,dataType,scheme):
     
     return None
 
-def maskInvalidPhase(intFilename, ampFilename, secondarySlcFilename=None, ampThreshold=1e-6):
-    """
-    Mask invalid phase regions by setting them to zero.
-    
-    Parameters:
-    intFilename: Path to interferogram file
-    ampFilename: Path to amplitude file (not used, kept for backward compatibility)
-    secondarySlcFilename: Path to secondary SLC file (optional, for phase-based masking)
-    ampThreshold: Not used (kept for backward compatibility)
-    
-    Logic:
-    Check secondary SLC phase to determine invalid pixels.
-    If secondary SLC is zero (phase is undefined/invalid), set interferogram phase to zero.
-    This masks out non-overlapping regions where secondary image has no data.
-    """
-    import numpy as np
-    
-    # Read dimensions from XML file
-    intImg = isceobj.createIntImage()
-    intImg.load(intFilename + '.xml')
-    width = intImg.getWidth()
-    length = intImg.getLength()
-    
-    # Read interferogram
-    intf = np.memmap(intFilename, dtype=np.complex64, mode='r+', shape=(length, width))
-    
-    # Check secondary SLC phase if secondary SLC file is provided
-    if secondarySlcFilename is not None and os.path.exists(secondarySlcFilename + '.xml'):
-        # Read secondary SLC
-        secondarySlcImg = isceobj.createSlcImage()
-        secondarySlcImg.load(secondarySlcFilename + '.xml')
-        slcWidth = secondarySlcImg.getWidth()
-        slcLength = secondarySlcImg.getLength()
-        
-        # If dimensions match, check secondary SLC phase
-        if slcWidth == width and slcLength == length:
-            secondarySlc = np.memmap(secondarySlcFilename, dtype=np.complex64, mode='r', shape=(length, width))
-            
-            # Check if secondary SLC is zero (phase is undefined/invalid)
-            # If secondary SLC is zero, the phase is invalid, so mask the interferogram phase
-            invalidMask = (np.abs(secondarySlc) == 0.0) | ~np.isfinite(secondarySlc)
-            
-            del secondarySlc
-        else:
-            # Dimensions don't match, fall back to checking interferogram
-            logger.warning('Secondary SLC dimensions ({0}x{1}) do not match interferogram dimensions ({2}x{3}). '
-                          'Falling back to interferogram-based masking.'.format(
-                          slcWidth, slcLength, width, length))
-            intfAmp = np.abs(intf)
-            invalidMask = (intfAmp == 0.0) | ~np.isfinite(intfAmp)
-    else:
-        # No secondary SLC provided, fall back to checking interferogram
-        if secondarySlcFilename is not None:
-            logger.warning('Secondary SLC file not found: {}. Falling back to interferogram-based masking.'.format(
-                secondarySlcFilename))
-        intfAmp = np.abs(intf)
-        invalidMask = (intfAmp == 0.0) | ~np.isfinite(intfAmp)
-    
-    # Count invalid pixels
-    nInvalid = np.sum(invalidMask)
-    if nInvalid > 0:
-        logger.info('Masking {0} invalid pixels ({1:.2f}%) with zero phase (based on secondary SLC phase)'.format(
-            nInvalid, 100.0 * nInvalid / invalidMask.size))
-        
-        # Set invalid regions to zero
-        intf[invalidMask] = 0.0 + 0.0j
-        
-        # Flush to disk
-        intf.flush()
-    
-    del intf
-    
-    return nInvalid
+_stack_crossmul_mod = None
+
+def _get_stack_crossmul():
+    global _stack_crossmul_mod
+    if _stack_crossmul_mod is None:
+        import importlib.util
+        mod_path = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            '..', '..', '..', 'contrib', 'stack', 'stripmapStack', 'crossmul.py'))
+        spec = importlib.util.spec_from_file_location('_stack_crossmul', mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _stack_crossmul_mod = mod
+    return _stack_crossmul_mod
+
+
+def maskInvalidPhase(intFilename, ampFilename, secondarySlcFilename=None, referenceSlcFilename=None,
+                     ampThreshold=1e-6, azLooks=1, rgLooks=1, referenceSlcLength=None):
+    return _get_stack_crossmul().maskInvalidPhase(
+        intFilename, ampFilename,
+        secondarySlcFilename=secondarySlcFilename,
+        referenceSlcFilename=referenceSlcFilename,
+        ampThreshold=ampThreshold,
+        azLooks=azLooks,
+        rgLooks=rgLooks,
+        referenceSlcLength=referenceSlcLength)
 
     	    
 def compute_FlatEarth(self,ifgFilename,width,length,radarWavelength):
@@ -298,10 +251,15 @@ def generateIgram(self,imageSlc1, imageSlc2, resampName, azLooks, rgLooks,radarW
        # crossmul.crossmul() already calls finalizeImage() and renderHdr(), so XML should exist
        # But we need to ensure the files are accessible
        
-       # Mask invalid phase in non-overlapping regions (where secondary has no data)
-       # Use secondary SLC phase to determine invalid regions
+       # Mask invalid phase where either reference or secondary SLC is invalid
+       referenceSlcFilename = objSlc1.getFilename()
        secondarySlcFilename = objSlc2.getFilename()
-       maskInvalidPhase(resampInt, resampAmp, secondarySlcFilename=secondarySlcFilename, ampThreshold=1e-6)
+       effectiveSlcLength = lines
+       maskInvalidPhase(resampInt, resampAmp,
+                        referenceSlcFilename=referenceSlcFilename,
+                        secondarySlcFilename=secondarySlcFilename,
+                        ampThreshold=1e-6, azLooks=azLooks, rgLooks=rgLooks,
+                        referenceSlcLength=effectiveSlcLength)
     else:
      # Modified by V. Brancato 10.09.2019 (added option to add Range Rubber sheet Flat-earth back)
        print('Rubbersheeting in range is on, removing flat-Earth phase')
@@ -316,10 +274,15 @@ def generateIgram(self,imageSlc1, imageSlc2, resampName, azLooks, rgLooks,radarW
        objInt.finalizeImage()
        objAmp.finalizeImage()
        
-       # Mask invalid phase in non-overlapping regions (where secondary has no data)
-       # Use secondary SLC phase to determine invalid regions
+       # Mask invalid phase where either reference or secondary SLC is invalid
+       referenceSlcFilename = objSlc1.getFilename()
        secondarySlcFilename = objSlc2.getFilename()
-       maskInvalidPhase(resampInt, resampAmp, secondarySlcFilename=secondarySlcFilename, ampThreshold=1e-6)
+       effectiveSlcLength = lines
+       maskInvalidPhase(resampInt, resampAmp,
+                        referenceSlcFilename=referenceSlcFilename,
+                        secondarySlcFilename=secondarySlcFilename,
+                        ampThreshold=1e-6, azLooks=azLooks, rgLooks=rgLooks,
+                        referenceSlcLength=effectiveSlcLength)
        
        # Remove Flat-Earth component
        compute_FlatEarth(self,resampInt,intWidth,lines,radarWavelength)
@@ -329,9 +292,11 @@ def generateIgram(self,imageSlc1, imageSlc2, resampName, azLooks, rgLooks,radarW
        multilook(resampAmp, outname=resampAmp.replace(".full",""), alks=azLooks, rlks=rgLooks)  #takeLooks(objInt,azLooks,rgLooks)
        
        # Mask invalid phase again after multilooking
-       # For multilooked interferogram, we may not have corresponding multilooked SLC, so use None
-       # The function will fall back to interferogram-based masking
-       maskInvalidPhase(resampName, resampAmp.replace(".full",""), secondarySlcFilename=None, ampThreshold=1e-6)
+       maskInvalidPhase(resampName, resampAmp.replace(".full",""),
+                        referenceSlcFilename=objSlc1.getFilename(),
+                        secondarySlcFilename=objSlc2.getFilename(),
+                        ampThreshold=1e-6, azLooks=azLooks, rgLooks=rgLooks,
+                        referenceSlcLength=lines)
        
        #os.system('rm ' + resampInt+'.full* ' + resampAmp + '.full* ')
        # End of modification 

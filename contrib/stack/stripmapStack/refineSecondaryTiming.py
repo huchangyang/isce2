@@ -47,7 +47,7 @@ def createParser():
             help='SNR threshold')
     parser.add_argument('--cr', dest='consistency_radius', type=float, default=None,
             help='Spatial consistency radius in pixels (default: auto = 3x median grid spacing)')
-    parser.add_argument('--ct', dest='consistency_thresh', type=float, default=0.5,
+    parser.add_argument('--ct', dest='consistency_thresh', type=float, default=0.3,
             help='Spatial consistency offset deviation threshold in pixels')
     parser.add_argument('--mn', dest='min_neighbors', type=int, default=3,
             help='Minimum number of neighbours required for spatial consistency check')
@@ -138,7 +138,7 @@ def estimateOffsetField(reference, secondary, azoffset=0, rgoffset=0):
 
 def fitOffsets(field,azrgOrder=0,azazOrder=0,
         rgrgOrder=0,rgazOrder=0,snr=5.0,
-        consistencyRadius=None, consistencyThresh=0.5, minNeighbors=3):
+        consistencyRadius=None, consistencyThresh=0.3, minNeighbors=3):
     '''
     Estimate constant range and azimuth shifts.
     '''
@@ -146,11 +146,9 @@ def fitOffsets(field,azrgOrder=0,azazOrder=0,
     print('%d input offset points before spatial consistency culling' %
           (len(field._offsets)))
 
-    inArr = np.array(field.unpackOffsets(), dtype=np.float64)
-    coords = inArr[:, [0, 2]]
-    offsets = inArr[:, [1, 3]]
-
     if consistencyRadius is None:
+        inArr = np.array(field.unpackOffsets(), dtype=np.float64)
+        coords = inArr[:, [0, 2]]
         spacings = []
         for col in range(2):
             vals = np.unique(coords[:, col])
@@ -167,31 +165,40 @@ def fitOffsets(field,azrgOrder=0,azazOrder=0,
     print('Applying spatial consistency culling: radius %.4f, threshold %.4f, min neighbours %d' %
           (consistencyRadius, consistencyThresh, minNeighbors))
 
-    keep = []
-    removedSpatial = 0
-    insufficientNeighbors = 0
-    for ind in range(len(field._offsets)):
-        distances = np.hypot(coords[:, 0] - coords[ind, 0],
-                             coords[:, 1] - coords[ind, 1])
-        neighbors = np.where((distances > 0.0) & (distances <= consistencyRadius))[0]
+    for passNumber in range(2):
+        inArr = np.array(field.unpackOffsets(), dtype=np.float64)
+        coords = inArr[:, [0, 2]]
+        offsets = inArr[:, [1, 3]]
 
-        if len(neighbors) < minNeighbors:
-            insufficientNeighbors += 1
-            keep.append(ind)
-            continue
+        keep = []
+        removedSpatial = 0
+        insufficientNeighbors = 0
+        for ind in range(len(field._offsets)):
+            distances = np.hypot(coords[:, 0] - coords[ind, 0],
+                                 coords[:, 1] - coords[ind, 1])
+            neighbors = np.where((distances > 0.0) & (distances <= consistencyRadius))[0]
 
-        localOffset = np.median(offsets[neighbors], axis=0)
-        residual = np.hypot(offsets[ind, 0] - localOffset[0],
-                            offsets[ind, 1] - localOffset[1])
+            if len(neighbors) < minNeighbors:
+                insufficientNeighbors += 1
+                keep.append(ind)
+                continue
 
-        if residual <= consistencyThresh:
-            keep.append(ind)
-        else:
-            removedSpatial += 1
+            localOffset = np.median(offsets[neighbors], axis=0)
+            residual = np.hypot(offsets[ind, 0] - localOffset[0],
+                                offsets[ind, 1] - localOffset[1])
 
-    field._offsets = [field._offsets[ind] for ind in keep]
-    print('%d points left after spatial consistency culling (removed %d points, %d points had too few neighbours)' %
-          (len(field._offsets), removedSpatial, insufficientNeighbors))
+            if residual <= consistencyThresh:
+                keep.append(ind)
+            else:
+                removedSpatial += 1
+
+        field._offsets = [field._offsets[ind] for ind in keep]
+        print('%d points left after spatial consistency culling pass %d (removed %d points, %d points had too few neighbours)' %
+              (len(field._offsets), passNumber + 1, removedSpatial, insufficientNeighbors))
+
+        if len(field._offsets) == 0:
+            raise ValueError('No offsets left after spatial consistency culling pass %d' %
+                             (passNumber + 1))
 
     if len(field._offsets) == 0:
         raise ValueError('No offsets left after spatial consistency culling')

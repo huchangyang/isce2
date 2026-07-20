@@ -18,7 +18,7 @@ mpl_logger.setLevel(logging.WARNING)
 import isce
 import isceobj
 from mroipac.baseline.Baseline import Baseline
-from stripmapStack.Stack import config, run, selectPairs, filterIonoPairsByTemporalNeighbor
+from stripmapStack.Stack import config, run, selectPairs, baselineStack, selectIonoPairs
 
 
 filtStrength = '0.8'
@@ -87,17 +87,28 @@ def createParser():
 
     iono.add_argument('--filter_kernel_rotation', dest='filterKernelRotation', type=str, default='0.0',
             help='rotation angle of the filter kernel in degrees (default = 0.0)')
+
+    iono.add_argument('--filter_std_ion', dest='filterStdIon', type=str, default='0.005',
+            help='target post-filter std (rad) for adaptive Gaussian window selection in '
+                 'estimateIono (default: 0.005)')
+
+    iono.add_argument('--subband_filter_strength', dest='subbandFiltStrength', type=str, default='0',
+            help='Goldstein filter strength for LowBand/HighBand interferograms only '
+                 '(default: 0 = skip filtering). Independent of full-band -f/--filter_strength. '
+                 'When >0, products use filt_ prefix and ion configs point to those files.')
     
     iono.add_argument('--number_range_looks_ion', dest='numberRangeLooksIon', type=str, default='16',
             help='Additional range looks for ionosphere estimation (default: 16)')
     iono.add_argument('--number_azimuth_looks_ion', dest='numberAzimuthLooksIon', type=str, default='16',
             help='Additional azimuth looks for ionosphere estimation (default: 16)')
 
-    iono.add_argument('--iono_neighbor_connections', dest='ionoNeighborConnections', type=int, default=4,
-            help='For ionosphere workflow only: max temporal index span between the two dates '
-                 'in the sorted acquisition list (same order as network pairs). '
-                 'Only these pairs get config_iono_* and estimateIono. Default: 4. '
-                 'Use 0 for no limit (all pairs from -t/-b).')
+    iono.add_argument('--iono_time_threshold', dest='ionoTimeThreshold', type=float, default=None,
+            help='For ionosphere workflow only: max temporal baseline in days (same as -t). '
+                 'Default: use -t value.')
+
+    iono.add_argument('--iono_baseline_threshold', dest='ionoBaselineThreshold', type=float, default=None,
+            help='For ionosphere workflow only: max perpendicular baseline difference in meters '
+                 '(same as -b). Default: use -b value.')
 
     parser.add_argument('-W', '--workflow', dest='workflow', type=str, default='slc',
             help='The InSAR processing workflow : (slc, interferogram, ionosphere)')
@@ -318,12 +329,21 @@ def interferogramIonoStack(inps, acquisitionDates, stackReferenceDate, secondary
     runObj.igrams_network(pairs, acquisitionDates, stackReferenceDate, low_or_high, config_prefix)
     runObj.finalize()
 
-    iono_pairs = filterIonoPairsByTemporalNeighbor(
-            pairs, acquisitionDates, inps.ionoNeighborConnections)
+    doBaselines = not (inps.sensor and inps.sensor.lower().startswith('uavsar'))
+    dt_thr = inps.ionoTimeThreshold if inps.ionoTimeThreshold is not None else inps.dtThr
+    db_thr = inps.ionoBaselineThreshold if inps.ionoBaselineThreshold is not None else inps.dbThr
+    baselineDict, timeDict = baselineStack(
+            inps, stackReferenceDate, acquisitionDates, doBaselines)
+
+    iono_pairs = selectIonoPairs(
+            acquisitionDates, baselineDict, timeDict,
+            dt_thr, db_thr, pairs)
     print('number of pairs for ionosphere estimation: ', len(iono_pairs),
-          '(iono_neighbor_connections={})'.format(inps.ionoNeighborConnections))
+          '(iono_time_threshold={} days, iono_baseline_threshold={} m)'.format(
+              dt_thr, db_thr))
     if len(iono_pairs) == 0:
-        print('WARNING: no pairs left for ionosphere estimation; widen --iono_neighbor_connections or use 0 for no limit.')
+        print('WARNING: no pairs left for ionosphere estimation; '
+              'relax --iono_time_threshold / --iono_baseline_threshold.')
 
     i+=1
     runObj = run()
